@@ -29,7 +29,7 @@ bash scripts/deploy.sh
 
 The script archives the current clean Git commit and builds it on the server with Node 24.22.1 from `/opt/jilanov-node/node-v24.22.1-linux-x64/bin`. It runs syntax/type checks, unit tests and a production build, applies versioned migrations to Solarman, and updates only the `solarman` PM2 process. A PostgreSQL advisory lock prevents duplicate schedulers. Never use PM2 cluster mode for this service.
 
-The active symlink changes after health reports the expected commit. PM2's process working directory points directly to that immutable release. Build or migration failures occur before the running process is replaced. If process health fails, the script restarts the previous release when available. Schema migrations are not automatically reversed: keep upgrades compatible or plan a database restore explicitly.
+The active symlink changes after the PM2 working directory and entry point, health response and served frontend all match the new release. The script deletes and recreates only the `solarman` process so PM2 cannot retain the previous release's working directory. This single-process deployment has a brief restart interval. Build or migration failures occur before the running process is replaced. If process verification fails, the script restarts the previous release when available. Schema migrations are not automatically reversed: keep upgrades compatible or plan a database restore explicitly.
 
 The checked-in `deploy/nginx.conf` proxies only to loopback port 3230, including account-specific callbacks, and redirects HTTP to HTTPS except ACME challenges. Install `deploy/cloudflare.conf` as `/etc/nginx/snippets/solarman-cloudflare.conf`, install the site with root access, validate with `nginx -t`, then reload Nginx. Certbot webroot renewal uses `/var/www/letsencrypt`. Access logging is disabled to keep callback and invitation tokens out of request logs. The application trusts forwarded client IP only from loopback; Nginx overwrites that header and accepts Cloudflare client IPs only from [published IPv4](https://www.cloudflare.com/ips-v4) and [IPv6](https://www.cloudflare.com/ips-v6) proxy networks.
 
@@ -46,6 +46,6 @@ Check release SHA, HTTPS login, settings and tenant access. A healthy HTTP proce
 
 ## Rollback
 
-Read `/home/mitko/solarman/previous` and confirm the desired release and schema compatibility before switching. Set `RELEASE_SHA` to that release's commit and run `pm2 startOrReload <release>/ecosystem.config.cjs --only solarman --update-env`. Verify health, update the `current` symlink, then run `pm2 save`. Do not restart other applications.
+Read `/home/mitko/solarman/previous` and confirm the desired release and schema compatibility before switching. Delete only the `solarman` PM2 process, then set `RELEASE_SHA` to the desired commit and run `pm2 start <release>/ecosystem.config.cjs --only solarman --update-env`. Verify health and the actual process working directory and frontend, update the `current` symlink, then run `pm2 save`. Do not restart other applications.
 
 If hardware writes were enabled and the API is unavailable, process shutdown cannot guarantee AC permission was cleared. Check the inverter in SOLARMAN and follow [manual recovery](controller.md#manual-recovery).

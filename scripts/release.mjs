@@ -1,0 +1,26 @@
+import path from "node:path";
+
+/**
+ * @param {{ directory: string, sha: string, index: string }} expected
+ * @param {{ cwd: string, script: string, status: string, health: { status: string, release: string }, index: string }} running
+ * @returns {void}
+ */
+export function verifyRelease(expected, running) {
+  if (
+    running.status !== "online" ||
+    running.cwd !== expected.directory ||
+    running.script !== path.join(expected.directory, "src/server.mjs")
+  ) {
+    throw new Error(
+      "PM2 is not running the expected release directory and entry point",
+    );
+  }
+  if (
+    running.health.status !== "ok" ||
+    running.health.release !== expected.sha
+  ) {
+    throw new Error("Application health does not match the expected release");
+  }
+  if (running.index !== expected.index)
+    throw new Error("The served page does not match the built release");
+}

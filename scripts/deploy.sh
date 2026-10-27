@@ -30,10 +30,13 @@ try { await migrate(pool); } finally { await pool.end(); }
 MIGRATE
 previous_path=$(readlink /home/mitko/solarman/current || true)
 export RELEASE_SHA=$release_sha
-pm2 startOrReload "$release_path/ecosystem.config.cjs" --only solarman --update-env
+if pm2 describe solarman >/dev/null 2>&1; then
+  pm2 delete solarman
+fi
+pm2 start "$release_path/ecosystem.config.cjs" --only solarman --update-env
 healthy=false
 for attempt in $(seq 1 30); do
-  if node --input-type=module -e 'const r=await fetch("http://127.0.0.1:3230/healthz"); const h=await r.json(); if(!r.ok||h.status!=="ok"||h.release!==process.env.RELEASE_SHA)process.exit(1)' 2>/dev/null; then
+  if node scripts/check-release.mjs 2>/dev/null; then
     healthy=true
     break
   fi
@@ -41,7 +44,8 @@ for attempt in $(seq 1 30); do
 done
 if [[ "$healthy" != true ]]; then
   if [[ -n "$previous_path" ]]; then
-    RELEASE_SHA=$(basename "$previous_path") pm2 startOrReload "$previous_path/ecosystem.config.cjs" --only solarman --update-env
+    pm2 delete solarman
+    RELEASE_SHA=$(basename "$previous_path") pm2 start "$previous_path/ecosystem.config.cjs" --only solarman --update-env
   else
     pm2 stop solarman
   fi
