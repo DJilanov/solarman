@@ -83,6 +83,47 @@ test("stored measurements render charts, legends and a full CSV download", async
     const csv = readFileSync(csvPath!, "utf8");
     expect(csv.split("\n")).toHaveLength(4);
     expect(csv).toContain("battery_discharge_positive_w");
+    await page.locator(".language-switch select").selectOption("bg");
+    await expect(
+      page.getByRole("heading", { name: "Енергийни анализи", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Заряд на батерията", exact: true }),
+    ).toHaveAttribute("aria-pressed", "false");
+    await expect(page.locator(".analytics-metrics")).toContainText("0,65");
+    await expect(page.locator(".analytics-metrics")).toContainText("кВтч");
+    await expect(page.locator(".chart-frame")).toContainText("кВт");
+    await page.screenshot({
+      path: "test-results/analytics-bulgarian.png",
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => document.documentElement.scrollWidth > window.innerWidth,
+        ),
+      )
+      .toBe(false);
+    await expect
+      .poll(() =>
+        page.locator(".recharts-surface").evaluateAll((surfaces) =>
+          surfaces.every((surface) => {
+            const svg = surface as SVGSVGElement;
+            const frame = svg.closest(".chart-frame,.daily-chart");
+            return Boolean(
+              frame &&
+                svg.viewBox.baseVal.width <=
+                  frame.getBoundingClientRect().width + 1,
+            );
+          }),
+        ),
+      )
+      .toBe(true);
+    await page.screenshot({
+      path: "test-results/analytics-bulgarian-mobile.png",
+      fullPage: true,
+    });
   } finally {
     await pool.query(
       "DELETE FROM measurements WHERE tenant_id=$1 AND observed_at=ANY($2::timestamptz[])",
@@ -137,7 +178,7 @@ test("email login, honest setup states and all dashboard pages work", async ({
 test("mobile layouts remain within the viewport and sign-out is available", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 320, height: 740 });
   await signIn(page);
   for (const link of [
     "Overview",
@@ -182,6 +223,17 @@ test("an invitation creates an isolated user who links their own provider accoun
   const invited = await context.newPage();
   try {
     await invited.goto(invitation);
+    await invited.locator(".language-switch select").selectOption("bg");
+    await expect(
+      invited.getByRole("button", { name: "Създаване на пространство" }),
+    ).toBeVisible();
+    await invited
+      .getByLabel("Парола", { exact: true })
+      .fill("e2e-workspace-password");
+    await invited.locator(".language-switch select").selectOption("en");
+    await expect(invited.getByLabel("Password", { exact: true })).toHaveValue(
+      "e2e-workspace-password",
+    );
     await invited
       .getByLabel("Password", { exact: true })
       .fill("e2e-workspace-password");
@@ -219,6 +271,154 @@ test("an invitation creates an isolated user who links their own provider accoun
     ).toBeVisible();
     const response = await invited.request.get("/api/admin/tenants");
     expect(response.status()).toBe(403);
+  } finally {
+    await context.close();
+  }
+});
+
+test("Bulgarian pages, setup messages, controls and an open form switch without losing the session", async ({
+  page,
+}) => {
+  await signIn(page);
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(page.locator("html")).toHaveAttribute("lang", "bg");
+  await expect(
+    page.getByText(
+      "За свързания акаунт са необходими App ID и App Secret за OpenAPI",
+    ),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 740 });
+  for (const [link, title] of [
+    ["Преглед", "Преглед на енергията"],
+    ["Анализи", "Енергийни анализи"],
+    ["Управление", "Управление на системата"],
+    ["История", "История на системата"],
+    ["Настройки", "Настройки на пространството"],
+    ["Пространства", "Потребителски пространства"],
+  ]) {
+    await page.getByRole("link", { name: link, exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: title, exact: true }),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+      link,
+    ).toBe(false);
+  }
+  await page.getByRole("link", { name: "Настройки", exact: true }).click();
+  await page
+    .getByLabel("Парола за SOLARMAN", { exact: true })
+    .fill("unsaved-form-value");
+  await page.locator(".language-switch select").selectOption("en");
+  await expect(
+    page.getByLabel("SOLARMAN password", { exact: true }),
+  ).toHaveValue("unsaved-form-value");
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(
+    page.getByLabel("Парола за SOLARMAN", { exact: true }),
+  ).toHaveValue("unsaved-form-value");
+  await page.route("**/api/account/link", (route) =>
+    route.fulfill({
+      status: 409,
+      json: { error: "SOLARMAN rejected request (code 2101021)" },
+    }),
+  );
+  await page
+    .getByRole("button", {
+      name: "Обновяване на данните за достъп",
+      exact: true,
+    })
+    .click();
+  await expect(page.getByRole("alert")).toContainText(
+    "SOLARMAN отхвърли заявката (код 2101021)",
+  );
+  await page.locator(".language-switch select").selectOption("en");
+  await expect(page.getByRole("alert")).toContainText(
+    "SOLARMAN rejected request (code 2101021)",
+  );
+  await page.locator(".language-switch select").selectOption("bg");
+  await page.getByRole("link", { name: "Управление", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Дозареждане до 50%", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("link", { name: "Преглед", exact: true }).click();
+  await page.screenshot({
+    path: "test-results/overview-bulgarian-mobile.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Изход", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Добре дошли отново" }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "bg");
+});
+
+test("browser language and a saved choice select the correct login translations", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({ locale: "bg-BG" });
+  try {
+    const page = await context.newPage();
+    await page.goto("http://localhost:3000/");
+    await expect(
+      page.getByRole("heading", { name: "Добре дошли отново" }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: "test-results/login-bulgarian.png",
+      fullPage: true,
+    });
+    await page
+      .getByLabel("Имейл адрес", { exact: true })
+      .fill("typed@example.test");
+    await page.locator(".language-switch select").selectOption("en");
+    await expect(page.getByLabel("Email address", { exact: true })).toHaveValue(
+      "typed@example.test",
+    );
+    await page.reload();
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
+    await expect(
+      page.getByRole("heading", { name: "Welcome back" }),
+    ).toBeVisible();
+    await page.locator(".language-switch select").selectOption("bg");
+    await page
+      .getByLabel("Имейл адрес", { exact: true })
+      .fill("invalid@example.test");
+    await page.getByLabel("Парола", { exact: true }).fill("invalid-password");
+    await page.getByRole("button", { name: "Вход", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText(
+      "Имейлът или паролата са неправилни",
+    );
+  } finally {
+    await context.close();
+  }
+});
+
+test("language switching works when browser storage is unavailable", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({ locale: "bg-BG" });
+  try {
+    await context.addInitScript(() => {
+      for (const method of ["getItem", "setItem"])
+        Object.defineProperty(Storage.prototype, method, {
+          value: (): never => {
+            throw new DOMException("Storage unavailable", "SecurityError");
+          },
+        });
+    });
+    const page = await context.newPage();
+    await page.goto("http://localhost:3000/");
+    await expect(
+      page.getByRole("heading", { name: "Добре дошли отново" }),
+    ).toBeVisible();
+    await page.locator(".language-switch select").selectOption("en");
+    await expect(
+      page.getByRole("heading", { name: "Welcome back" }),
+    ).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
   } finally {
     await context.close();
   }

@@ -29,10 +29,12 @@
     "vite": "^8.3.5"
   },
   "dependencies": {
+    "i18next": "^26.5.11",
     "lucide-react": "^1.62.0",
     "pg": "^8.23.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "react-i18next": "^17.1.9",
     "react-router-dom": "^7.18.4",
     "recharts": "^3.10.1"
   }

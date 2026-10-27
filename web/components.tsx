@@ -1,4 +1,5 @@
-import { lazy, Suspense, type ReactNode } from "react";
+import { tr } from "./i18n";
+import { Children, lazy, Suspense, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   Activity,
@@ -21,7 +22,7 @@ import type {
   Measurement,
 } from "./types";
 
-import { power, when } from "./format";
+import { power, when, formatNumber } from "./format";
 export { COLORS, power, energy, when, age } from "./format";
 
 export function Panel({
@@ -89,7 +90,11 @@ export function Notice({
       role={tone === "danger" ? "alert" : "status"}
     >
       <Icon size={18} aria-hidden="true" />
-      <div>{children}</div>
+      <div>
+        {Children.map(children, (child) =>
+          typeof child === "string" ? tr(child) : child,
+        )}
+      </div>
     </div>
   );
 }
@@ -97,7 +102,7 @@ export function Loading(): ReactNode {
   return (
     <div className="loading-state" role="status">
       <Loader2 className="spin" size={23} />
-      <span>Loading your workspace…</span>
+      <span>{tr("Loading your workspace…")}</span>
     </div>
   );
 }
@@ -145,7 +150,7 @@ export function StatusBadge({ status }: { status: string }): ReactNode {
   return (
     <span className={`badge ${status}`}>
       <span className="status-dot" />
-      {label}
+      {tr(label)}
     </span>
   );
 }
@@ -159,7 +164,7 @@ export function SetupNotice({
       <Notice tone="danger">
         {controller.error}{" "}
         <Link to="/settings">
-          Check connection <ArrowRight size={13} />
+          {tr("Check connection")} <ArrowRight size={13} />
         </Link>
       </Notice>
     );
@@ -168,15 +173,16 @@ export function SetupNotice({
       <Notice>
         {controller.setupError}.{" "}
         <Link to="/settings">
-          Connection settings <ArrowRight size={13} />
+          {tr("Connection settings")} <ArrowRight size={13} />
         </Link>
       </Notice>
     );
   if (!controller.writesEnabled)
     return (
       <Notice>
-        Monitoring is available. Hardware commands are disabled until this
-        workspace has a supported profile and writes are enabled.
+        {tr(
+          "Monitoring is available. Hardware commands are disabled until this workspace has a supported profile and writes are enabled.",
+        )}
       </Notice>
     );
   return null;
@@ -219,7 +225,7 @@ export function PowerFlow({
   return (
     <div
       className={`flow-diagram ${active ? "flow-live" : ""}`}
-      aria-label="Solar, house, grid and battery power flow"
+      aria-label={tr("Solar, house, grid and battery power flow")}
     >
       <svg
         className="flow-lines"
@@ -247,17 +253,17 @@ export function PowerFlow({
         <span className="source-icon">
           <Sun size={23} />
         </span>
-        <span className="source-label">Solar production</span>
+        <span className="source-label">{tr("Solar production")}</span>
         <strong>{power(reading?.pvW)}</strong>
-        <small>Photovoltaic input</small>
+        <small>{tr("Photovoltaic input")}</small>
       </Link>
       <Link to="/analytics" className="flow-source source-house">
         <span className="source-icon">
           <Home size={23} />
         </span>
-        <span className="source-label">Your home</span>
+        <span className="source-label">{tr("Your home")}</span>
         <strong>{power(reading?.loadW)}</strong>
-        <small>House consumption</small>
+        <small>{tr("House consumption")}</small>
       </Link>
       <Link to="/analytics" className="flow-source source-grid">
         <span className="source-icon">
@@ -266,19 +272,19 @@ export function PowerFlow({
         <span className="source-label">
           {reading
             ? imported
-              ? "Grid import"
+              ? tr("Grid import")
               : reading.gridW < -10
-                ? "Grid export"
-                : "Grid idle"
-            : "Grid power"}
+                ? tr("Grid export")
+                : tr("Grid idle")
+            : tr("Grid power")}
         </span>
         <strong>{power(reading?.gridW)}</strong>
         <small>
           {reading
             ? imported
-              ? "Supporting your home"
-              : "Connection to the grid"
-            : "Awaiting a reading"}
+              ? tr("Supporting your home")
+              : tr("Connection to the grid")
+            : tr("Awaiting a reading")}
         </small>
       </Link>
       <Link to="/analytics" className="flow-source source-battery">
@@ -288,15 +294,17 @@ export function PowerFlow({
         <span className="source-label">
           {reading
             ? batteryCharging
-              ? "Battery charging"
+              ? tr("Battery charging")
               : reading.batteryW > 10
-                ? "Battery supplying"
-                : "Battery idle"
-            : "Battery power"}
+                ? tr("Battery supplying")
+                : tr("Battery idle")
+            : tr("Battery power")}
         </span>
         <strong>{power(reading?.batteryW)}</strong>
         <small>
-          {reading ? `${reading.soc}% state of charge` : "Awaiting a reading"}
+          {reading
+            ? tr("{{soc}}% state of charge", { soc: reading.soc })
+            : tr("Awaiting a reading")}
         </small>
       </Link>
     </div>
@@ -313,8 +321,8 @@ export function BatteryReserve({
   const soc = reading?.soc ?? 0;
   return (
     <Panel
-      title="Battery reserve"
-      subtitle="Use solar. Keep a backup."
+      title={tr("Battery reserve")}
+      subtitle={tr("Use solar. Keep a backup.")}
       className="reserve-panel"
     >
       <div className="soc-ring">
@@ -330,12 +338,12 @@ export function BatteryReserve({
         </svg>
         <div>
           <strong>{reading ? `${soc}%` : "—"}</strong>
-          <span>State of charge</span>
+          <span>{tr("State of charge")}</span>
         </div>
       </div>
       <div className="reserve-scale">
         <div className="scale-label">
-          <span>Grid reserve</span>
+          <span>{tr("Grid reserve")}</span>
           <strong>50%</strong>
         </div>
         <div className="reserve-track">
@@ -349,24 +357,28 @@ export function BatteryReserve({
       </div>
       <div className="reserve-facts">
         <div>
-          <span>Solar SOC target</span>
+          <span>{tr("Solar SOC target")}</span>
           <strong>100%</strong>
         </div>
         <div>
-          <span>Grid top-up setting</span>
-          <strong>2 kW → 50%</strong>
+          <span>{tr("Grid top-up setting")}</span>
+          <strong>{tr("2 kW → 50%")}</strong>
         </div>
         <div>
-          <span>Battery temperature</span>
+          <span>{tr("Battery temperature")}</span>
           <strong>
-            {reading ? `${reading.temperatureC.toFixed(1)}°C` : "—"}
+            {reading ? `${formatNumber(reading.temperatureC, 1)}°C` : "—"}
           </strong>
         </div>
       </div>
       <p className="fine-print">
         {controller.writesEnabled
-          ? "The controller removes grid-charging permission at 50% so stored solar energy can supply your home."
-          : "These are the supported control policy targets. Hardware writes are currently disabled."}
+          ? tr(
+              "The controller removes grid-charging permission at 50% so stored solar energy can supply your home.",
+            )
+          : tr(
+              "These are the supported control policy targets. Hardware writes are currently disabled.",
+            )}
       </p>
     </Panel>
   );
@@ -390,11 +402,13 @@ export function PowerChart({
     return (
       <EmptyState
         icon={Activity}
-        title="Your energy story starts here"
-        description="Charts will appear after your linked inverter sends its first readings. Missing readings are never shown as zero."
+        title={tr("Your energy story starts here")}
+        description={tr(
+          "Charts will appear after your linked inverter sends its first readings. Missing readings are never shown as zero.",
+        )}
       >
         <Link className="text-link" to="/settings">
-          Set up your connection <ArrowRight size={14} />
+          {tr("Set up your connection")} <ArrowRight size={14} />
         </Link>
       </EmptyState>
     );
@@ -409,8 +423,10 @@ export function DailyChart({ data }: { data: Analytics }): ReactNode {
   if (!data.daily.length)
     return (
       <EmptyState
-        title="Daily totals need more readings"
-        description="Energy estimates use consecutive samples. Gaps are excluded from the calculation."
+        title={tr("Daily totals need more readings")}
+        description={tr(
+          "Energy estimates use consecutive samples. Gaps are excluded from the calculation.",
+        )}
         icon={Sun}
       />
     );
@@ -432,8 +448,10 @@ export function ActivityList({
     return (
       <EmptyState
         icon={Clock3}
-        title="A clear record of every action"
-        description="Commands and automation evaluations will appear here with their requested action and verified result."
+        title={tr("A clear record of every action")}
+        description={tr(
+          "Commands and automation evaluations will appear here with their requested action and verified result.",
+        )}
       />
     );
   const labels: Record<string, string> = {
@@ -459,15 +477,17 @@ export function ActivityList({
           </span>
           <div className="activity-copy">
             <div>
-              <strong>{labels[item.action] ?? item.action}</strong>
+              <strong>{tr(labels[item.action] ?? item.action)}</strong>
               <StatusBadge status={item.status} />
             </div>
             <p>
-              {item.message ??
-                "Waiting for the device response and verification."}
+              {tr(
+                item.message ??
+                  "Waiting for the device response and verification.",
+              )}
             </p>
             <small>
-              {item.actor === "Automation" ? "Automation" : item.actor} ·{" "}
+              {item.actor === "Automation" ? tr("Automation") : item.actor} ·{" "}
               {when(item.created_at, timezone)}
             </small>
           </div>

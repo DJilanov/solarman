@@ -959,6 +959,7 @@ strong {
   width: 100%;
   margin-top: 16px;
   min-width: 0;
+  overflow: hidden;
 }
 .chart-legend {
   display: flex;
@@ -995,6 +996,7 @@ strong {
 .daily-chart {
   height: 275px;
   min-width: 0;
+  overflow: hidden;
 }
 .activity-list {
   display: grid;
@@ -1437,10 +1439,9 @@ form .notice {
 }
 .device-form {
   display: grid;
-  grid-template-columns: minmax(170px, 1.4fr) minmax(210px, 1.5fr) minmax(
-      145px,
-      1fr
-    ) auto;
+  grid-template-columns:
+    minmax(170px, 1.4fr) minmax(210px, 1.5fr) minmax(145px, 1fr)
+    auto;
   gap: 18px;
   align-items: end;
   margin-bottom: 6px;
@@ -2624,5 +2625,80 @@ form .notice {
     animation: none !important;
     transition: none !important;
     scroll-behavior: auto !important;
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.language-switch {
+  display: inline-flex;
+  align-items: center;
+  flex-direction: row;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.language-switch select {
+  width: auto;
+  min-width: 0;
+  margin: 0;
+  padding: 7px 5px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--accent);
+  font-size: 11px;
+}
+.auth-language {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  z-index: 5;
+}
+.auth-page,
+.activation-page {
+  position: relative;
+}
+html[lang="bg"] .button {
+  white-space: normal;
+  line-height: 1.4;
+  min-height: 40px;
+  height: auto;
+}
+html[lang="bg"] .nav-item span {
+  overflow-wrap: anywhere;
+}
+html[lang="bg"] .automation-route {
+  flex-wrap: wrap;
+}
+html[lang="bg"] .segmented button {
+  padding-inline: 10px;
+}
+@media (max-width: 760px) {
+  .topbar-status .last-reading {
+    display: none;
+  }
+  .language-switch {
+    gap: 4px;
+  }
+  .auth-language {
+    top: 12px;
+    right: 16px;
+  }
+  .activation-page > .brand {
+    margin-top: 38px;
+  }
+  html[lang="bg"] .nav-item {
+    font-size: 8px;
+  }
+  html[lang="bg"] .segmented button {
+    padding-inline: 9px;
   }
 }

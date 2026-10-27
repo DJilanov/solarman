@@ -22,6 +22,14 @@ Missing data stays unavailable rather than becoming zero. Estimated energy exclu
 
 Normalized analytics and guarded controls currently support the **Bluesun BSE20KH3** profile diagnosed in this project. Other inverters can display read-only provider parameters in Settings; their normalized power charts require a verified model mapping.
 
+## Languages
+
+English and Bulgarian are available from the language selector on the login, invitation and dashboard screens. The first visit follows the browser language, with English as the fallback. A selected language is remembered in that browser and survives sign-out. Switching languages preserves the current session and unsaved form fields.
+
+Dates, decimal values, energy units, counts and application messages follow the selected language. Native date-picker controls retain the browser's own date format. The account's inverter timezone still controls local-day calculations. Workspace names, account addresses, device identifiers and raw provider parameters retain their original values; the machine-readable CSV schema and UTC timestamps remain stable.
+
+Translations live in `web/locales/en.json` and `web/locales/bg.json`, with i18next handling interpolation and plural forms. Catalogue tests check matching keys and variables; browser tests cover both languages, mobile layouts, persistence, forms and disabled browser storage. Unknown third-party diagnostics retain their original text and error codes.
+
 ## Battery policy
 
 The supported Bluesun policy retains the existing **100% overall solar SOC target**, **50% on-grid reserve**, and **2 kW AC charging setting with a 50% target**. Below 50%, grid top-up is eligible when solar surplus is insufficient. At or above 50%, timed AC permission is removed so native SelfUse can supply the home. The controller verifies configuration and changes only the AC flag and short charging windows.
@@ -55,6 +63,6 @@ npm run test:integration
 npm run test:e2e
 ```
 
-Integration tests exclusively use **solarman_test** on the configured PostgreSQL host and reset that test database's tenant data. Never point them at a database containing valuable test records. Browser tests also use solarman_test, require a completed build, and read `E2E_EMAIL` / `E2E_PASSWORD` from private `.env.e2e`. Run database and browser suites sequentially; both own the isolated test database. Install a browser once with `npx playwright install chromium`.
+Integration tests exclusively use **solarman_test** on the configured PostgreSQL host and reset that test database's tenant data. Never point them at a database containing valuable test records. Browser tests also use solarman_test, require a completed build, and bootstrap a dedicated fixture owner with a test-only provider link and hardware writes disabled. Production login credentials are not needed. Optional `E2E_EMAIL` / `E2E_PASSWORD` values in private `.env.e2e` override that fixture login. Run database and browser suites sequentially; both own the isolated test database. Install a browser once with `npx playwright install chromium`.
 
 See [deployment and recovery](docs/deployment.md) for immutable releases, private environment files, PM2, HTTPS and rollback. After committing and pushing the intended release, `bash scripts/deploy.sh` builds and verifies that exact commit on the server, migrates the application database, and updates only the `solarman` PM2 process. The broader [design plan](docs/dashboard-plan.md) records the product and isolation requirements.

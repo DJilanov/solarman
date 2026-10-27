@@ -1,3 +1,5 @@
+import { tr, LanguageSwitch } from "./i18n";
+import { useTranslation } from "react-i18next";
 import {
   useEffect,
   useRef,
@@ -56,7 +58,7 @@ function Brand({ compact = false }: { compact?: boolean }): ReactNode {
         <strong>
           solarman<span> / </span>
         </strong>
-        {!compact && <small>ENERGY WORKSPACE</small>}
+        {!compact && <small>{tr("ENERGY WORKSPACE")}</small>}
       </div>
     </div>
   );
@@ -93,25 +95,29 @@ function SignIn({
   };
   return (
     <main className="auth-page">
+      <div className="auth-language">
+        <LanguageSwitch />
+      </div>
       <div className="auth-story">
         <Brand />
         <div className="auth-message">
-          <span className="eyebrow">A CLEARER VIEW OF YOUR ENERGY</span>
+          <span className="eyebrow">{tr("A CLEARER VIEW OF YOUR ENERGY")}</span>
           <h1>
-            Make the most
+            {tr("Make the most")}
             <br />
-            of every ray.
+            {tr("of every ray.")}
           </h1>
           <p>
-            Your solar production, battery reserve, and energy use. Together in
-            one private workspace.
+            {tr(
+              "Your solar production, battery reserve, and energy use. Together in one private workspace.",
+            )}
           </p>
           <div className="auth-benefits">
             <span>
-              <Check size={15} /> Your account. Your data.
+              <Check size={15} /> {tr("Your account. Your data.")}
             </span>
             <span>
-              <Check size={15} /> Verified inverter controls
+              <Check size={15} /> {tr("Verified inverter controls")}
             </span>
           </div>
         </div>
@@ -122,7 +128,7 @@ function SignIn({
           <Sun size={80} strokeWidth={0.7} />
         </div>
         <p className="auth-footnote">
-          Solar monitoring · Battery reserve · Energy analytics
+          {tr("Solar monitoring · Battery reserve · Energy analytics")}
         </p>
       </div>
       <div className="auth-form-side">
@@ -130,16 +136,16 @@ function SignIn({
           <div className="auth-lock">
             <LockKeyhole size={23} />
           </div>
-          <span className="eyebrow">YOUR ENERGY WORKSPACE</span>
-          <h2>Welcome back</h2>
-          <p>Sign in to monitor your system and manage your battery.</p>
+          <span className="eyebrow">{tr("YOUR ENERGY WORKSPACE")}</span>
+          <h2>{tr("Welcome back")}</h2>
+          <p>{tr("Sign in to monitor your system and manage your battery.")}</p>
           <form
             onSubmit={(event) => {
               void submit(event);
             }}
           >
             <label>
-              Email address
+              {tr("Email address")}
               <div className="input-with-icon">
                 <Mail size={17} />
                 <input
@@ -154,7 +160,7 @@ function SignIn({
               </div>
             </label>
             <label>
-              Password
+              {tr("Password")}
               <div className="input-with-icon">
                 <LockKeyhole size={17} />
                 <input
@@ -163,7 +169,7 @@ function SignIn({
                   required
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  placeholder="Your password"
+                  placeholder={tr("Your password")}
                 />
               </div>
             </label>
@@ -173,7 +179,7 @@ function SignIn({
                 <Loader2 size={17} className="spin" />
               ) : (
                 <>
-                  Sign in <ArrowRight size={17} />
+                  {tr("Sign in")} <ArrowRight size={17} />
                 </>
               )}
             </button>
@@ -181,15 +187,17 @@ function SignIn({
           <div className="auth-help">
             <ShieldCheck size={16} />
             <span>
-              Your SOLARMAN account is linked privately after you sign in.
+              {tr(
+                "Your SOLARMAN account is linked privately after you sign in.",
+              )}
             </span>
           </div>
           <p className="invite-note">
-            New here? Ask your administrator for a workspace invitation.
+            {tr("New here? Ask your administrator for a workspace invitation.")}
           </p>
         </div>
         <span className="auth-copyright">
-          SOLARMAN WORKSPACE · PRIVATE ENERGY MONITORING
+          {tr("SOLARMAN WORKSPACE · PRIVATE ENERGY MONITORING")}
         </span>
       </div>
     </main>
@@ -241,26 +249,30 @@ function Activate({
   };
   return (
     <main className="activation-page">
+      <div className="auth-language">
+        <LanguageSwitch />
+      </div>
       <Brand />
       <div className="auth-card activation-card">
         {loading ? (
           <Loading />
         ) : error ? (
           <>
-            <h1>Invitation unavailable</h1>
+            <h1>{tr("Invitation unavailable")}</h1>
             <Notice tone="danger">{error}</Notice>
             <Link className="button secondary full" to="/">
-              Back to sign in
+              {tr("Back to sign in")}
             </Link>
           </>
         ) : (
           data && (
             <>
-              <span className="eyebrow">YOU’RE INVITED</span>
+              <span className="eyebrow">{tr("YOU’RE INVITED")}</span>
               <h1>{data.tenant_name}</h1>
               <p>
-                Create your workspace password for <strong>{data.email}</strong>
-                . You will link your own SOLARMAN account next.
+                {tr("Create your workspace password for")}{" "}
+                <strong>{data.email}</strong>
+                {tr(". You will link your own SOLARMAN account next.")}
               </p>
               <form
                 onSubmit={(event) => {
@@ -268,7 +280,7 @@ function Activate({
                 }}
               >
                 <label>
-                  Password
+                  {tr("Password")}
                   <input
                     type="password"
                     minLength={8}
@@ -280,7 +292,7 @@ function Activate({
                   />
                 </label>
                 <label>
-                  Confirm password
+                  {tr("Confirm password")}
                   <input
                     type="password"
                     autoComplete="new-password"
@@ -295,7 +307,7 @@ function Activate({
                     <Loader2 size={17} className="spin" />
                   ) : (
                     <>
-                      Create my workspace <ArrowRight size={17} />
+                      {tr("Create my workspace")} <ArrowRight size={17} />
                     </>
                   )}
                 </button>
@@ -444,7 +456,11 @@ function Dashboard({
     >
       <div className="app-shell">
         <aside className="sidebar">
-          <Link to="/" className="brand-link" aria-label="Solarman overview">
+          <Link
+            to="/"
+            className="brand-link"
+            aria-label={tr("Solarman overview")}
+          >
             <Brand />
           </Link>
           <div className="workspace-label">
@@ -453,10 +469,10 @@ function Dashboard({
             </span>
             <div>
               <strong>{session.tenant.name}</strong>
-              <small>Private workspace</small>
+              <small>{tr("Private workspace")}</small>
             </div>
           </div>
-          <span className="nav-label">WORKSPACE</span>
+          <span className="nav-label">{tr("WORKSPACE")}</span>
           <nav>
             {navigation.map(({ to, label, icon: Icon }) => (
               <NavLink
@@ -468,7 +484,7 @@ function Dashboard({
                 }
               >
                 <Icon size={18} strokeWidth={1.6} />
-                <span>{label}</span>
+                <span>{tr(label)}</span>
                 {to === "/controls" && data?.controller.mode === "active" && (
                   <i className="nav-active-dot" />
                 )}
@@ -478,20 +494,22 @@ function Dashboard({
           <div className="sidebar-bottom">
             <div className="sidebar-tip">
               <CircleHelp size={18} />
-              <p>Solar keeps charging when timed grid charging is off.</p>
+              <p>
+                {tr("Solar keeps charging when timed grid charging is off.")}
+              </p>
             </div>
             <button
               className="user-profile"
               onClick={() => {
                 void logout();
               }}
-              title="Sign out"
+              title={tr("Sign out")}
             >
               <span className="user-avatar">
                 {session.user.email[0].toUpperCase()}
               </span>
               <span>
-                <strong>My account</strong>
+                <strong>{tr("My account")}</strong>
                 <small>{session.user.email}</small>
               </span>
               <LogOut size={16} />
@@ -502,11 +520,12 @@ function Dashboard({
           <header className="topbar">
             <div className="breadcrumb">
               <Sun size={16} />
-              <span>Workspace</span>
+              <span>{tr("Workspace")}</span>
               <ChevronRight size={13} />
-              <strong>{section}</strong>
+              <strong>{tr(section)}</strong>
             </div>
             <div className="topbar-status">
+              <LanguageSwitch />
               {data && <StatusBadge status={data.controller.mode} />}
               <span className="last-reading">
                 <span className="status-dot" />
@@ -514,7 +533,7 @@ function Dashboard({
               </span>
               <button
                 className="mobile-logout"
-                aria-label="Sign out"
+                aria-label={tr("Sign out")}
                 onClick={() => {
                   void logout();
                 }}
@@ -543,9 +562,10 @@ function Dashboard({
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
             <footer className="page-footer">
-              <span>Solarman workspace</span>
+              <span>{tr("Solarman workspace")}</span>
               <span>
-                Times shown in {session.tenant.timezone} · Private account data
+                {tr("Times shown in")} {session.tenant.timezone}{" "}
+                {tr("· Private account data")}
               </span>
             </footer>
           </main>
@@ -560,9 +580,9 @@ function Dashboard({
           ) : (
             <Activity size={18} />
           )}
-          <span>{toast.message}</span>
+          <span>{tr(toast.message)}</span>
           <button
-            aria-label="Dismiss notification"
+            aria-label={tr("Dismiss notification")}
             onClick={() => setToast(null)}
           >
             <X size={16} />
@@ -574,6 +594,7 @@ function Dashboard({
 }
 
 export default function App(): ReactNode {
+  useTranslation();
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState<string | null>(null);

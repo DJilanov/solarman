@@ -1,3 +1,5 @@
+import { tr, locale } from "./i18n";
+import { formatNumber } from "./format";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -66,14 +68,16 @@ export function Overview(): ReactNode {
     return loading ? (
       <Loading />
     ) : (
-      <Notice tone="danger">{error ?? "Unable to load your workspace"}</Notice>
+      <Notice tone="danger">
+        {error ?? tr("Unable to load your workspace")}
+      </Notice>
     );
   const { latest, controller, today, recent } = data;
   const stale = latest
     ? Date.now() - new Date(latest.at).getTime() >
       (controller.pollSeconds + 180) * 1000
     : true;
-  const date = new Intl.DateTimeFormat("en-GB", {
+  const date = new Intl.DateTimeFormat(locale(), {
     timeZone: session.tenant.timezone,
     weekday: "long",
     day: "numeric",
@@ -83,8 +87,8 @@ export function Overview(): ReactNode {
     <>
       <Heading
         eyebrow={date.toUpperCase()}
-        title="Energy overview"
-        description="A clear view of your solar, battery, and home."
+        title={tr("Energy overview")}
+        description={tr("A clear view of your solar, battery, and home.")}
         action={
           <button
             className="button secondary"
@@ -96,7 +100,7 @@ export function Overview(): ReactNode {
             }}
           >
             <RefreshCw size={16} className={busy ? "spin" : ""} />
-            Refresh readings
+            {tr("Refresh readings")}
           </button>
         }
       />
@@ -104,39 +108,45 @@ export function Overview(): ReactNode {
       <SetupNotice controller={controller} />
       {latest && stale && (
         <Notice>
-          These are the last available readings from{" "}
-          {when(latest.at, session.tenant.timezone)}. They are not current live
-          values.
+          {tr("These are the last available readings from")}{" "}
+          {when(latest.at, session.tenant.timezone)}
+          {tr(". They are not current live values.")}
         </Notice>
       )}
       <div className="metrics-grid">
         <Metric
-          label="Solar production"
+          label={tr("Solar production")}
           value={power(latest?.pvW)}
           detail={
-            latest ? "Available solar power" : "Waiting for your inverter"
+            latest
+              ? tr("Available solar power")
+              : tr("Waiting for your inverter")
           }
           icon={Sun}
           color={COLORS.solar}
         />
         <Metric
-          label="House consumption"
+          label={tr("House consumption")}
           value={power(latest?.loadW)}
           detail={
-            latest ? "Current household demand" : "Waiting for your inverter"
+            latest
+              ? tr("Current household demand")
+              : tr("Waiting for your inverter")
           }
           icon={Home}
           color={COLORS.house}
         />
         <Metric
-          label={latest && latest.gridW < 0 ? "Grid export" : "Grid import"}
+          label={
+            latest && latest.gridW < 0 ? tr("Grid export") : tr("Grid import")
+          }
           value={power(latest?.gridW)}
           detail={
             latest
               ? latest.gridW < 0
-                ? "Power sent to the grid"
-                : "Power drawn from the grid"
-              : "Waiting for your inverter"
+                ? tr("Power sent to the grid")
+                : tr("Power drawn from the grid")
+              : tr("Waiting for your inverter")
           }
           icon={PlugZap}
           color={COLORS.grid}
@@ -144,14 +154,14 @@ export function Overview(): ReactNode {
         <Metric
           label={
             latest && latest.batteryW < 0
-              ? "Battery charging"
-              : "Battery output"
+              ? tr("Battery charging")
+              : tr("Battery output")
           }
           value={power(latest?.batteryW)}
           detail={
             latest
-              ? `${latest.soc}% state of charge`
-              : "Waiting for your inverter"
+              ? tr("{{soc}}% state of charge", { soc: latest.soc })
+              : tr("Waiting for your inverter")
           }
           icon={BatteryCharging}
           color={COLORS.battery}
@@ -159,8 +169,8 @@ export function Overview(): ReactNode {
       </div>
       <div className="overview-main">
         <Panel
-          title="Where your power flows"
-          subtitle="The latest readings from your selected inverter"
+          title={tr("Where your power flows")}
+          subtitle={tr("The latest readings from your selected inverter")}
           action={
             <span className={`live-label ${latest && !stale ? "fresh" : ""}`}>
               <span className="status-dot" />
@@ -172,8 +182,10 @@ export function Overview(): ReactNode {
           <div className="flow-footnote">
             <Clock3 size={14} />
             <span>
-              Device sampling every {Math.round(controller.pollSeconds / 60)}{" "}
-              minutes. Refreshing this page uses stored data.
+              {tr(
+                "Device sampling every {{count}} minutes. Refreshing this page uses stored data.",
+                { count: Math.round(controller.pollSeconds / 60) },
+              )}
             </span>
           </div>
         </Panel>
@@ -181,8 +193,8 @@ export function Overview(): ReactNode {
           <BatteryReserve reading={latest} controller={controller} />
         ) : (
           <Panel
-            title="Your connected system"
-            subtitle="Account-specific monitoring"
+            title={tr("Your connected system")}
+            subtitle={tr("Account-specific monitoring")}
           >
             <div className="connection-summary">
               <span className="summary-symbol">
@@ -190,16 +202,20 @@ export function Overview(): ReactNode {
               </span>
               <h3>
                 {controller.deviceSelected
-                  ? "Read-only monitoring"
-                  : "Connect your solar system"}
+                  ? tr("Read-only monitoring")
+                  : tr("Connect your solar system")}
               </h3>
               <p>
                 {controller.deviceSelected
-                  ? "View the readings returned by your inverter in Connection settings. Hardware controls require a verified device profile."
-                  : "Link your own SOLARMAN account, then choose an inverter from your plants."}
+                  ? tr(
+                      "View the readings returned by your inverter in Connection settings. Hardware controls require a verified device profile.",
+                    )
+                  : tr(
+                      "Link your own SOLARMAN account, then choose an inverter from your plants.",
+                    )}
               </p>
               <Link className="button secondary" to="/settings">
-                Connection settings <ArrowRight size={15} />
+                {tr("Connection settings")} <ArrowRight size={15} />
               </Link>
             </div>
           </Panel>
@@ -207,11 +223,12 @@ export function Overview(): ReactNode {
       </div>
       <div className="section-heading">
         <div>
-          <h2>Today at a glance</h2>
-          <p>Estimated energy from valid sample intervals</p>
+          <h2>{tr("Today at a glance")}</h2>
+          <p>{tr("Estimated energy from valid sample intervals")}</p>
         </div>
         <span className="coverage-pill">
-          {Math.round(today.coverage * 100)}% data coverage
+          {Math.round(today.coverage * 100)}
+          {tr("% data coverage")}
         </span>
       </div>
       <div className="daily-metrics">
@@ -220,9 +237,9 @@ export function Overview(): ReactNode {
             <Sun size={18} />
           </span>
           <div>
-            <span>Solar generated</span>
+            <span>{tr("Solar generated")}</span>
             <strong>
-              {energy(today.totals?.solarKwh)} <small>kWh</small>
+              {energy(today.totals?.solarKwh)} <small>{tr("kWh")}</small>
             </strong>
           </div>
         </div>
@@ -231,9 +248,9 @@ export function Overview(): ReactNode {
             <Home size={18} />
           </span>
           <div>
-            <span>House consumption</span>
+            <span>{tr("House consumption")}</span>
             <strong>
-              {energy(today.totals?.loadKwh)} <small>kWh</small>
+              {energy(today.totals?.loadKwh)} <small>{tr("kWh")}</small>
             </strong>
           </div>
         </div>
@@ -242,9 +259,9 @@ export function Overview(): ReactNode {
             <ArrowDownLeft size={18} />
           </span>
           <div>
-            <span>Grid imported</span>
+            <span>{tr("Grid imported")}</span>
             <strong>
-              {energy(today.totals?.importKwh)} <small>kWh</small>
+              {energy(today.totals?.importKwh)} <small>{tr("kWh")}</small>
             </strong>
           </div>
         </div>
@@ -253,30 +270,30 @@ export function Overview(): ReactNode {
             <BatteryCharging size={18} />
           </span>
           <div>
-            <span>Battery charged</span>
+            <span>{tr("Battery charged")}</span>
             <strong>
-              {energy(today.totals?.chargeKwh)} <small>kWh</small>
+              {energy(today.totals?.chargeKwh)} <small>{tr("kWh")}</small>
             </strong>
           </div>
         </div>
       </div>
       <Panel
-        title="Your energy through the day"
-        subtitle="Power and battery state of charge"
+        title={tr("Your energy through the day")}
+        subtitle={tr("Power and battery state of charge")}
         action={
           <Link className="text-link" to="/analytics">
-            Explore analytics <ArrowRight size={14} />
+            {tr("Explore analytics")} <ArrowRight size={14} />
           </Link>
         }
       >
         <PowerChart data={today} timezone={session.tenant.timezone} />
       </Panel>
       <Panel
-        title="Recent activity"
-        subtitle="Your commands and scheduled checks"
+        title={tr("Recent activity")}
+        subtitle={tr("Your commands and scheduled checks")}
         action={
           <Link className="text-link" to="/activity">
-            View all activity <ArrowRight size={14} />
+            {tr("View all activity")} <ArrowRight size={14} />
           </Link>
         }
       >
@@ -304,16 +321,18 @@ export function AnalyticsPage(): ReactNode {
   return (
     <>
       <Heading
-        eyebrow="KNOW YOUR PATTERNS"
-        title="Energy analytics"
-        description="Understand generation, consumption, and your battery over time."
+        eyebrow={tr("KNOW YOUR PATTERNS")}
+        title={tr("Energy analytics")}
+        description={tr(
+          "Understand generation, consumption, and your battery over time.",
+        )}
         action={
           <a
             className="button secondary"
             href={`/api/export.csv?from=${from}&to=${to}`}
           >
             <Download size={16} />
-            Export CSV
+            {tr("Export CSV")}
           </a>
         }
       />
@@ -330,15 +349,15 @@ export function AnalyticsPage(): ReactNode {
               className={preset === name ? "selected" : ""}
               onClick={() => pick(String(name), Number(days))}
             >
-              {name}
+              {tr(String(name))}
             </button>
           ))}
         </div>
         <div className="date-inputs">
           <label>
-            <span>From</span>
+            <span>{tr("From")}</span>
             <input
-              aria-label="From date"
+              aria-label={tr("From date")}
               type="date"
               value={from}
               max={to}
@@ -350,9 +369,9 @@ export function AnalyticsPage(): ReactNode {
           </label>
           <span className="date-separator">—</span>
           <label>
-            <span>To</span>
+            <span>{tr("To")}</span>
             <input
-              aria-label="To date"
+              aria-label={tr("To date")}
               type="date"
               value={to}
               min={from}
@@ -374,40 +393,40 @@ export function AnalyticsPage(): ReactNode {
         <>
           <div className="analytics-metrics">
             <Metric
-              label="Solar energy"
-              value={`${energy(data.totals?.solarKwh)} kWh`}
-              detail="Estimated generation"
+              label={tr("Solar energy")}
+              value={`${energy(data.totals?.solarKwh)} ${tr("kWh")}`}
+              detail={tr("Estimated generation")}
               icon={Sun}
               color={COLORS.solar}
             />
             <Metric
-              label="House energy"
-              value={`${energy(data.totals?.loadKwh)} kWh`}
-              detail="Estimated consumption"
+              label={tr("House energy")}
+              value={`${energy(data.totals?.loadKwh)} ${tr("kWh")}`}
+              detail={tr("Estimated consumption")}
               icon={Home}
               color={COLORS.house}
             />
             <Metric
-              label="Grid import"
-              value={`${energy(data.totals?.importKwh)} kWh`}
-              detail="Estimated energy purchased"
+              label={tr("Grid import")}
+              value={`${energy(data.totals?.importKwh)} ${tr("kWh")}`}
+              detail={tr("Estimated energy purchased")}
               icon={ArrowDownLeft}
               color={COLORS.grid}
             />
             <Metric
-              label="Grid export"
-              value={`${energy(data.totals?.exportKwh)} kWh`}
-              detail="Estimated energy exported"
+              label={tr("Grid export")}
+              value={`${energy(data.totals?.exportKwh)} ${tr("kWh")}`}
+              detail={tr("Estimated energy exported")}
               icon={ArrowUpRight}
               color={COLORS.battery}
             />
           </div>
           <Panel
-            title="Power and state of charge"
-            subtitle="Compare the sources supplying your home"
+            title={tr("Power and state of charge")}
+            subtitle={tr("Compare the sources supplying your home")}
             action={
               <span className="coverage-pill">
-                {data.sampleCount.toLocaleString()} readings
+                {tr("{{count}} readings", { count: data.sampleCount })}
               </span>
             }
           >
@@ -415,47 +434,48 @@ export function AnalyticsPage(): ReactNode {
           </Panel>
           <div className="analytics-bottom">
             <Panel
-              title="Daily energy balance"
-              subtitle="Solar production, consumption, and grid import"
+              title={tr("Daily energy balance")}
+              subtitle={tr("Solar production, consumption, and grid import")}
             >
               <DailyChart data={data} />
             </Panel>
             <Panel
-              title="Battery energy"
-              subtitle="Estimated over the selected range"
+              title={tr("Battery energy")}
+              subtitle={tr("Estimated over the selected range")}
             >
               <div className="energy-breakdown">
                 <div>
                   <span className="small-symbol battery">
                     <BatteryCharging size={20} />
                   </span>
-                  <span>Charged into battery</span>
+                  <span>{tr("Charged into battery")}</span>
                   <strong>
-                    {energy(data.totals?.chargeKwh)} <small>kWh</small>
+                    {energy(data.totals?.chargeKwh)} <small>{tr("kWh")}</small>
                   </strong>
                 </div>
                 <div>
                   <span className="small-symbol house">
                     <Zap size={20} />
                   </span>
-                  <span>Supplied by battery</span>
+                  <span>{tr("Supplied by battery")}</span>
                   <strong>
-                    {energy(data.totals?.dischargeKwh)} <small>kWh</small>
+                    {energy(data.totals?.dischargeKwh)}{" "}
+                    <small>{tr("kWh")}</small>
                   </strong>
                 </div>
               </div>
               <div className="coverage-block">
                 <div>
-                  <span>Data coverage</span>
+                  <span>{tr("Data coverage")}</span>
                   <strong>{Math.round(data.coverage * 100)}%</strong>
                 </div>
                 <div className="coverage-track">
                   <i style={{ width: `${data.coverage * 100}%` }} />
                 </div>
                 <p>
-                  Power is integrated only across valid neighboring samples.
-                  Missing intervals are excluded. These are estimates, not
-                  billing-meter totals.
+                  {tr(
+                    "Power is integrated only across valid neighboring samples. Missing intervals are excluded. These are estimates, not billing-meter totals.",
+                  )}
                 </p>
               </div>
             </Panel>
@@ -485,15 +505,17 @@ export function Controls(): ReactNode {
   return (
     <>
       <Heading
-        eyebrow="YOUR BATTERY, YOUR CONTROL"
-        title="System controls"
-        description="Clear actions with device acknowledgments and readback verification."
+        eyebrow={tr("YOUR BATTERY, YOUR CONTROL")}
+        title={tr("System controls")}
+        description={tr(
+          "Clear actions with device acknowledgments and readback verification.",
+        )}
       />
       <SetupNotice controller={controller} />
       <div className="controls-grid">
         <Panel
-          title="Grid top-up"
-          subtitle="Restore the reserve when solar is insufficient"
+          title={tr("Grid top-up")}
+          subtitle={tr("Restore the reserve when solar is insufficient")}
           action={
             <span className="small-symbol grid">
               <PlugZap size={20} />
@@ -505,14 +527,14 @@ export function Controls(): ReactNode {
               50<span>%</span>
             </strong>
             <div>
-              <span>Battery SOC target</span>
-              <small>2 kW AC charge setting</small>
+              <span>{tr("Battery SOC target")}</span>
+              <small>{tr("2 kW AC charge setting")}</small>
             </div>
           </div>
           <p className="control-description">
-            Top up from the grid below 50%. The controller removes AC permission
-            at the target, and leaves charging to solar when surplus is
-            sufficient.
+            {tr(
+              "Top up from the grid below 50%. The controller removes AC permission at the target, and leaves charging to solar when surplus is sufficient.",
+            )}
           </p>
           <button
             className="button primary full"
@@ -528,18 +550,22 @@ export function Controls(): ReactNode {
           >
             <BatteryCharging size={17} />
             {latest && latest.soc >= 50
-              ? "Battery is already above the reserve"
-              : "Top up to 50%"}
+              ? tr("Battery is already above the reserve")
+              : tr("Top up to 50%")}
           </button>
           <p className="button-helper">
             {!controller.writesEnabled
-              ? "A verified compatible profile and enabled hardware writes are required."
-              : "The inverter’s native 50% charging target remains in control."}
+              ? tr(
+                  "A verified compatible profile and enabled hardware writes are required.",
+                )
+              : tr(
+                  "The inverter’s native 50% charging target remains in control.",
+                )}
           </p>
         </Panel>
         <Panel
-          title="Stop grid charging"
-          subtitle="Return to normal solar and battery use"
+          title={tr("Stop grid charging")}
+          subtitle={tr("Return to normal solar and battery use")}
           action={
             <span className="small-symbol battery">
               <Unplug size={20} />
@@ -550,9 +576,9 @@ export function Controls(): ReactNode {
             <Unplug size={39} strokeWidth={1.2} />
           </div>
           <p className="control-description">
-            Stop the grid top-up and pause automatic top-ups. Solar can still
-            charge the battery, and the configured on-grid reserve remains in
-            place.
+            {tr(
+              "Stop the grid top-up and pause automatic top-ups. Solar can still charge the battery, and the configured on-grid reserve remains in place.",
+            )}
           </p>
           <button
             className="button secondary full"
@@ -562,27 +588,28 @@ export function Controls(): ReactNode {
             }}
           >
             <Pause size={17} />
-            Stop grid charging
+            {tr("Stop grid charging")}
           </button>
           <p className="button-helper">
-            Stops are queued after an in-progress device operation.
+            {tr("Stops are queued after an in-progress device operation.")}
           </p>
         </Panel>
         <Panel
-          title="Reserve automation"
-          subtitle="Evaluate the reserve throughout the day"
+          title={tr("Reserve automation")}
+          subtitle={tr("Evaluate the reserve throughout the day")}
           action={<StatusBadge status={controller.mode} />}
         >
           <div className="automation-route">
-            <span>Solar first</span>
+            <span>{tr("Solar first")}</span>
             <ArrowRight size={15} />
-            <span>Battery to 50%</span>
+            <span>{tr("Battery to 50%")}</span>
             <ArrowRight size={15} />
-            <span>Grid support</span>
+            <span>{tr("Grid support")}</span>
           </div>
           <p className="control-description">
-            Automatic checks use this workspace’s linked account and selected
-            inverter. No other tenant’s account or commands are used.
+            {tr(
+              "Automatic checks use this workspace’s linked account and selected inverter. No other tenant’s account or commands are used.",
+            )}
           </p>
           <button
             className="button secondary full"
@@ -594,17 +621,23 @@ export function Controls(): ReactNode {
             }}
           >
             {controller.paused ? <Play size={16} /> : <Pause size={16} />}
-            {controller.paused ? "Resume automation" : "Pause automation"}
+            {controller.paused
+              ? tr("Resume automation")
+              : tr("Pause automation")}
           </button>
           <p className="button-helper">
             {controller.writesEnabled
-              ? `Evaluation every ${Math.round(controller.pollSeconds / 60)} minutes.`
-              : "The server’s read-only setting prevents physical writes even when evaluations resume."}
+              ? tr("Evaluation every {{count}} minutes.", {
+                  count: Math.round(controller.pollSeconds / 60),
+                })
+              : tr(
+                  "The server’s read-only setting prevents physical writes even when evaluations resume.",
+                )}
           </p>
         </Panel>
         <Panel
-          title="Refresh diagnostics"
-          subtitle="Request fresh readings from your device"
+          title={tr("Refresh diagnostics")}
+          subtitle={tr("Request fresh readings from your device")}
           action={
             <span className="small-symbol solar">
               <RefreshCw size={20} />
@@ -613,25 +646,25 @@ export function Controls(): ReactNode {
         >
           <div className="diagnostic-values">
             <div>
-              <span>Last sample</span>
+              <span>{tr("Last sample")}</span>
               <strong>{age(latest?.at)}</strong>
             </div>
             <div>
-              <span>Grid charge permission</span>
+              <span>{tr("Grid charge permission")}</span>
               <strong>
                 {latest
                   ? latest.acEnabled
-                    ? "Enabled"
-                    : "Disabled"
-                  : "Not read yet"}
+                    ? tr("Enabled")
+                    : tr("Disabled")
+                  : tr("Not read yet")}
               </strong>
             </div>
             <div>
-              <span>Battery temperature</span>
+              <span>{tr("Battery temperature")}</span>
               <strong>
                 {latest
-                  ? `${latest.temperatureC.toFixed(1)}°C`
-                  : "Not read yet"}
+                  ? `${formatNumber(latest.temperatureC, 1)}°C`
+                  : tr("Not read yet")}
               </strong>
             </div>
           </div>
@@ -645,46 +678,52 @@ export function Controls(): ReactNode {
             }}
           >
             <RefreshCw size={16} className={busy ? "spin" : ""} />
-            Read current state
+            {tr("Read current state")}
           </button>
           <p className="button-helper">
-            Uses provider API calls. Displayed values update after a successful
-            device response.
+            {tr(
+              "Uses provider API calls. Displayed values update after a successful device response.",
+            )}
           </p>
         </Panel>
       </div>
       {controller.profile === "bluesun-bse20kh3" && (
         <Notice>
-          The separate 5 kW solar power cap is not configured or verified.
-          Existing inverter and battery limits continue to apply.
+          {tr(
+            "The separate 5 kW solar power cap is not configured or verified. Existing inverter and battery limits continue to apply.",
+          )}
         </Notice>
       )}
       <Panel
-        title="How the reserve works"
-        subtitle="The intended behavior of the supported battery profile"
+        title={tr("How the reserve works")}
+        subtitle={tr("The intended behavior of the supported battery profile")}
       >
         <div className="policy-explainer">
           <div>
             <span>01</span>
-            <h3>Capture the sunshine</h3>
+            <h3>{tr("Capture the sunshine")}</h3>
             <p>
-              Solar supplies your home and charges the battery toward 100% SOC.
+              {tr(
+                "Solar supplies your home and charges the battery toward 100% SOC.",
+              )}
             </p>
           </div>
           <div>
             <span>02</span>
-            <h3>Use stored energy</h3>
+            <h3>{tr("Use stored energy")}</h3>
             <p>
-              With low solar, use battery energy above the configured 50%
-              reserve.
+              {tr(
+                "With low solar, use battery energy above the configured 50% reserve.",
+              )}
             </p>
           </div>
           <div>
             <span>03</span>
-            <h3>Keep the reserve</h3>
+            <h3>{tr("Keep the reserve")}</h3>
             <p>
-              Grid power supports the home at the reserve. Below 50%, a guarded
-              top-up can restore it.
+              {tr(
+                "Grid power supports the home at the reserve. Below 50%, a guarded top-up can restore it.",
+              )}
             </p>
           </div>
         </div>
@@ -712,21 +751,25 @@ export function ActivityPage(): ReactNode {
   return (
     <>
       <Heading
-        eyebrow="A RECORD YOU CAN TRUST"
-        title="System activity"
-        description="Your commands, scheduled checks, and the result of each request."
+        eyebrow={tr("A RECORD YOU CAN TRUST")}
+        title={tr("System activity")}
+        description={tr(
+          "Your commands, scheduled checks, and the result of each request.",
+        )}
       />
       <div className="activity-toolbar">
         <div className="input-with-icon search-box">
           <Search size={17} />
           <input
-            aria-label="Search activity"
-            placeholder="Search commands, results, or actor…"
+            aria-label={tr("Search activity")}
+            placeholder={tr("Search commands, results, or actor…")}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
         </div>
-        <span className="fine-print">Only this workspace’s activity</span>
+        <span className="fine-print">
+          {tr("Only this workspace’s activity")}
+        </span>
       </div>
       {error && <Notice tone="danger">{error}</Notice>}
       <Panel>
@@ -739,11 +782,13 @@ export function ActivityPage(): ReactNode {
         ) : (
           <EmptyState
             icon={Activity}
-            title={query ? "No matching activity" : "No activity yet"}
+            title={query ? tr("No matching activity") : tr("No activity yet")}
             description={
               query
-                ? "Try a different search or clear the filter."
-                : "Completed commands and scheduled checks will appear here."
+                ? tr("Try a different search or clear the filter.")
+                : tr(
+                    "Completed commands and scheduled checks will appear here.",
+                  )
             }
           />
         )}
@@ -751,8 +796,13 @@ export function ActivityPage(): ReactNode {
       <div className="pagination">
         <span>
           {offset
-            ? `Showing entries ${offset + 1}–${offset + (data?.items.length ?? 0)}`
-            : `${data?.items.length ?? 0} recent entries`}
+            ? tr("Showing entries {{from}}–{{to}}", {
+                from: formatNumber(offset + 1),
+                to: formatNumber(offset + (data?.items.length ?? 0)),
+              })
+            : tr("{{count}} recent entries", {
+                count: data?.items.length ?? 0,
+              })}
         </span>
         <div>
           <button
@@ -761,14 +811,14 @@ export function ActivityPage(): ReactNode {
             onClick={() => setOffset(Math.max(0, offset - 25))}
           >
             <ChevronLeft size={15} />
-            Previous
+            {tr("Previous")}
           </button>
           <button
             className="button secondary small"
             disabled={!data?.hasMore}
             onClick={() => setOffset(offset + 25)}
           >
-            Next
+            {tr("Next")}
             <ChevronRight size={15} />
           </button>
         </div>
@@ -866,7 +916,7 @@ export function SettingsPage(): ReactNode {
     return loading ? (
       <Loading />
     ) : (
-      <Notice tone="danger">{error ?? "Unable to load settings"}</Notice>
+      <Notice tone="danger">{error ?? tr("Unable to load settings")}</Notice>
     );
   const points =
     data.readings?.data_list.filter((p) =>
@@ -875,9 +925,11 @@ export function SettingsPage(): ReactNode {
   return (
     <>
       <Heading
-        eyebrow="CONNECTED TO YOUR ACCOUNT"
-        title="Workspace settings"
-        description="Manage the provider account and inverter belonging to your workspace."
+        eyebrow={tr("CONNECTED TO YOUR ACCOUNT")}
+        title={tr("Workspace settings")}
+        description={tr(
+          "Manage the provider account and inverter belonging to your workspace.",
+        )}
       />
       {error && <Notice tone="danger">{error}</Notice>}
       {message && (
@@ -887,8 +939,10 @@ export function SettingsPage(): ReactNode {
       )}
       <div className="settings-grid">
         <Panel
-          title="SOLARMAN account"
-          subtitle="Your provider login is separate from your dashboard login"
+          title={tr("SOLARMAN account")}
+          subtitle={tr(
+            "Your provider login is separate from your dashboard login",
+          )}
           action={
             <span className="small-symbol solar">
               <Link2 size={20} />
@@ -897,26 +951,26 @@ export function SettingsPage(): ReactNode {
         >
           <form onSubmit={submitLink}>
             <label>
-              SOLARMAN email
+              {tr("SOLARMAN email")}
               <input
                 type="email"
                 required
                 autoComplete="off"
-                placeholder="Your SOLARMAN Smart email"
+                placeholder={tr("Your SOLARMAN Smart email")}
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
               />
             </label>
             <label>
-              SOLARMAN password
+              {tr("SOLARMAN password")}
               <input
                 type="password"
                 required
                 autoComplete="off"
                 placeholder={
                   data.account
-                    ? "Enter password to update the link"
-                    : "Your SOLARMAN Smart password"
+                    ? tr("Enter password to update the link")
+                    : tr("Your SOLARMAN Smart password")
                 }
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
@@ -924,14 +978,15 @@ export function SettingsPage(): ReactNode {
             </label>
             <details className="advanced-fields">
               <summary>
-                Personal OpenAPI credentials <ChevronRight size={14} />
+                {tr("Personal OpenAPI credentials")} <ChevronRight size={14} />
               </summary>
               <p>
-                Optional if the host provides licensed API access. Leave blank
-                to keep existing app credentials or use the platform default.
+                {tr(
+                  "Optional if the host provides licensed API access. Leave blank to keep existing app credentials or use the platform default.",
+                )}
               </p>
               <label>
-                App ID
+                {tr("App ID")}
                 <input
                   autoComplete="off"
                   value={appId}
@@ -939,7 +994,7 @@ export function SettingsPage(): ReactNode {
                 />
               </label>
               <label>
-                App Secret
+                {tr("App Secret")}
                 <input
                   type="password"
                   autoComplete="off"
@@ -951,8 +1006,9 @@ export function SettingsPage(): ReactNode {
             <div className="privacy-note">
               <LockKeyhole size={15} />
               <span>
-                Provider credentials are encrypted for this workspace. They are
-                never sent back to your browser.
+                {tr(
+                  "Provider credentials are encrypted for this workspace. They are never sent back to your browser.",
+                )}
               </span>
             </div>
             <button className="button primary full" disabled={Boolean(pending)}>
@@ -962,16 +1018,16 @@ export function SettingsPage(): ReactNode {
                 <>
                   <Link2 size={16} />
                   {data.account
-                    ? "Update account credentials"
-                    : "Link my SOLARMAN account"}
+                    ? tr("Update account credentials")
+                    : tr("Link my SOLARMAN account")}
                 </>
               )}
             </button>
           </form>
         </Panel>
         <Panel
-          title="Connection status"
-          subtitle="Verify access before choosing an inverter"
+          title={tr("Connection status")}
+          subtitle={tr("Verify access before choosing an inverter")}
           action={
             <StatusBadge
               status={data.account?.connection_status ?? "pending"}
@@ -980,27 +1036,27 @@ export function SettingsPage(): ReactNode {
         >
           <div className="diagnostic-values connection-details">
             <div>
-              <span>Linked account</span>
-              <strong>{data.account?.email ?? "Not connected"}</strong>
+              <span>{tr("Linked account")}</span>
+              <strong>{data.account?.email ?? tr("Not connected")}</strong>
             </div>
             <div>
-              <span>Device selected</span>
-              <strong>{data.account?.device_sn ?? "Not selected"}</strong>
+              <span>{tr("Device selected")}</span>
+              <strong>{data.account?.device_sn ?? tr("Not selected")}</strong>
             </div>
             <div>
-              <span>API readiness</span>
+              <span>{tr("API readiness")}</span>
               <strong>
                 {data.controller.apiConfigured
-                  ? "App credentials configured"
-                  : "OpenAPI access required"}
+                  ? tr("App credentials configured")
+                  : tr("OpenAPI access required")}
               </strong>
             </div>
             <div>
-              <span>Hardware writes</span>
+              <span>{tr("Hardware writes")}</span>
               <strong>
                 {data.controller.writesEnabled
-                  ? "Enabled for compatible profile"
-                  : "Disabled"}
+                  ? tr("Enabled for compatible profile")
+                  : tr("Disabled")}
               </strong>
             </div>
           </div>
@@ -1016,7 +1072,7 @@ export function SettingsPage(): ReactNode {
                 target="_blank"
                 rel="noreferrer"
               >
-                SOLARMAN API activation <ExternalLink size={13} />
+                {tr("SOLARMAN API activation")} <ExternalLink size={13} />
               </a>
             </div>
           )}
@@ -1033,23 +1089,25 @@ export function SettingsPage(): ReactNode {
             ) : (
               <RefreshCw size={16} />
             )}
-            Test connection & discover devices
+            {tr("Test connection & discover devices")}
           </button>
         </Panel>
       </div>
       <Panel
-        title="Select your inverter"
-        subtitle="Only devices returned for your linked provider account can be selected"
+        title={tr("Select your inverter")}
+        subtitle={tr(
+          "Only devices returned for your linked provider account can be selected",
+        )}
       >
         <form className="device-form" onSubmit={submitDevice}>
           <label>
-            Inverter
+            {tr("Inverter")}
             <select
               value={device}
               required
               onChange={(event) => setDevice(event.target.value)}
             >
-              <option value="">Choose a discovered inverter</option>
+              <option value="">{tr("Choose a discovered inverter")}</option>
               {data.account?.discovered_devices.map((d) => (
                 <option key={d.deviceSn} value={d.deviceSn}>
                   {d.stationName} · {d.deviceSn}
@@ -1058,19 +1116,21 @@ export function SettingsPage(): ReactNode {
             </select>
           </label>
           <label>
-            Compatibility profile
+            {tr("Compatibility profile")}
             <select
               value={profile}
               onChange={(event) => setProfile(event.target.value)}
             >
-              <option value="monitor-only">Read-only provider readings</option>
+              <option value="monitor-only">
+                {tr("Read-only provider readings")}
+              </option>
               <option value="bluesun-bse20kh3">
-                Bluesun BSE20KH3 · guarded 50% reserve
+                {tr("Bluesun BSE20KH3 · guarded 50% reserve")}
               </option>
             </select>
           </label>
           <label>
-            Inverter timezone
+            {tr("Inverter timezone")}
             <input
               list="timezones"
               required
@@ -1096,19 +1156,19 @@ export function SettingsPage(): ReactNode {
             ) : (
               <Check size={16} />
             )}
-            Save inverter
+            {tr("Save inverter")}
           </button>
         </form>
         <p className="fine-print">
-          The timezone must match the inverter clock. The Bluesun profile checks
-          SelfUse, 2 kW / 50% AC charging, 100% overall SOC and a 50% on-grid
-          reserve. Other models remain read-only.
+          {tr(
+            "The timezone must match the inverter clock. The Bluesun profile checks SelfUse, 2 kW / 50% AC charging, 100% overall SOC and a 50% on-grid reserve. Other models remain read-only.",
+          )}
         </p>
       </Panel>
       <div className="settings-grid">
         <Panel
-          title="Battery policy"
-          subtitle="Supported targets for the Bluesun profile"
+          title={tr("Battery policy")}
+          subtitle={tr("Supported targets for the Bluesun profile")}
         >
           <div className="settings-policy">
             <div>
@@ -1116,8 +1176,8 @@ export function SettingsPage(): ReactNode {
                 <ShieldCheck size={18} />
               </span>
               <div>
-                <strong>50% grid-connected reserve</strong>
-                <p>Use battery energy above the reserve.</p>
+                <strong>{tr("50% grid-connected reserve")}</strong>
+                <p>{tr("Use battery energy above the reserve.")}</p>
               </div>
               <span className="setting-value">50%</span>
             </div>
@@ -1126,8 +1186,8 @@ export function SettingsPage(): ReactNode {
                 <Sun size={18} />
               </span>
               <div>
-                <strong>Solar SOC target</strong>
-                <p>Solar can charge above the grid target.</p>
+                <strong>{tr("Solar SOC target")}</strong>
+                <p>{tr("Solar can charge above the grid target.")}</p>
               </div>
               <span className="setting-value">100%</span>
             </div>
@@ -1136,21 +1196,25 @@ export function SettingsPage(): ReactNode {
                 <PlugZap size={18} />
               </span>
               <div>
-                <strong>AC charging setting</strong>
-                <p>Verified before any hardware write.</p>
+                <strong>{tr("AC charging setting")}</strong>
+                <p>{tr("Verified before any hardware write.")}</p>
               </div>
-              <span className="setting-value">2 kW</span>
+              <span className="setting-value">{tr("2 kW")}</span>
             </div>
           </div>
           <Notice>
-            The separate 5 kW solar power cap remains unverified and is not
-            changed by this application.
+            {tr(
+              "The separate 5 kW solar power cap remains unverified and is not changed by this application.",
+            )}
           </Notice>
         </Panel>
-        <Panel title="API usage" subtitle="Requests made by this workspace">
+        <Panel
+          title={tr("API usage")}
+          subtitle={tr("Requests made by this workspace")}
+        >
           <div className="usage-number">
-            {data.apiUsage.year.toLocaleString()}
-            <span>calls this calendar year</span>
+            {data.apiUsage.year.toLocaleString(locale())}
+            <span>{tr("calls this calendar year")}</span>
           </div>
           <div className="coverage-track">
             <i
@@ -1161,40 +1225,45 @@ export function SettingsPage(): ReactNode {
           </div>
           <div className="usage-facts">
             <span>
-              Last 24 hours{" "}
-              <strong>{data.apiUsage.today.toLocaleString()}</strong>
+              {tr("Last 24 hours")}{" "}
+              <strong>{data.apiUsage.today.toLocaleString(locale())}</strong>
             </span>
             <span>
-              Sampling interval{" "}
+              {tr("Sampling interval")}{" "}
               <strong>
-                {Math.round(data.controller.pollSeconds / 60)} minutes
+                {tr("{{count}} minutes", {
+                  count: Math.round(data.controller.pollSeconds / 60),
+                })}
               </strong>
             </span>
             <span>
-              Projected regular usage{" "}
+              {tr("Projected regular usage")}{" "}
               <strong>
-                {data.controller.annualProjectedCalls.toLocaleString()} / year
+                {data.controller.annualProjectedCalls.toLocaleString(locale())}{" "}
+                {tr("/ year")}
               </strong>
             </span>
           </div>
           <p className="fine-print">
-            The reference personal API plan allows 200,000 calls/year. Shared
-            platform access also has user and plant limits. These counts exclude
-            requests made outside this service; hosted tenants require suitable
-            provider licensing.
+            {tr(
+              "The reference personal API plan allows 200,000 calls/year. Shared platform access also has user and plant limits. These counts exclude requests made outside this service; hosted tenants require suitable provider licensing.",
+            )}
           </p>
         </Panel>
       </div>
       {data.readings && (
         <Panel
-          title="Provider readings"
-          subtitle={`Collected ${when(data.readings.collected_at, session.tenant.timezone)} · Read-only values returned for your selected device`}
+          title={tr("Provider readings")}
+          subtitle={tr(
+            "Collected {{time}} · Read-only values returned for your selected device",
+            { time: when(data.readings.collected_at, session.tenant.timezone) },
+          )}
         >
           <div className="input-with-icon search-box">
             <Search size={17} />
             <input
-              aria-label="Search device readings"
-              placeholder="Find a parameter…"
+              aria-label={tr("Search device readings")}
+              placeholder={tr("Find a parameter…")}
               value={pointSearch}
               onChange={(event) => setPointSearch(event.target.value)}
             />
@@ -1203,9 +1272,9 @@ export function SettingsPage(): ReactNode {
             <table>
               <thead>
                 <tr>
-                  <th>Parameter</th>
-                  <th>Value</th>
-                  <th>Unit</th>
+                  <th>{tr("Parameter")}</th>
+                  <th>{tr("Value")}</th>
+                  <th>{tr("Unit")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1224,7 +1293,7 @@ export function SettingsPage(): ReactNode {
           </div>
           {points.length > 100 && (
             <p className="fine-print">
-              Showing the first 100 results. Search to narrow the list.
+              {tr("Showing the first 100 results. Search to narrow the list.")}
             </p>
           )}
         </Panel>
@@ -1236,9 +1305,9 @@ export function SettingsPage(): ReactNode {
 function InfoBlock(): ReactNode {
   return (
     <p>
-      Your Smart login is linked. OpenAPI app credentials are additionally
-      required for monitoring and commands. Request your own API access or ask
-      the host to configure licensed platform access.
+      {tr(
+        "Your Smart login is linked. OpenAPI app credentials are additionally required for monitoring and commands. Request your own API access or ask the host to configure licensed platform access.",
+      )}
     </p>
   );
 }
@@ -1303,15 +1372,17 @@ export function WorkspacesPage(): ReactNode {
   return (
     <>
       <Heading
-        eyebrow="PLATFORM ADMINISTRATION"
-        title="Hosted workspaces"
-        description="Invite users into isolated workspaces connected to their own SOLARMAN accounts."
+        eyebrow={tr("PLATFORM ADMINISTRATION")}
+        title={tr("Hosted workspaces")}
+        description={tr(
+          "Invite users into isolated workspaces connected to their own SOLARMAN accounts.",
+        )}
       />
       {error && <Notice tone="danger">{error}</Notice>}
       <div className="settings-grid">
         <Panel
-          title="Invite a user"
-          subtitle="An invitation creates a new, separate workspace"
+          title={tr("Invite a user")}
+          subtitle={tr("An invitation creates a new, separate workspace")}
         >
           <form
             onSubmit={(event) => {
@@ -1319,17 +1390,17 @@ export function WorkspacesPage(): ReactNode {
             }}
           >
             <label>
-              Workspace name
+              {tr("Workspace name")}
               <input
                 required
                 maxLength={100}
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="For example, Family home"
+                placeholder={tr("For example, Family home")}
               />
             </label>
             <label>
-              User email
+              {tr("User email")}
               <input
                 type="email"
                 required
@@ -1345,17 +1416,18 @@ export function WorkspacesPage(): ReactNode {
               ) : (
                 <Plus size={16} />
               )}
-              Create private invitation
+              {tr("Create private invitation")}
             </button>
           </form>
           {invitation && (
             <div className="invitation-result">
               <Notice tone="success">
-                Invitation created. Share this link privately; it expires in 24
-                hours.
+                {tr(
+                  "Invitation created. Share this link privately; it expires in 24 hours.",
+                )}
               </Notice>
               <input
-                aria-label="Invitation link"
+                aria-label={tr("Invitation link")}
                 readOnly
                 value={invitation}
                 onFocus={(event) => event.target.select()}
@@ -1367,46 +1439,51 @@ export function WorkspacesPage(): ReactNode {
                 }}
               >
                 {copied ? <Check size={15} /> : <Copy size={15} />}
-                {copied ? "Copied" : "Copy invitation link"}
+                {copied ? tr("Copied") : tr("Copy invitation link")}
               </button>
             </div>
           )}
         </Panel>
         <Panel
-          title="Private by design"
-          subtitle="Each user connects their own provider account"
+          title={tr("Private by design")}
+          subtitle={tr("Each user connects their own provider account")}
         >
           <div className="tenant-principles">
             <div>
               <ShieldCheck size={22} />
-              <h3>Scoped to the workspace</h3>
+              <h3>{tr("Scoped to the workspace")}</h3>
               <p>
-                Readings, exports, activity and commands are scoped to the
-                signed-in user’s tenant.
+                {tr(
+                  "Readings, exports, activity and commands are scoped to the signed-in user’s tenant.",
+                )}
               </p>
             </div>
             <div>
               <LockKeyhole size={22} />
-              <h3>Separate credentials</h3>
+              <h3>{tr("Separate credentials")}</h3>
               <p>
-                Local passwords are hashed. Linked provider credentials are
-                encrypted and tokens are isolated by account.
+                {tr(
+                  "Local passwords are hashed. Linked provider credentials are encrypted and tokens are isolated by account.",
+                )}
               </p>
             </div>
             <div>
               <Building2 size={22} />
-              <h3>One controller per inverter</h3>
+              <h3>{tr("One controller per inverter")}</h3>
               <p>
-                A device cannot be bound to independent workspaces that could
-                issue conflicting commands.
+                {tr(
+                  "A device cannot be bound to independent workspaces that could issue conflicting commands.",
+                )}
               </p>
             </div>
           </div>
         </Panel>
       </div>
       <Panel
-        title="Workspaces"
-        subtitle="Platform account metadata only; inverter data stays private"
+        title={tr("Workspaces")}
+        subtitle={tr(
+          "Platform account metadata only; inverter data stays private",
+        )}
       >
         {!data ? (
           loading ? (
@@ -1417,10 +1494,10 @@ export function WorkspacesPage(): ReactNode {
             <table>
               <thead>
                 <tr>
-                  <th>Workspace</th>
-                  <th>Members</th>
-                  <th>Connection</th>
-                  <th>Created</th>
+                  <th>{tr("Workspace")}</th>
+                  <th>{tr("Members")}</th>
+                  <th>{tr("Connection")}</th>
+                  <th>{tr("Created")}</th>
                 </tr>
               </thead>
               <tbody>

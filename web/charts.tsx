@@ -1,3 +1,4 @@
+import { tr, locale } from "./i18n";
 import { useState, type ReactNode } from "react";
 import {
   Area,
@@ -12,7 +13,7 @@ import {
   YAxis,
 } from "recharts";
 import type { Analytics } from "./types";
-import { COLORS, when } from "./format";
+import { COLORS, when, formatNumber } from "./format";
 
 export function PowerChartContent({
   data,
@@ -43,7 +44,7 @@ export function PowerChartContent({
     soc: "Battery SOC",
   };
   const time = (at: number): string =>
-    new Intl.DateTimeFormat("en-GB", {
+    new Intl.DateTimeFormat(locale(), {
       timeZone: timezone,
       hour: "2-digit",
       minute: "2-digit",
@@ -59,7 +60,7 @@ export function PowerChartContent({
             onClick={() => setVisible((old) => ({ ...old, [key]: !old[key] }))}
           >
             <i style={{ background: COLORS[key as keyof typeof COLORS] }} />
-            {labels[key]}
+            {tr(labels[key])}
           </button>
         ))}
       </div>
@@ -87,11 +88,12 @@ export function PowerChartContent({
             />
             <YAxis
               yAxisId="power"
+              tickFormatter={(value: number) => formatNumber(value, 2, 0)}
               tick={{ fill: "#83929c", fontSize: 11 }}
               axisLine={false}
               tickLine={false}
-              width={43}
-              unit=" kW"
+              width={60}
+              unit={` ${tr("kW")}`}
             />
             <YAxis
               yAxisId="soc"
@@ -114,7 +116,7 @@ export function PowerChartContent({
               labelFormatter={(label) => when(Number(label), timezone)}
               formatter={(value, name) => [
                 typeof value === "number"
-                  ? `${value.toFixed(2)}${name === "Battery SOC" ? "%" : " kW"}`
+                  ? `${formatNumber(value, 2)}${name === tr("Battery SOC") ? "%" : ` ${tr("kW")}`}`
                   : "—",
                 name,
               ]}
@@ -124,7 +126,7 @@ export function PowerChartContent({
                 yAxisId="power"
                 type="linear"
                 dataKey="solar"
-                name="Solar"
+                name={tr("Solar")}
                 stroke={COLORS.solar}
                 fill={COLORS.solar}
                 fillOpacity={0.07}
@@ -141,7 +143,7 @@ export function PowerChartContent({
                   yAxisId="power"
                   type="linear"
                   dataKey={key}
-                  name={labels[key]}
+                  name={tr(labels[key])}
                   stroke={COLORS[key]}
                   dot={false}
                   strokeWidth={1.8}
@@ -154,7 +156,7 @@ export function PowerChartContent({
                 yAxisId="soc"
                 type="linear"
                 dataKey="soc"
-                name="Battery SOC"
+                name={tr("Battery SOC")}
                 stroke={COLORS.soc}
                 strokeDasharray="4 4"
                 dot={false}
@@ -166,8 +168,10 @@ export function PowerChartContent({
         </ResponsiveContainer>
       </div>
       <p className="chart-caption">
-        Grid: positive imports, negative exports. Battery: positive supplies
-        your home, negative charges. Times in {timezone}.
+        {tr(
+          "Grid: positive imports, negative exports. Battery: positive supplies your home, negative charges. Times in",
+        )}{" "}
+        {timezone}.
       </p>
     </>
   );
@@ -189,17 +193,24 @@ export function DailyChartContent({ data }: { data: Analytics }): ReactNode {
           />
           <XAxis
             dataKey="day"
-            tickFormatter={(day: string) => day.slice(5)}
+            tickFormatter={(day: string) =>
+              new Intl.DateTimeFormat(locale(), {
+                day: "numeric",
+                month: "short",
+                timeZone: "UTC",
+              }).format(new Date(`${day}T12:00:00Z`))
+            }
             axisLine={false}
             tickLine={false}
             tick={{ fill: "#83929c", fontSize: 11 }}
           />
           <YAxis
+            tickFormatter={(value: number) => formatNumber(value, 2, 0)}
             axisLine={false}
             tickLine={false}
-            unit=" kWh"
+            unit={` ${tr("kWh")}`}
             tick={{ fill: "#83929c", fontSize: 11 }}
-            width={58}
+            width={70}
           />
           <Tooltip
             contentStyle={{
@@ -207,23 +218,31 @@ export function DailyChartContent({ data }: { data: Analytics }): ReactNode {
               border: "1px solid #34434c",
               borderRadius: 10,
             }}
-            formatter={(value) => `${Number(value).toFixed(2)} kWh`}
+            labelFormatter={(day) =>
+              new Intl.DateTimeFormat(locale(), {
+                dateStyle: "medium",
+                timeZone: "UTC",
+              }).format(new Date(`${String(day)}T12:00:00Z`))
+            }
+            formatter={(value) =>
+              `${formatNumber(Number(value), 2)} ${tr("kWh")}`
+            }
           />
           <Bar
             dataKey="solarKwh"
-            name="Solar"
+            name={tr("Solar")}
             fill={COLORS.solar}
             radius={[3, 3, 0, 0]}
           />
           <Bar
             dataKey="loadKwh"
-            name="House"
+            name={tr("House")}
             fill={COLORS.house}
             radius={[3, 3, 0, 0]}
           />
           <Bar
             dataKey="importKwh"
-            name="Grid import"
+            name={tr("Grid import")}
             fill={COLORS.grid}
             radius={[3, 3, 0, 0]}
           />
