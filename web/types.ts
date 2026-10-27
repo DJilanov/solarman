@@ -1,0 +1,114 @@
+export interface Session {
+  user: { id: string; email: string; platformAdmin: boolean };
+  tenant: { id: string; name: string; timezone: string };
+  csrfToken: string;
+}
+export interface ControllerStatus {
+  apiConfigured: boolean;
+  writesEnabled: boolean;
+  mode: "setup" | "stopping" | "error" | "paused" | "active" | "read-only";
+  paused: boolean;
+  manualTopup: boolean;
+  lastSuccessAt: string | null;
+  error: string | null;
+  setupError: string | null;
+  pollSeconds: number;
+  annualProjectedCalls: number;
+  policy: {
+    reserveSoc: number;
+    solarTargetSoc: number;
+    acChargeKw: number;
+    solarPowerCapVerified: boolean;
+  };
+  profile: string;
+  deviceSelected: boolean;
+  timezone: string;
+}
+export interface Measurement {
+  at: string;
+  soc: number;
+  pvW: number;
+  loadW: number;
+  gridW: number;
+  batteryW: number;
+  temperatureC: number;
+  acEnabled: boolean;
+}
+export interface Energy {
+  solarKwh: number;
+  loadKwh: number;
+  importKwh: number;
+  exportKwh: number;
+  chargeKwh: number;
+  dischargeKwh: number;
+  coveredSeconds: number;
+}
+export interface Point {
+  at: number;
+  pvW: number | null;
+  loadW: number | null;
+  gridW: number | null;
+  batteryW: number | null;
+  soc: number | null;
+  temperatureC: number | null;
+}
+export interface Analytics {
+  start: string;
+  end: string;
+  timezone: string;
+  estimated: boolean;
+  sampleCount: number;
+  coverage: number;
+  totals: Energy | null;
+  daily: (Energy & { day: string })[];
+  points: Point[];
+}
+export interface Command {
+  id: string;
+  actor: string;
+  action: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
+  message: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+export interface OverviewData {
+  latest: Measurement | null;
+  controller: ControllerStatus;
+  today: Analytics;
+  recent: Command[];
+}
+export interface SettingsData {
+  controller: ControllerStatus;
+  timezone: string;
+  apiUsage: { today: number; year: number };
+  quota: number;
+  profile: string;
+  release: string;
+  account: {
+    id: string;
+    email: string;
+    device_sn: string | null;
+    profile: string;
+    connection_status: string;
+    connection_message: string | null;
+    validated_at: string | null;
+    timezone: string;
+    discovered_devices: {
+      deviceSn: string;
+      stationId: number;
+      stationName: string;
+    }[];
+  } | null;
+  readings: {
+    collected_at: string;
+    data_list: { key: string; name: string; value: string; unit: string }[];
+  } | null;
+  platformApiConfigured: boolean;
+}
+export interface ActivityData {
+  items: Command[];
+  hasMore: boolean;
+  offset: number;
+}
+export type Action = "refresh" | "topup" | "stop" | "pause" | "resume";

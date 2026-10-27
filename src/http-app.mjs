@@ -1,0 +1,628 @@
+import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  LoginLimiter,
+  verifyPassword,
+  hashPassword,
+  tokenHash,
+  randomToken,
+  readCookie,
+  equalToken,
+} from "./auth.mjs";
+import { summarize, localDay, dayStart, addDays } from "./analytics.mjs";
+
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+/** @param {import('node:http').IncomingMessage} request @returns {Promise<Record<string, unknown>>} */
+async function bodyJson(request) {
+  if (!request.headers["content-type"]?.startsWith("application/json"))
+    throw new HttpError(415, "JSON content is required");
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of request) {
+    length += chunk.length;
+    if (length > 8192) throw new HttpError(413, "Request is too large");
+    chunks.push(chunk);
+  }
+  let body;
+  try {
+    body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new HttpError(400, "Invalid JSON");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    throw new HttpError(400, "Invalid request");
+  return body;
+}
+
+/** @param {import('node:http').ServerResponse} response @param {number} status @param {object} value @returns {void} */
+function json(response, status, value) {
+  response.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(JSON.stringify(value));
+}
+
+/** @param {object} row @returns {object | null} */
+function measurement(row) {
+  return row
+    ? {
+        at: new Date(row.observed_at).toISOString(),
+        soc: Number(row.soc),
+        pvW: Number(row.pv_w),
+        loadW: Number(row.load_w),
+        gridW: Number(row.grid_w),
+        batteryW: Number(row.battery_w),
+        temperatureC: Number(row.temperature_c),
+        acEnabled: row.ac_enabled,
+      }
+    : null;
+}
+
+/** @param {{ pool: import('pg').Pool, hub: object, config: object }} options @returns {function} */
+export function createApp({ pool, hub, config }) {
+  const limiter = new LoginLimiter();
+  const cookieName = config.secure
+    ? "__Host-solarman_session"
+    : "solarman_session";
+  const staticRoot = path.resolve(
+    fileURLToPath(new URL("../dist/web/", import.meta.url)),
+  );
+  const cookie = (token, maxAge = 604800) =>
+    `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${config.secure ? "; Secure" : ""}`;
+  const latest = async (tenantId) =>
+    (
+      await pool.query(
+        `SELECT m.* FROM measurements m
+    JOIN solarman_accounts a ON a.id=m.account_id AND a.tenant_id=m.tenant_id
+    WHERE m.tenant_id=$1 AND m.device=a.device_sn ORDER BY m.observed_at DESC LIMIT 1`,
+        [tenantId],
+      )
+    ).rows[0] ?? null;
+  const getSession = async (request) => {
+    const token = readCookie(request.headers.cookie, cookieName);
+    if (!token) return null;
+    return (
+      (
+        await pool.query(
+          `SELECT s.token_hash,s.csrf_token,u.id,u.email,u.tenant_id,u.platform_admin,t.name AS tenant_name,a.timezone FROM sessions s
+      JOIN users u ON u.id=s.user_id JOIN tenants t ON t.id=u.tenant_id
+      LEFT JOIN solarman_accounts a ON a.tenant_id=u.tenant_id
+      WHERE s.token_hash=$1 AND s.expires_at>now()`,
+          [tokenHash(token)],
+        )
+      ).rows[0] ?? null
+    );
+  };
+  const sessionData = (user, csrfToken) => ({
+    user: {
+      id: user.id,
+      email: user.email,
+      platformAdmin: user.platform_admin,
+    },
+    tenant: {
+      id: user.tenant_id,
+      name: user.tenant_name,
+      timezone: user.timezone ?? "Europe/Sofia",
+    },
+    csrfToken,
+  });
+  const analytics = async (
+    tenantId,
+    runtime,
+    from,
+    to,
+    fullResolution = false,
+  ) => {
+    let start;
+    let end;
+    try {
+      start = dayStart(from, runtime.timezone);
+      end = Math.min(Date.now(), dayStart(addDays(to, 1), runtime.timezone));
+    } catch {
+      throw new HttpError(400, "Use a valid date range");
+    }
+    if (start >= end || end - start > 366 * 86400_000 || to < from)
+      throw new HttpError(400, "Choose a past date range of up to one year");
+    const current = await latest(tenantId);
+    const device = runtime.device ?? current?.device ?? "";
+    const rows = await pool.query(
+      `SELECT observed_at,soc,temperature_c,pv_w,load_w,grid_w,battery_w
+      FROM measurements WHERE tenant_id=$1 AND account_id=$2 AND device=$3 AND observed_at BETWEEN $4 AND $5 ORDER BY observed_at`,
+      [
+        tenantId,
+        runtime.account?.id ?? null,
+        device,
+        new Date(start - runtime.pollMs * 2),
+        new Date(end + runtime.pollMs * 2),
+      ],
+    );
+    return summarize(rows.rows, {
+      start,
+      end,
+      pollMs: runtime.pollMs,
+      timezone: runtime.timezone,
+      fullResolution,
+    });
+  };
+  return async (request, response) => {
+    response.setHeader("x-content-type-options", "nosniff");
+    response.setHeader("x-frame-options", "DENY");
+    response.setHeader("referrer-policy", "same-origin");
+    response.setHeader(
+      "content-security-policy",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    );
+    if (config.secure)
+      response.setHeader("strict-transport-security", "max-age=31536000");
+    try {
+      const url = new URL(request.url ?? "/", config.origin);
+      const pathname = url.pathname;
+      if (pathname.startsWith("/solarman/callback/")) {
+        const callback =
+          /^\/solarman\/callback\/([a-f0-9-]{36})\/[a-f0-9]{64}$/.exec(
+            pathname,
+          );
+        if (!callback) {
+          response.writeHead(404);
+          response.end();
+          return;
+        }
+        await hub.callback(request, response, callback[1]);
+        return;
+      }
+      if (pathname === "/healthz" && request.method === "GET") {
+        await pool.query("SELECT 1");
+        json(response, 200, {
+          status: hub.stopping ? "stopping" : "ok",
+          release: process.env.RELEASE_SHA ?? "development",
+        });
+        return;
+      }
+      if (!pathname.startsWith("/api/")) {
+        if (!["GET", "HEAD"].includes(request.method))
+          throw new HttpError(405, "Method not allowed");
+        let relative;
+        try {
+          relative = decodeURIComponent(pathname);
+        } catch {
+          throw new HttpError(400, "Invalid path");
+        }
+        const file = path.resolve(staticRoot, `.${relative}`);
+        if (!file.startsWith(`${staticRoot}${path.sep}`) && file !== staticRoot)
+          throw new HttpError(404, "Not found");
+        const extension = path.extname(file);
+        const mime = {
+          ".js": "text/javascript",
+          ".css": "text/css",
+          ".svg": "image/svg+xml",
+          ".png": "image/png",
+          ".ico": "image/x-icon",
+          ".woff2": "font/woff2",
+          ".json": "application/json",
+          ".html": "text/html",
+        };
+        let bytes;
+        try {
+          bytes = await readFile(
+            extension ? file : path.join(staticRoot, "index.html"),
+          );
+        } catch {
+          throw new HttpError(404, "Page not found");
+        }
+        response.writeHead(200, {
+          "content-type": `${mime[extension] ?? "text/html"}; charset=utf-8`,
+          "cache-control": pathname.startsWith("/assets/")
+            ? "public, max-age=31536000, immutable"
+            : "no-cache",
+        });
+        response.end(request.method === "HEAD" ? undefined : bytes);
+        return;
+      }
+      if (request.method === "POST" && request.headers.origin !== config.origin)
+        throw new HttpError(403, "Request origin is not allowed");
+      if (pathname === "/api/auth/login" && request.method === "POST") {
+        const body = await bodyJson(request);
+        if (
+          typeof body.email !== "string" ||
+          typeof body.password !== "string" ||
+          body.email.length > 254 ||
+          body.password.length > 1024
+        ) {
+          throw new HttpError(400, "Enter your email address and password");
+        }
+        const trustedProxy = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(
+          request.socket.remoteAddress,
+        );
+        const forwarded =
+          trustedProxy && typeof request.headers["x-real-ip"] === "string"
+            ? request.headers["x-real-ip"]
+            : request.socket.remoteAddress;
+        const key = `ip:${forwarded ?? "unknown"}`;
+        if (!limiter.allow(key)) {
+          response.setHeader("retry-after", "900");
+          throw new HttpError(
+            429,
+            "Too many attempts. Try again in 15 minutes.",
+          );
+        }
+        const email = body.email.trim().toLowerCase();
+        const user = (
+          await pool.query(
+            `SELECT u.id,u.email,u.password_hash,u.tenant_id,u.platform_admin,t.name AS tenant_name,a.timezone
+          FROM users u JOIN tenants t ON t.id=u.tenant_id LEFT JOIN solarman_accounts a ON a.tenant_id=u.tenant_id WHERE lower(u.email)=$1`,
+            [email],
+          )
+        ).rows[0];
+        if (!(await verifyPassword(body.password, user?.password_hash ?? null)))
+          throw new HttpError(401, "Email or password is incorrect");
+        limiter.clear(key);
+        const token = randomToken();
+        const csrfToken = randomToken();
+        await pool.query("DELETE FROM sessions WHERE expires_at<now()");
+        await pool.query(
+          "INSERT INTO sessions (token_hash,user_id,csrf_token,expires_at) VALUES ($1,$2,$3,now()+interval '7 days')",
+          [tokenHash(token), user.id, csrfToken],
+        );
+        response.setHeader("set-cookie", cookie(token));
+        json(response, 200, sessionData(user, csrfToken));
+        return;
+      }
+      if (pathname === "/api/invitation" && request.method === "GET") {
+        const token = url.searchParams.get("token");
+        if (!token || !/^[a-f0-9]{64}$/.test(token))
+          throw new HttpError(404, "Invitation is invalid or expired");
+        const invite = (
+          await pool.query(
+            "SELECT email,tenant_name FROM invitations WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now()",
+            [tokenHash(token)],
+          )
+        ).rows[0];
+        if (!invite)
+          throw new HttpError(404, "Invitation is invalid or expired");
+        json(response, 200, invite);
+        return;
+      }
+      if (pathname === "/api/auth/activate" && request.method === "POST") {
+        const body = await bodyJson(request);
+        if (
+          typeof body.token !== "string" ||
+          !/^[a-f0-9]{64}$/.test(body.token) ||
+          typeof body.password !== "string" ||
+          body.password.length < 8 ||
+          body.password.length > 1024
+        )
+          throw new HttpError(
+            400,
+            "Use a valid invitation and a password of at least 8 characters",
+          );
+        if (
+          !(
+            await pool.query(
+              "SELECT 1 FROM invitations WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now()",
+              [tokenHash(body.token)],
+            )
+          ).rowCount
+        )
+          throw new HttpError(400, "Invitation is invalid or expired");
+        const passwordHash = await hashPassword(body.password);
+        const client = await pool.connect();
+        let user;
+        let sessionToken;
+        let csrfToken;
+        try {
+          await client.query("BEGIN");
+          const invitation = (
+            await client.query(
+              "SELECT * FROM invitations WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now() FOR UPDATE",
+              [tokenHash(body.token)],
+            )
+          ).rows[0];
+          if (!invitation)
+            throw new HttpError(400, "Invitation is invalid or expired");
+          const tenantId = randomUUID();
+          const id = randomUUID();
+          await client.query("INSERT INTO tenants (id,name) VALUES ($1,$2)", [
+            tenantId,
+            invitation.tenant_name,
+          ]);
+          await client.query(
+            "INSERT INTO users (id,tenant_id,email,password_hash) VALUES ($1,$2,$3,$4)",
+            [id, tenantId, invitation.email, passwordHash],
+          );
+          await client.query(
+            "INSERT INTO controller_state (tenant_id) VALUES ($1)",
+            [tenantId],
+          );
+          await client.query(
+            "UPDATE invitations SET used_at=now() WHERE token_hash=$1",
+            [tokenHash(body.token)],
+          );
+          sessionToken = randomToken();
+          csrfToken = randomToken();
+          await client.query(
+            "INSERT INTO sessions (token_hash,user_id,csrf_token,expires_at) VALUES ($1,$2,$3,now()+interval '7 days')",
+            [tokenHash(sessionToken), id, csrfToken],
+          );
+          await client.query("COMMIT");
+          user = {
+            id,
+            email: invitation.email,
+            tenant_id: tenantId,
+            tenant_name: invitation.tenant_name,
+            platform_admin: false,
+          };
+        } catch (error) {
+          await client.query("ROLLBACK");
+          if (error?.code === "23505")
+            throw new HttpError(
+              409,
+              "This account already exists. Sign in instead.",
+            );
+          throw error;
+        } finally {
+          client.release();
+        }
+        response.setHeader("set-cookie", cookie(sessionToken));
+        json(response, 200, sessionData(user, csrfToken));
+        return;
+      }
+      const session = await getSession(request);
+      if (!session) throw new HttpError(401, "Sign in to continue");
+      if (
+        request.method === "POST" &&
+        !equalToken(request.headers["x-csrf-token"], session.csrf_token)
+      )
+        throw new HttpError(403, "Refresh this page and try again");
+      if (pathname === "/api/auth/session" && request.method === "GET") {
+        json(response, 200, sessionData(session, session.csrf_token));
+        return;
+      }
+      if (pathname === "/api/auth/logout" && request.method === "POST") {
+        await pool.query("DELETE FROM sessions WHERE token_hash=$1", [
+          session.token_hash,
+        ]);
+        response.setHeader("set-cookie", cookie("", 0));
+        json(response, 200, { ok: true });
+        return;
+      }
+      const runtime = await hub.forTenant(session.tenant_id);
+      if (pathname === "/api/overview" && request.method === "GET") {
+        const today = localDay(Date.now(), runtime.timezone);
+        const [current, stats, recent] = await Promise.all([
+          latest(session.tenant_id),
+          analytics(session.tenant_id, runtime, today, today),
+          pool.query(
+            "SELECT id,actor,action,status,message,created_at,completed_at FROM command_executions WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 5",
+            [session.tenant_id],
+          ),
+        ]);
+        json(response, 200, {
+          latest: measurement(current),
+          controller: runtime.status(),
+          today: stats,
+          recent: recent.rows,
+        });
+        return;
+      }
+      if (pathname === "/api/analytics" && request.method === "GET") {
+        const today = localDay(Date.now(), runtime.timezone);
+        const result = await analytics(
+          session.tenant_id,
+          runtime,
+          url.searchParams.get("from") ?? today,
+          url.searchParams.get("to") ?? today,
+        );
+        json(response, 200, result);
+        return;
+      }
+      if (pathname === "/api/export.csv" && request.method === "GET") {
+        const today = localDay(Date.now(), runtime.timezone);
+        const result = await analytics(
+          session.tenant_id,
+          runtime,
+          url.searchParams.get("from") ?? today,
+          url.searchParams.get("to") ?? today,
+          true,
+        );
+        const header =
+          "timestamp_utc,solar_w,house_w,grid_import_positive_w,battery_discharge_positive_w,soc_percent,temperature_c";
+        const lines = result.points.map((p) =>
+          [
+            new Date(p.at).toISOString(),
+            p.pvW,
+            p.loadW,
+            p.gridW,
+            p.batteryW,
+            p.soc,
+            p.temperatureC,
+          ].join(","),
+        );
+        response.writeHead(200, {
+          "content-type": "text/csv; charset=utf-8",
+          "content-disposition":
+            'attachment; filename="solarman-measurements.csv"',
+          "cache-control": "no-store",
+        });
+        response.end([header, ...lines].join("\n"));
+        return;
+      }
+      if (pathname === "/api/activity" && request.method === "GET") {
+        const offsetText = url.searchParams.get("offset") ?? "0";
+        if (!/^\d{1,6}$/.test(offsetText))
+          throw new HttpError(400, "Invalid page");
+        const offset = Number(offsetText);
+        const search = (url.searchParams.get("search") ?? "").slice(0, 100);
+        const result = await pool.query(
+          `SELECT id,actor,action,status,message,detail,created_at,completed_at FROM command_executions
+          WHERE tenant_id=$1 AND ($2='' OR action ILIKE $3 OR actor ILIKE $3 OR message ILIKE $3)
+          ORDER BY created_at DESC LIMIT 26 OFFSET $4`,
+          [session.tenant_id, search, `%${search}%`, offset],
+        );
+        json(response, 200, {
+          items: result.rows.slice(0, 25),
+          hasMore: result.rows.length > 25,
+          offset,
+        });
+        return;
+      }
+      if (pathname === "/api/settings" && request.method === "GET") {
+        const usage = await pool.query(
+          `SELECT count(*) FILTER (WHERE created_at>=now()-interval '24 hours')::integer AS today,
+          count(*) FILTER (WHERE created_at>=date_trunc('year',now()))::integer AS year FROM api_requests WHERE tenant_id=$1`,
+          [session.tenant_id],
+        );
+        json(response, 200, {
+          controller: runtime.status(),
+          timezone: runtime.timezone,
+          apiUsage: usage.rows[0],
+          quota: 200000,
+          profile: runtime.account?.profile ?? "monitor-only",
+          ...(await hub.accountInfo(session.tenant_id)),
+          release: process.env.RELEASE_SHA ?? "development",
+        });
+        return;
+      }
+      if (
+        [
+          "/api/account/link",
+          "/api/account/discover",
+          "/api/account/device",
+        ].includes(pathname) &&
+        request.method === "POST"
+      ) {
+        const body = await bodyJson(request);
+        try {
+          await hub.updateAccount(session.tenant_id, async () => {
+            if (pathname.endsWith("/link"))
+              await hub.connect(session.tenant_id, body);
+            if (pathname.endsWith("/discover")) {
+              await hub.discover(session.tenant_id);
+              await hub.reload(session.tenant_id);
+            }
+            if (pathname.endsWith("/device"))
+              await hub.bind(session.tenant_id, body);
+          });
+        } catch (error) {
+          throw new HttpError(
+            409,
+            error instanceof Error ? error.message : "Account update failed",
+          );
+        }
+        json(response, 200, await hub.accountInfo(session.tenant_id));
+        return;
+      }
+      if (pathname === "/api/admin/tenants" && request.method === "GET") {
+        if (!session.platform_admin)
+          throw new HttpError(403, "Administrator access is required");
+        const result =
+          await pool.query(`SELECT t.id,t.name,t.created_at,a.connection_status,
+          (SELECT count(*)::integer FROM users u WHERE u.tenant_id=t.id) AS members
+          FROM tenants t LEFT JOIN solarman_accounts a ON a.tenant_id=t.id ORDER BY t.created_at DESC`);
+        json(response, 200, { items: result.rows });
+        return;
+      }
+      if (pathname === "/api/admin/invitations" && request.method === "POST") {
+        if (!session.platform_admin)
+          throw new HttpError(403, "Administrator access is required");
+        const body = await bodyJson(request);
+        if (
+          typeof body.email !== "string" ||
+          !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email) ||
+          body.email.length > 254 ||
+          typeof body.tenantName !== "string" ||
+          !body.tenantName.trim() ||
+          body.tenantName.length > 100
+        )
+          throw new HttpError(400, "Enter an email and a workspace name");
+        const email = body.email.trim().toLowerCase();
+        if (
+          (
+            await pool.query("SELECT 1 FROM users WHERE lower(email)=$1", [
+              email,
+            ])
+          ).rowCount
+        )
+          throw new HttpError(409, "This email already has an account");
+        const token = randomToken();
+        await pool.query(
+          "INSERT INTO invitations (token_hash,email,tenant_name,created_by,expires_at) VALUES ($1,$2,$3,$4,now()+interval '24 hours')",
+          [tokenHash(token), email, body.tenantName.trim(), session.id],
+        );
+        json(response, 201, {
+          url: `${config.origin}/activate?token=${token}`,
+          expiresInHours: 24,
+        });
+        return;
+      }
+      if (pathname === "/api/commands" && request.method === "POST") {
+        const body = await bodyJson(request);
+        const key = request.headers["idempotency-key"];
+        if (
+          typeof body.action !== "string" ||
+          !["refresh", "topup", "stop", "pause", "resume"].includes(body.action)
+        )
+          throw new HttpError(400, "Unknown command");
+        if (
+          typeof key !== "string" ||
+          !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+            key,
+          )
+        )
+          throw new HttpError(400, "A unique request identifier is required");
+        try {
+          json(response, 202, await runtime.submit(body.action, session, key));
+        } catch (error) {
+          throw new HttpError(
+            409,
+            error instanceof Error
+              ? error.message
+              : "Command could not be queued",
+          );
+        }
+        return;
+      }
+      const match =
+        /^\/api\/commands\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.exec(
+          pathname,
+        );
+      if (match && request.method === "GET") {
+        const result = await pool.query(
+          "SELECT id,actor,action,status,message,created_at,completed_at FROM command_executions WHERE tenant_id=$1 AND id=$2",
+          [session.tenant_id, match[1]],
+        );
+        if (!result.rowCount) throw new HttpError(404, "Command not found");
+        json(response, 200, result.rows[0]);
+        return;
+      }
+      throw new HttpError(404, "Endpoint not found");
+    } catch (error) {
+      if (response.headersSent) {
+        response.end();
+        return;
+      }
+      const status = error instanceof HttpError ? error.status : 500;
+      if (status === 500)
+        console.error(
+          JSON.stringify({
+            event: "http_request_failed",
+            code: typeof error?.code === "string" ? error.code : "internal",
+          }),
+        );
+      json(response, status, {
+        error:
+          error instanceof HttpError
+            ? error.message
+            : "The request could not be completed. Please try again.",
+      });
+    }
+  };
+}

@@ -1,0 +1,18 @@
+[Unit]
+Description=PM2 process manager for mitko
+After=network.target postgresql.service
+
+[Service]
+Type=forking
+User=mitko
+Environment=PATH=/opt/jilanov-node/node-v24.22.1-linux-x64/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PM2_HOME=/home/mitko/.pm2
+PIDFile=/home/mitko/.pm2/pm2.pid
+ExecStart=/usr/lib/node_modules/pm2/bin/pm2 resurrect
+ExecStop=/usr/lib/node_modules/pm2/bin/pm2 kill
+Restart=on-failure
+TimeoutStopSec=420
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

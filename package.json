@@ -1,0 +1,39 @@
+{
+  "name": "solarman-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.mjs",
+    "inspect": "node --env-file-if-exists=.env src/main.mjs --once",
+    "disable": "node --env-file-if-exists=.env src/main.mjs --disable",
+    "test": "node --test test/*.test.mjs",
+    "check": "tsc --noEmit && node scripts/check-syntax.mjs",
+    "start:worker": "node --env-file-if-exists=.env src/main.mjs",
+    "dev": "vite --config vite.config.ts",
+    "build": "tsc --noEmit && vite build",
+    "test:integration": "node --env-file-if-exists=.env --test test/integration/*.test.mjs",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  },
+  "dependencies": {
+    "lucide-react": "^1.62.0",
+    "pg": "^8.23.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router-dom": "^7.18.4",
+    "recharts": "^3.10.1"
+  }
+}
