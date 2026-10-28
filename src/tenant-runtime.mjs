@@ -45,6 +45,7 @@ export class TenantRuntime {
     this.timer = null;
     this.nextPollAt = null;
     this.pollCallback = null;
+    this.pollRunning = false;
     this.events = [];
     this.lastSuccessAt = null;
     this.lastError = null;
@@ -150,11 +151,23 @@ export class TenantRuntime {
           uncertain: (id) => this.journal.uncertain(id),
         },
       });
-      this.inspector = new BatteryController(this.client, {
-        ...config,
-        writesEnabled: false,
-        log,
-      });
+      this.inspector = new BatteryController(
+        {
+          command: (command, options) =>
+            this.client.command(command, {
+              ...options,
+              purpose:
+                this.lifecycle === "offboarding"
+                  ? "recovery"
+                  : (options?.purpose ?? "routine"),
+            }),
+        },
+        {
+          ...config,
+          writesEnabled: false,
+          log,
+        },
+      );
       if (!account.validated_at)
         this.setupError =
           "Test your linked account connection, then choose an inverter";
@@ -260,7 +273,7 @@ export class TenantRuntime {
       this.appKey,
       this.tenantId,
       this.account.id,
-      { ready: this.ready },
+      { ready: this.ready && this.lifecycle !== "offboarding" },
     );
     this.monitoringAdmitted = admission.admitted;
     if (!admission.admitted || admission.revokeControl) {
@@ -309,6 +322,7 @@ export class TenantRuntime {
     const clock = this.clockEvidence(now);
     return controlReadiness({
       tenantActive: this.lifecycle === "active",
+      tenantClosing: this.lifecycle === "offboarding",
       connected: Boolean(this.client && this.ready),
       supported: this.account?.profile === "bluesun-bse20kh3",
       serverAllowed: this.hostWritesAllowed,
@@ -349,19 +363,22 @@ export class TenantRuntime {
         recovery: this.journal.status(this.executionId),
         ...readiness,
       },
-      mode: this.setupError
-        ? "setup"
-        : this.stopping
-          ? "stopping"
-          : this.lastError || this.profileError
-            ? "error"
-            : this.ready && !this.monitoringAdmitted
-              ? "capacity"
-              : this.paused && !this.manualTopup
-                ? "paused"
-                : this.usesControlCycle()
-                  ? "active"
-                  : "read-only",
+      mode:
+        this.lifecycle === "offboarding"
+          ? "offboarding"
+          : this.setupError
+            ? "setup"
+            : this.stopping
+              ? "stopping"
+              : this.lastError || this.profileError
+                ? "error"
+                : this.ready && !this.monitoringAdmitted
+                  ? "capacity"
+                  : this.paused && !this.manualTopup
+                    ? "paused"
+                    : this.usesControlCycle()
+                      ? "active"
+                      : "read-only",
       paused: this.paused,
       manualTopup: this.manualTopup,
       topupExpiresAt: this.topupExpiresAt,
@@ -470,9 +487,13 @@ export class TenantRuntime {
   /** @returns {Promise<import('./telemetry.mjs').ProviderReading>} */
   async readProvider() {
     this.clock = null;
-    const data = await this.client.api("/device/v1.0/currentData", {
-      deviceSn: this.device,
-    });
+    const data = await this.client.api(
+      "/device/v1.0/currentData",
+      {
+        deviceSn: this.device,
+      },
+      { purpose: this.lifecycle === "offboarding" ? "recovery" : "routine" },
+    );
     const reading = parseProviderReading(data, this.device);
     await this.health.upload(reading);
     const receivedAt = new Date().toISOString();
@@ -731,12 +752,18 @@ export class TenantRuntime {
   }
 
   start() {
+    if (this.lifecycle === "offboarding" && !this.journal.owned) return;
     if (!this.ready || !this.client || this.pollCallback) return;
     const loop = async () => {
       this.timer = null;
       this.nextPollAt = null;
       if (this.stopping || this.hub.stopping) return;
-      await this.queue(() => this.evaluate()).catch(() => {});
+      this.pollRunning = true;
+      try {
+        await this.queue(() => this.evaluate()).catch(() => {});
+      } finally {
+        this.pollRunning = false;
+      }
       if (!this.stopping && !this.hub.stopping) this.schedulePoll();
     };
     this.pollCallback = loop;
@@ -745,6 +772,12 @@ export class TenantRuntime {
 
   /** @returns {void} */
   schedulePoll() {
+    clearTimeout(this.timer);
+    this.timer = null;
+    if (this.lifecycle === "offboarding" && !this.journal.owned) {
+      this.nextPollAt = null;
+      return;
+    }
     const delay = this.pollMs;
     this.nextPollAt = Date.now() + delay;
     this.timer = setTimeout(() => {
@@ -754,8 +787,17 @@ export class TenantRuntime {
 
   /** @returns {void} */
   reschedulePolling() {
-    if (!this.timer || !this.pollCallback || this.stopping || this.hub.stopping)
+    if (!this.pollCallback || this.stopping || this.hub.stopping) return;
+    if (this.lifecycle === "offboarding" && !this.journal.owned) {
+      clearTimeout(this.timer);
+      this.timer = null;
+      this.nextPollAt = null;
       return;
+    }
+    if (!this.timer) {
+      if (!this.pollRunning) this.schedulePoll();
+      return;
+    }
     if (this.nextPollAt !== null && Date.now() + this.pollMs >= this.nextPollAt)
       return;
     clearTimeout(this.timer);
@@ -765,6 +807,11 @@ export class TenantRuntime {
   async collect(inspectOnly = false, forceControl = false) {
     if (!this.client || !this.ready)
       throw new Error("Connect your account and choose an inverter first");
+    if (!inspectOnly && this.lifecycle === "offboarding") {
+      if (this.cleanupRequired || this.journal.pending)
+        await this.clearScheduledPermission();
+      return { decision: { charge: false, reason: "workspace_offboarding" } };
+    }
     if (!inspectOnly && !this.monitoringAdmitted) {
       if (this.cleanupRequired || this.journal.pending)
         await this.clearScheduledPermission();
@@ -1353,6 +1400,8 @@ export function reasonLabel(reason) {
         "Firmware verification changed; automation was paused and workspace control was revoked",
       monitoring_capacity_waiting:
         "Monitoring is waiting for shared API capacity",
+      workspace_offboarding:
+        "This workspace is closing. New automation is unavailable.",
     }[reason] ?? reason
   );
 }

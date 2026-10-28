@@ -23,7 +23,14 @@ async function main() {
       key,
       process.env,
     );
-    hub = new AccountHub(pool, process.env, key);
+    hub = new AccountHub(
+      pool,
+      {
+        ...process.env,
+        ERASURE_GUARD_FILE: config.erasureGuardFile ?? undefined,
+      },
+      key,
+    );
     await hub.initialize();
     const handler = createApp({ pool, hub, config });
     server = createServer(
@@ -41,6 +48,7 @@ async function main() {
     });
     hub.operations.start();
     hub.dataMaintenance.start();
+    hub.offboarding.start();
     console.log(
       JSON.stringify({ event: "dashboard_started", port: config.port }),
     );

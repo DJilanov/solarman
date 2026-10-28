@@ -28,10 +28,15 @@ if (status.state!=='healthy') throw new Error('A current verified backup and rec
 VERIFY
 install -m 0644 deploy/solarman-backup.service /etc/systemd/system/solarman-backup.service
 install -m 0644 deploy/solarman-backup.timer /etc/systemd/system/solarman-backup.timer
-systemd-analyze verify /etc/systemd/system/solarman-backup.service /etc/systemd/system/solarman-backup.timer
+install -m 0644 deploy/solarman-erasure.service /etc/systemd/system/solarman-erasure.service
+install -m 0644 deploy/solarman-erasure.timer /etc/systemd/system/solarman-erasure.timer
+install -d -o root -g mitko -m 2750 /var/lib/solarman-backup/public
+systemd-analyze verify /etc/systemd/system/solarman-backup.service /etc/systemd/system/solarman-backup.timer /etc/systemd/system/solarman-erasure.service /etc/systemd/system/solarman-erasure.timer
 ln -sfn "$release_path" /opt/solarman-ops/current
 systemctl daemon-reload
 systemctl enable --now solarman-backup.timer
+systemctl enable --now solarman-erasure.timer
+systemctl start solarman-erasure.service
 systemctl list-timers --all solarman-backup.timer --no-pager
 echo "Installed Solarman backup tools $release_sha"
 REMOTE

@@ -151,6 +151,7 @@ async function main() {
       report.tenantLifecycleVerified !== true ||
       report.retentionQuarantined !== true ||
       report.workspaceExportVerified !== true ||
+      report.erasureFencesVerified !== true ||
       report.recoveryQuarantined !== true ||
       report.schemaUpgradeVerified !== true ||
       report.credentialsVerified !== true ||

@@ -34,6 +34,13 @@ export function dashboardConfig(env) {
     "/var/lib/solarman-backup/public/status.json";
   if (!path.isAbsolute(backupStatusFile))
     throw new Error("BACKUP_STATUS_FILE must be an absolute path");
+  const erasureGuardFile =
+    env.ERASURE_GUARD_FILE?.trim() ||
+    (publicUrl.protocol === "https:"
+      ? "/var/lib/solarman-backup/public/erasure-guard.json"
+      : null);
+  if (erasureGuardFile && !path.isAbsolute(erasureGuardFile))
+    throw new Error("ERASURE_GUARD_FILE must be an absolute path");
   return {
     origin: publicUrl.origin,
     secure: publicUrl.protocol === "https:",
@@ -42,6 +49,7 @@ export function dashboardConfig(env) {
     adminEmail: required("DASHBOARD_ADMIN_EMAIL").toLowerCase(),
     adminPasswordHash: required("DASHBOARD_ADMIN_PASSWORD_HASH"),
     backupStatusFile,
+    erasureGuardFile,
     encryptionSecret: required("CREDENTIAL_ENCRYPTION_KEY"),
     database: {
       host: env.DB_HOST ?? "127.0.0.1",

@@ -1,0 +1,10 @@
+[Unit]
+Description=Synchronize Solarman erasure receipts each minute
+
+[Timer]
+OnBootSec=20
+OnUnitInactiveSec=60
+Unit=solarman-erasure.service
+
+[Install]
+WantedBy=timers.target

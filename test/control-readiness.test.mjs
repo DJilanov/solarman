@@ -182,3 +182,12 @@ test("a failed operation does not strand the queue or its idle waiters", async (
   assert.equal(await success, "next operation");
   await queue.idle();
 });
+
+test("a closing workspace cannot activate control even with otherwise passing evidence", () => {
+  const status = controlReadiness({ ...ready, tenantClosing: true });
+  assert.equal(status.canStart, false);
+  assert.equal(status.canEnable, false);
+  assert.equal(status.canVerify, true);
+  assert.equal(status.canStop, true);
+  assert.ok(status.reasons.some((reason) => reason.code === "closing"));
+});

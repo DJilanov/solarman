@@ -3261,3 +3261,15 @@ textarea {
   max-width: 100%;
   min-height: 84px;
 }
+
+.closure-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.closure-consent input {
+  width: 16px;
+  min-height: 16px;
+  flex: 0 0 16px;
+  margin-top: 0;
+}

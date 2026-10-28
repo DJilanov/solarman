@@ -133,6 +133,8 @@ export function StatusBadge({ status }: { status: string }): ReactNode {
     (
       {
         setup: "Setup needed",
+        offboarding: "Workspace closing",
+        removed: "Workspace removed",
         "read-only": "Read-only",
         active: "Automation on",
         paused: "Automation paused",
@@ -504,8 +506,12 @@ export function ActivityList({
               )}
             </p>
             <small>
-              {item.actor === "Automation" ? tr("Automation") : item.actor} ·{" "}
-              {when(item.created_at, timezone)}
+              {item.actor === "Automation"
+                ? tr("Automation")
+                : item.actor === "Closure recovery"
+                  ? tr("Closure recovery")
+                  : item.actor}{" "}
+              · {when(item.created_at, timezone)}
             </small>
             <Link
               className="text-link activity-detail-link"

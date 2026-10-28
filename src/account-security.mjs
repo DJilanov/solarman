@@ -71,11 +71,12 @@ export class AccountSecurity {
       await client.query("BEGIN");
       const user = (
         await client.query(
-          "SELECT id,tenant_id,email,password_hash,platform_admin FROM users WHERE id=$1 FOR UPDATE",
+          "SELECT u.id,u.tenant_id,u.email,u.password_hash,u.platform_admin,o.erasure_authorized_at FROM users u LEFT JOIN workspace_offboarding o ON o.tenant_id=u.tenant_id WHERE u.id=$1 FOR UPDATE OF u",
           [userId],
         )
       ).rows[0];
-      if (!user) throw new SecurityError(401, "Sign in to continue");
+      if (!user || user.erasure_authorized_at)
+        throw new SecurityError(401, "Sign in to continue");
       const result = await operation(client, user);
       await client.query("COMMIT");
       return result;

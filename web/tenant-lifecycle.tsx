@@ -4,7 +4,23 @@ import { request, useData, isUnconfirmedResponse } from "./api";
 import { useWorkspace } from "./context";
 import { tr } from "./i18n";
 import { Loading, Notice, Panel, StatusBadge, when } from "./components";
-import type { TenantLifecycleStatus, TenantMetadata } from "./types";
+import ClosureAdministration from "./workspace-offboarding";
+import type {
+  LifecycleState,
+  TenantLifecycleStatus,
+  TenantMetadata,
+} from "./types";
+
+function stateLabel(state: LifecycleState): string {
+  return tr(
+    {
+      active: "Workspace available",
+      suspended: "Workspace suspended",
+      offboarding: "Workspace closing",
+      removed: "Workspace removed",
+    }[state],
+  );
+}
 
 export function WorkspaceLifecycleNotice(): ReactNode {
   const { data, error } = useData<TenantLifecycleStatus>(
@@ -14,10 +30,12 @@ export function WorkspaceLifecycleNotice(): ReactNode {
   if (!data || data.state === "active") return null;
   return (
     <Notice tone="danger">
-      <strong>{tr("Workspace suspended")}</strong>
+      <strong>{stateLabel(data.state)}</strong>
       <p>
         {tr(
-          "Monitoring, exports, account security and recovery remain available. Starting automation is unavailable.",
+          data.state === "offboarding"
+            ? "Routine collection and automation are stopped. Export needed data before erasure authorization."
+            : "Monitoring, exports, account security and recovery remain available. Starting automation is unavailable.",
         )}
       </p>
       {data.message && <p>{data.message}</p>}
@@ -46,18 +64,14 @@ export function WorkspaceLifecyclePanel(): ReactNode {
         <Loading />
       ) : (
         <>
-          <strong>
-            {tr(
-              data.state === "active"
-                ? "Workspace available"
-                : "Workspace suspended",
-            )}
-          </strong>
+          <strong>{stateLabel(data.state)}</strong>
           <p>
             {tr(
               data.state === "active"
                 ? "Workspace availability does not enable inverter control. Fresh verification and control activation are separate."
-                : "Monitoring, exports, account security and recovery remain available. Starting automation is unavailable.",
+                : data.state === "offboarding"
+                  ? "Routine collection and automation are stopped. Export needed data before erasure authorization."
+                  : "Monitoring, exports, account security and recovery remain available. Starting automation is unavailable.",
             )}
           </p>
           {data.message && <p>{data.message}</p>}
@@ -97,7 +111,11 @@ function LifecycleHistory({
                 {tr(
                   event.state === "active"
                     ? "Workspace made available"
-                    : "Workspace suspended",
+                    : event.state === "offboarding"
+                      ? "Workspace closing"
+                      : event.state === "removed"
+                        ? "Workspace removed"
+                        : "Workspace suspended",
                 )}
               </strong>
               <small>{when(event.at, timezone)}</small>
@@ -175,7 +193,7 @@ function LifecycleForm({
   };
   return (
     <Panel
-      title={tenant.name}
+      title={data?.state === "removed" ? tr("Workspace removed") : tenant.name}
       subtitle={tr("Manage workspace availability")}
       action={
         <button
@@ -192,13 +210,7 @@ function LifecycleForm({
         <Loading />
       ) : (
         <>
-          <strong>
-            {tr(
-              data.state === "active"
-                ? "Workspace available"
-                : "Workspace suspended",
-            )}
-          </strong>
+          <strong>{stateLabel(data.state)}</strong>
           {data.message && <p>{data.message}</p>}
           {data.cleanupPending && (
             <Notice tone="danger">
@@ -207,70 +219,83 @@ function LifecycleForm({
               )}
             </Notice>
           )}
-          <p>
-            {tr(
-              "Suspension cancels automation starts and revokes workspace control. Monitoring and recovery continue. Making a workspace available does not restart automation.",
-            )}
-          </p>
-          <form
-            onSubmit={(event) => {
-              void submit(event);
+          {(data.state === "active" || data.state === "suspended") && (
+            <p>
+              {tr(
+                "Suspension cancels automation starts and revokes workspace control. Monitoring and recovery continue. Making a workspace available does not restart automation.",
+              )}
+            </p>
+          )}
+          {(data.state === "active" || data.state === "suspended") && (
+            <form
+              onSubmit={(event) => {
+                void submit(event);
+              }}
+            >
+              <label>
+                {tr("Current dashboard password")}
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  maxLength={1024}
+                  value={password}
+                  disabled={pending || data.protected}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+              </label>
+              <label>
+                {tr("Message to workspace members")}
+                <textarea
+                  maxLength={500}
+                  value={message}
+                  disabled={pending || data.protected}
+                  onChange={(event) => setMessage(event.target.value)}
+                  rows={3}
+                />
+              </label>
+              {data.protected && (
+                <Notice>
+                  {tr(
+                    "Administrator workspace availability is managed by the server operator",
+                  )}
+                </Notice>
+              )}
+              {failure && <Notice tone="danger">{failure}</Notice>}
+              {success && <Notice tone="success">{success}</Notice>}
+              <div className="lifecycle-actions">
+                <button
+                  className="button primary"
+                  disabled={pending || data.protected || !password}
+                >
+                  {tr(
+                    pending
+                      ? "Saving…"
+                      : data.state === "active"
+                        ? "Suspend workspace"
+                        : "Make workspace available",
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="button secondary"
+                  disabled={pending}
+                  onClick={reload}
+                >
+                  {tr("Refresh status")}
+                </button>
+              </div>
+            </form>
+          )}
+          <ClosureAdministration
+            tenantId={tenant.id}
+            tenantName={tenant.name}
+            lifecycle={data}
+            onChanged={() => {
+              reload();
+              onChanged();
             }}
-          >
-            <label>
-              {tr("Current dashboard password")}
-              <input
-                type="password"
-                autoComplete="current-password"
-                required
-                maxLength={1024}
-                value={password}
-                disabled={pending || data.protected}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-            </label>
-            <label>
-              {tr("Message to workspace members")}
-              <textarea
-                maxLength={500}
-                value={message}
-                disabled={pending || data.protected}
-                onChange={(event) => setMessage(event.target.value)}
-                rows={3}
-              />
-            </label>
-            {data.protected && (
-              <Notice>
-                {tr(
-                  "Administrator workspace availability is managed by the server operator",
-                )}
-              </Notice>
-            )}
-            {failure && <Notice tone="danger">{failure}</Notice>}
-            {success && <Notice tone="success">{success}</Notice>}
-            <div className="lifecycle-actions">
-              <button
-                className="button primary"
-                disabled={pending || data.protected || !password}
-              >
-                {tr(
-                  pending
-                    ? "Saving…"
-                    : data.state === "active"
-                      ? "Suspend workspace"
-                      : "Make workspace available",
-                )}
-              </button>
-              <button
-                type="button"
-                className="button secondary"
-                disabled={pending}
-                onClick={reload}
-              >
-                {tr("Refresh status")}
-              </button>
-            </div>
-          </form>
+          />
           <LifecycleHistory data={data} timezone={session.tenant.timezone} />
         </>
       )}
@@ -322,7 +347,11 @@ export function TenantAdministration({
                 {items.map((item) => (
                   <tr key={item.id}>
                     <td>
-                      <strong>{item.name}</strong>
+                      <strong>
+                        {item.lifecycle === "removed"
+                          ? tr("Workspace removed")
+                          : item.name}
+                      </strong>
                     </td>
                     <td>{item.members}</td>
                     <td>
@@ -331,11 +360,7 @@ export function TenantAdministration({
                       />
                     </td>
                     <td>
-                      {tr(
-                        item.lifecycle === "suspended"
-                          ? "Workspace suspended"
-                          : "Workspace available",
-                      )}
+                      {stateLabel(item.lifecycle)}
                       {item.cleanup_pending && (
                         <small>{tr("Cleanup pending")}</small>
                       )}

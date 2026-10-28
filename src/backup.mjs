@@ -22,7 +22,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { createPool } from "./database.mjs";
 import { dashboardConfig } from "./dashboard-config.mjs";
-import { decryptCredentials, encryptionKey } from "./credentials.mjs";
+import { verifyStoredCredentials, encryptionKey } from "./credentials.mjs";
 import {
   atomicJson,
   BackupError,
@@ -267,18 +267,7 @@ export async function runBackup(client, config) {
     )
       throw new BackupError("database_identity");
     const contents = await inventory(connection);
-    const accounts = (
-      await connection.query(
-        "SELECT tenant_id,id,credentials FROM solarman_accounts",
-      )
-    ).rows;
-    for (const account of accounts)
-      decryptCredentials(
-        account.credentials,
-        key,
-        account.tenant_id,
-        account.id,
-      );
+    const accountCount = await verifyStoredCredentials(connection, key);
     const snapshot = (
       await connection.query("SELECT pg_export_snapshot() AS id")
     ).rows[0].id;
@@ -355,7 +344,7 @@ export async function runBackup(client, config) {
       database: config.database,
       startedAt,
       contents,
-      accountCount: accounts.length,
+      accountCount,
       plainBytes,
       databaseObject,
       configurationObject,

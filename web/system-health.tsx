@@ -15,6 +15,7 @@ import { Heading, Loading, Notice, Panel } from "./components";
 import { incidentDescription, incidentTitle } from "./incident-summary";
 import type { OperationsData } from "./types";
 import { BackupHealth } from "./backup-health";
+import { ErasureHealth } from "./workspace-offboarding";
 
 export default function SystemHealthPage(): ReactNode {
   const { session } = useWorkspace();
@@ -157,6 +158,9 @@ export default function SystemHealthPage(): ReactNode {
           </Panel>
           {session.user.platformAdmin && data.backup && (
             <BackupHealth status={data.backup} timezone={timezone} />
+          )}
+          {session.user.platformAdmin && data.erasure && (
+            <ErasureHealth status={data.erasure} />
           )}
           <div className="activity-toolbar">
             <label className="health-filter">

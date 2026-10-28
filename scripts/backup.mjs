@@ -17,6 +17,8 @@ import {
   UUID,
 } from "../src/backup-io.mjs";
 import { restoreDrill } from "../src/restore-drill.mjs";
+import { syncErasures } from "../src/erasure-sync.mjs";
+import { readErasureGuard } from "../src/erasure-guard.mjs";
 
 async function main() {
   const [action, id, kind] = process.argv.slice(2);
@@ -53,6 +55,12 @@ async function main() {
     const end = bytes.indexOf(10);
     if (end < 1 || end > 65535) throw new BackupError("drill_header_invalid");
     const header = JSON.parse(bytes.subarray(0, end).toString("utf8"));
+    await syncErasures(config);
+    header.erasureReceipts = (
+      await readErasureGuard(
+        config.stateDirectory + "/public/erasure-guard.json",
+      )
+    ).records;
     await receipt(config, header.backupId);
     await updateStatus(config, {
       restore: {

@@ -240,7 +240,11 @@ export default function CommandDetailsPage(): ReactNode {
               <div>
                 <dt>{tr("Requested by")}</dt>
                 <dd>
-                  {data.actor === "Automation" ? tr("Automation") : data.actor}
+                  {data.actor === "Automation"
+                    ? tr("Automation")
+                    : data.actor === "Closure recovery"
+                      ? tr("Closure recovery")
+                      : data.actor}
                 </dd>
               </div>
               <div>

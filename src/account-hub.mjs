@@ -5,6 +5,8 @@ import { TenantRuntime } from "./tenant-runtime.mjs";
 import { ApiBudget, monitoringInterval } from "./api-budget.mjs";
 import { Operations } from "./operations.mjs";
 import { DataMaintenance } from "./data-maintenance.mjs";
+import { WorkspaceOffboarding } from "./workspace-offboarding.mjs";
+import { SecurityError } from "./account-security.mjs";
 
 export class AccountHub {
   constructor(pool, env, key) {
@@ -20,12 +22,24 @@ export class AccountHub {
     this.active = 0;
     this.reloads = new Map();
     this.accountUpdates = new Set();
+    this.erasingTenants = new Set();
     this.budget = new ApiBudget(pool, env, (/** @type {string} */ appKey) => {
       for (const runtime of this.runtimes.values())
         if (runtime.appKey === appKey) runtime.reschedulePolling();
     });
     this.operations = new Operations(pool, this);
     this.dataMaintenance = new DataMaintenance(pool);
+    const requireErasureGuard =
+      env.NODE_ENV === "production" ||
+      env.PUBLIC_URL?.startsWith("https:") === true;
+    this.offboarding = new WorkspaceOffboarding(pool, this, {
+      guardFile:
+        env.ERASURE_GUARD_FILE?.trim() ||
+        (requireErasureGuard
+          ? "/var/lib/solarman-backup/public/erasure-guard.json"
+          : null),
+      requireRoot: requireErasureGuard,
+    });
   }
 
   /** @param {TenantRuntime} runtime @returns {number} */
@@ -92,6 +106,7 @@ export class AccountHub {
       this.stopping = true;
       for (const runtime of this.runtimes.values()) void runtime.close();
     });
+    await this.offboarding.initialize();
     await this.pool.query(
       "UPDATE command_executions SET status='interrupted',message='Service restarted before completion could be confirmed',completed_at=now() WHERE status IN ('queued','running')",
     );
@@ -100,7 +115,7 @@ export class AccountHub {
       "UPDATE solarman_accounts SET monitoring_admitted=false WHERE monitoring_admitted",
     );
     const tenants = await this.pool.query(
-      "SELECT id FROM tenants ORDER BY created_at,id",
+      "SELECT t.id FROM tenants t LEFT JOIN workspace_offboarding o ON o.tenant_id=t.id WHERE t.lifecycle<>'removed' AND o.erasure_started_at IS NULL ORDER BY t.created_at,t.id",
     );
     for (const tenant of tenants.rows) await this.forTenant(tenant.id);
   }
@@ -140,9 +155,17 @@ export class AccountHub {
   }
 
   async forTenant(tenantId) {
+    if (this.erasingTenants.has(tenantId))
+      throw new SecurityError(409, "Workspace erasure is in progress");
     if (this.reloads.has(tenantId)) return this.reloads.get(tenantId);
     if (this.runtimes.has(tenantId)) return this.runtimes.get(tenantId);
     const promise = (async () => {
+      const allowed = await this.pool.query(
+        "SELECT 1 FROM tenants t LEFT JOIN workspace_offboarding o ON o.tenant_id=t.id WHERE t.id=$1 AND t.lifecycle<>'removed' AND o.erasure_started_at IS NULL",
+        [tenantId],
+      );
+      if (!allowed.rowCount)
+        throw new SecurityError(409, "Workspace erasure is in progress");
       const account =
         (
           await this.pool.query(
@@ -152,6 +175,10 @@ export class AccountHub {
         ).rows[0] ?? null;
       const runtime = new TenantRuntime(this, tenantId, account);
       await runtime.initialize();
+      if (this.erasingTenants.has(tenantId)) {
+        await runtime.close();
+        throw new SecurityError(409, "Workspace erasure is in progress");
+      }
       this.runtimes.set(tenantId, runtime);
       runtime.start();
       return runtime;
@@ -178,9 +205,21 @@ export class AccountHub {
   async lifecycleChanged(tenantId, appKey) {
     const runtime = this.runtimes.get(tenantId);
     if (runtime) {
+      const previousLifecycle = runtime.lifecycle;
       runtime.inhibitStarts = true;
       runtime.enableEpoch++;
       await runtime.initialize();
+      if (
+        previousLifecycle === "offboarding" &&
+        runtime.lifecycle !== "offboarding"
+      )
+        runtime.start();
+      if (
+        runtime.lifecycle === "offboarding" &&
+        runtime.appKey &&
+        runtime.account
+      )
+        await runtime.requestCapacity();
       if (runtime.journal.pending)
         void runtime
           .queue(() => runtime.clearScheduledPermission(), 10)
@@ -347,16 +386,24 @@ export class AccountHub {
     if (!runtime.client)
       throw new Error(runtime.setupError ?? "OpenAPI credentials are required");
     return runtime.queue(async () => {
+      const purpose =
+        runtime.journal.owned || runtime.lifecycle === "offboarding"
+          ? "recovery"
+          : "routine";
       const devices = [];
       try {
         let page = 1;
         let total = Infinity;
         let seen = 0;
         while (seen < total && page <= 20) {
-          const result = await runtime.client.api("/station/v1.0/list", {
-            page,
-            size: 50,
-          });
+          const result = await runtime.client.api(
+            "/station/v1.0/list",
+            {
+              page,
+              size: 50,
+            },
+            { purpose },
+          );
           if (
             !Array.isArray(result.stationList) ||
             !Number.isSafeInteger(Number(result.total))
@@ -371,12 +418,16 @@ export class AccountHub {
             let deviceTotal = Infinity;
             let deviceSeen = 0;
             while (deviceSeen < deviceTotal && devicePage <= 20) {
-              const found = await runtime.client.api("/station/v1.0/device", {
-                stationId: Number(station.id),
-                deviceType: "INVERTER",
-                page: devicePage,
-                size: 50,
-              });
+              const found = await runtime.client.api(
+                "/station/v1.0/device",
+                {
+                  stationId: Number(station.id),
+                  deviceType: "INVERTER",
+                  page: devicePage,
+                  size: 50,
+                },
+                { purpose },
+              );
               if (
                 !Array.isArray(found.deviceListItems) ||
                 !Number.isSafeInteger(Number(found.total))
@@ -503,11 +554,13 @@ export class AccountHub {
     this.stopping = true;
     const monitorStopped = this.operations.stop();
     const maintenanceStopped = this.dataMaintenance.stop();
+    const offboardingStopped = this.offboarding.stop();
     await Promise.allSettled(
       [...this.runtimes.values()].map((runtime) => runtime.close()),
     );
     await monitorStopped;
     await maintenanceStopped;
+    await offboardingStopped;
     if (this.lock) {
       try {
         await this.lock.query("SELECT pg_advisory_unlock(193401,2)");

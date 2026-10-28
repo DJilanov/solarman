@@ -77,6 +77,10 @@ export class DataMaintenance {
 
   /** @param {string} [tenantId] @returns {Promise<object|null>} */
   async prune(tenantId) {
+    if (!tenantId)
+      await this.pool.query(
+        "DELETE FROM api_requests WHERE id IN(SELECT id FROM api_requests WHERE tenant_id IS NULL AND created_at<clock_timestamp()-interval '366 days' ORDER BY created_at LIMIT 500)",
+      );
     const candidate = (
       await this.pool.query(
         `SELECT tenant_id FROM workspace_retention WHERE enabled AND next_run_at<=clock_timestamp() AND ($1::uuid IS NULL OR tenant_id=$1) ORDER BY next_run_at,tenant_id LIMIT 1`,

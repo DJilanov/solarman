@@ -8,7 +8,7 @@ Each run creates three client-encrypted `age` objects under `runs/<run UUID>/`: 
 
 The database streams directly through encryption. Plaintext dumps and environment files are not written to the work directory. The environment includes the credential encryption key and provider credentials and receives the same encryption as the database. Only the owner's public Ed25519 recipient is installed on the server. Keep an independent secure copy of the original private identity; a replacement SSH key cannot decrypt earlier backups.
 
-The dedicated bucket has all public-access blocks enabled, bucket-owner enforced ownership, AES256 server-side encryption and versioning. Current objects become eligible for expiry after 30 days; older versions become eligible 30 days after becoming noncurrent. This is not a strict 30-day purge guarantee or Object Lock. Each uploaded version is checked with HeadObject and downloaded again to verify encrypted length and SHA256. The encrypted manifest records exact database/configuration object versions and checksums.
+The dedicated bucket has all public-access blocks enabled, bucket-owner enforced ownership, AES256 server-side encryption and versioning. Backup objects under `runs/` become eligible for expiry after 30 days; older versions become eligible 30 days after becoming noncurrent. This is not a strict 30-day purge guarantee or Object Lock. Each uploaded version is checked with HeadObject and downloaded again to verify encrypted length and SHA256. The encrypted manifest records exact database/configuration object versions and checksums. Minimal erasure receipts use a separate non-expiring prefix described below.
 
 Encrypted temporary files are removed after success or failure. Private receipts remain under `/var/lib/solarman-backup`. Concurrent status updates use a [Linux descriptor lock](https://man7.org/linux/man-pages/man2/flock.2.html) to preserve both backup and restore results.
 
@@ -31,7 +31,7 @@ After a verified backup and real restore test, install from a clean committed ch
 bash scripts/install-backup.sh
 ```
 
-The installer creates a root-owned capsule for the exact commit, installs production dependencies without lifecycle scripts, checks bucket protections and current recovery evidence, validates the Solarman-only units and enables the timer. Other services and timers are untouched. The schedule is 03:17 Europe/Sofia with up to two minutes of jitter and catch-up after downtime. The job has a 30-minute timeout and restricted filesystem writes.
+The installer creates a root-owned capsule for the exact commit, installs production dependencies without lifecycle scripts, checks bucket protections and current recovery evidence, validates the Solarman-only units and enables the timers. Other services and timers are untouched. The backup schedule is 03:17 Europe/Sofia with up to two minutes of jitter and catch-up after downtime. The job has a 30-minute timeout and restricted filesystem writes. The erasure service runs once a minute, starting about 20 seconds after boot. Installation starts it immediately; it also supports the pre-offboarding schema so the guard can be established before the application upgrade.
 
 ```sh
 ssh root@92.247.242.86 systemctl list-timers --all solarman-backup.timer
@@ -57,7 +57,7 @@ The isolated authentication fixture is suspended. Login, password change, saved-
 
 The fixture also begins with an enabled retention policy. Quarantine must disable every restored pruning policy and invalidate its saved revision before any maintenance service can start. The fixture then downloads its own HTTP workspace archive and verifies the completion counts/checksum without provider access. Reports require `retentionQuarantined: true` and `workspaceExportVerified: true`. Workspace pruning and offsite backup expiry are separate: a backup can still contain rows removed from the live database afterward.
 
-After an authentication/schema release, install an operational capsule for that release and prove both an older backup's isolated upgrade and a fresh backup's restore. The local drill requires explicit schema-upgrade, account-security, tenant-lifecycle, retention-quarantine and archive verification flags; an older receiver's basic login proof cannot stand in for these checks.
+After an authentication/schema release, install an operational capsule for that release and prove both an older backup's isolated upgrade and a fresh backup's restore. The local drill requires explicit schema-upgrade, account-security, tenant-lifecycle, retention-quarantine, archive and erasure-fence verification flags; an older receiver's basic login proof cannot stand in for these checks. The receiver synchronizes current offsite receipts independently of the old snapshot before replay. A disposable erased fixture must reject its copied browser cookie, password login, recovery key and legacy SQL session insertion. Ordinary suspended-account recovery must still work, without any provider access.
 
 Success prints one nonsecret report and saves mode 0600 local recovery metadata:
 
@@ -79,7 +79,24 @@ The drill verifies data recovery and deletes its database. It does not overwrite
 
 1. Recover the local metadata record, original age identity and independent AWS read credentials. Recorded bucket/version IDs allow retrieval without the lost host's `latest.json` or private receipts. Check encrypted hashes and authenticate every decryption.
 2. Provision an isolated PostgreSQL 15+ database and non-superuser owner, assigning ownership of its public schema. Restore the custom archive without original ownership/ACLs. Use dump/configuration from the same manifest. Keep recovered configuration private and set `WRITES_ENABLED=false` before starting any application process.
-3. Before starting a scheduler, pause controllers, cancel manual requests/expiry, disable controls, clear saved verification, advance cancellation epochs, preserve non-clear device ownership as cleanup-required and revoke sessions and unused recovery credentials. Disable all restored retention policies and increment their revisions before allowing data maintenance. Compare inventory and decrypt provider links before promotion. Use server-operator account recovery if needed, then prepare a new saved key. Restored acknowledgments are historical records, not the inverter's current state.
+3. Before starting a scheduler, pause controllers, cancel manual requests/expiry, disable controls, clear saved verification, advance cancellation epochs, preserve non-clear device ownership as cleanup-required and revoke sessions and unused recovery credentials. Disable all restored retention policies and increment their revisions before allowing data maintenance. Compare inventory and decrypt provider links before promotion. Install the matching root operational capsule, synchronize the complete current `erasures/` prefix and replay its receipts after schema upgrade, before accepting any customer authentication or provider work. Do not promote an old dump using only its own offboarding table: it may predate an authorized erasure. Use server-operator account recovery if needed, then prepare a new saved key. Restored acknowledgments are historical records, not the inverter's current state.
 4. Reconcile device ownership using fresh diagnostics. Resume writes only through commissioning and separate activation. Reinstall backup tooling and repeat an isolated offsite recovery test on the rebuilt host.
 
 On 2026-10-28, offsite decryption, restored PostgreSQL inventory, linked-account decryption, authentication, disabled controls, zero device access and temporary database/role cleanup passed. The initial failure was public-schema ownership in the server template; the fix applies only to the newly created drill database.
+
+## Erasure receipts and restored access
+
+`solarman-erasure.service` publishes authorized workspace removals as conditional, versioned AES256 S3 objects under `erasures/<intent UUID>.json`, outside the `runs/` backup lifecycle. Each contains only version, opaque intent/workspace UUIDs and the authorization timestamp. It verifies object content/checksum, encryption and version, then durably writes and synchronizes the local guard/cache before acknowledging the database intent. The publisher refuses overlapping expiry rules, conflicting records and disappearance of previously cached objects. This is versioned storage, not WORM protection against an authorized storage administrator.
+
+The public guard is `/var/lib/solarman-backup/public/erasure-guard.json`, root:mitko mode 0640; the private cache is root mode 0600. The application requires a regular, non-symlink, root-owned guard no older than five minutes. `ERASURE_GUARD_FILE` may select another absolute path for a controlled installation; it does not disable the production/HTTPS startup requirement. A warm synchronization outage leaves existing monitoring/recovery running and blocks erasure. Cold startup fails until a fresh guard is available, including when there are zero receipts, so recovery never assumes an old snapshot contains the latest erasures. Administrators see verified/stale/unavailable receipt health under System health.
+
+Install this service and establish its fresh guard **before** deploying migrations/application code that require it. On synchronization failure, inspect only the fixed stage codes and verify bucket access/protections, the non-expiring prefix, root file ownership and the timer. After correcting the cause:
+
+```sh
+ssh root@92.247.242.86 systemctl start solarman-erasure.service
+ssh root@92.247.242.86 systemctl list-timers --all solarman-erasure.timer
+```
+
+Never fabricate an empty guard or delete a receipt to bypass startup. Preserve the complete prefix during a lost-host rebuild. Fences prevent restored sign-in and automation; live cleanup can still need the original credentials and host permission. The backup credential check accepts a missing credential only after erasure has actually started in an authorized closing workspace; it rejects unexplained missing credentials.
+
+The publisher's live offsite proof on 2026-10-28 used a unique isolated `proof/erasures/<UUID>/` prefix and no production database access. It verified encrypted/versioned readback, acknowledgment only after the durable root guard, cache reuse without another publication, file permissions and complete removal of the proof object versions and temporary state. No proof record was placed under production `erasures/`.

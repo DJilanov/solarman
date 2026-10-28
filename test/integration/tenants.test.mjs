@@ -2,11 +2,17 @@ import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { createPool, migrate } from "../../src/database.mjs";
 import { dashboardConfig } from "../../src/dashboard-config.mjs";
 import { hashPassword, tokenHash } from "../../src/auth.mjs";
-import { encryptCredentials } from "../../src/credentials.mjs";
+import {
+  encryptCredentials,
+  verifyStoredCredentials,
+  decryptCredentials,
+} from "../../src/credentials.mjs";
 import { AccountHub } from "../../src/account-hub.mjs";
 import { createApp } from "../../src/http-app.mjs";
 import { localDay } from "../../src/analytics.mjs";
@@ -22,6 +28,7 @@ import { AccountRecovery } from "../../src/account-recovery.mjs";
 import { WorkspaceData } from "../../src/workspace-data.mjs";
 import { DataMaintenance } from "../../src/data-maintenance.mjs";
 import { TenantLifecycle } from "../../src/tenant-lifecycle.mjs";
+import { WorkspaceOffboarding } from "../../src/workspace-offboarding.mjs";
 import { Invitations, lockInvitationEmail } from "../../src/invitations.mjs";
 import {
   AccountSecurity,
@@ -4030,6 +4037,8 @@ test(
     let pending;
     try {
       await connection.query("BEGIN");
+      const blocker = (await connection.query("SELECT pg_backend_pid() AS id"))
+        .rows[0].id;
       await connection.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [
         user.id,
       ]);
@@ -4044,7 +4053,8 @@ test(
       for (let i = 0; i < 100; i++) {
         const rows = (
           await pool.query(
-            "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FROM users WHERE id=$1 FOR UPDATE%' AND pid<>pg_backend_pid()",
+            "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid))",
+            [blocker],
           )
         ).rows;
         if (rows[0].n > 0) {
@@ -5319,4 +5329,1045 @@ test("the archive byte limit includes its completion marker", async () => {
   } finally {
     await http.close();
   }
+});
+
+async function erasureFixture() {
+  const f = await lifecycleFixture();
+  const directory = await mkdtemp(path.join(tmpdir(), "solarman-offboarding-"));
+  const guardFile = path.join(directory, "guard.json");
+  const previousFile = hub.offboarding.guardFile;
+  const previousRoot = hub.offboarding.requireRoot;
+  hub.offboarding.guardFile = guardFile;
+  hub.offboarding.requireRoot = false;
+  const records = [];
+  const guard = async (patch = {}) =>
+    writeFile(
+      guardFile,
+      JSON.stringify({
+        version: 1,
+        state: "verified",
+        checkedAt: new Date().toISOString(),
+        records,
+        ...patch,
+      }),
+      { mode: 0o600 },
+    );
+  await guard();
+  const route = `/admin/tenants/${f.target.tenant}/offboarding`;
+  const body = async (action, patch = {}) => ({
+    action,
+    currentPassword: password,
+    confirmation: "Lifecycle member",
+    eraseConfirmed: action === "erase",
+    revision: (
+      await pool.query(
+        "SELECT lifecycle_revision::text AS revision FROM tenants WHERE id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0].revision,
+    ...patch,
+  });
+  const change = async (action, patch = {}) =>
+    fetchApi(route, {
+      auth: f.admin,
+      method: "POST",
+      body: await body(action, patch),
+    });
+  const publish = async () => {
+    const row = (
+      await pool.query(
+        "SELECT id,erasure_authorized_at FROM workspace_offboarding WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    const record = {
+      version: 1,
+      id: row.id,
+      tenantId: f.target.tenant,
+      authorizedAt: row.erasure_authorized_at.toISOString(),
+    };
+    records.splice(0, records.length, record);
+    await guard();
+    await pool.query(
+      "UPDATE workspace_offboarding SET offsite_acknowledged_at=clock_timestamp() WHERE tenant_id=$1",
+      [f.target.tenant],
+    );
+    return record;
+  };
+  const status = () => hub.offboarding.status(f.target.tenant);
+  const dispose = async () => {
+    const runtime = hub.runtimes.get(f.target.tenant);
+    if (runtime) {
+      await runtime.close();
+      hub.runtimes.delete(f.target.tenant);
+    }
+    await pool.query(
+      "UPDATE workspace_offboarding SET last_attempted_at='9999-01-01' WHERE tenant_id=$1",
+      [f.target.tenant],
+    );
+    hub.offboarding.guardFile = previousFile;
+    hub.offboarding.requireRoot = previousRoot;
+    await rm(directory, { recursive: true, force: true });
+  };
+  return {
+    ...f,
+    directory,
+    guardFile,
+    records,
+    guard,
+    route,
+    body,
+    change,
+    publish,
+    status,
+    dispose,
+    closure: hub.offboarding,
+    address: `lifecycle-member-${f.target.user}@example.test`,
+  };
+}
+
+async function readyForErasure(f) {
+  assert.equal((await f.change("close")).status, 200);
+  assert.equal((await f.change("erase")).status, 200);
+  return f.publish();
+}
+
+test("workspace erasure requires administrator proof, exact confirmation, current revision and explicit consent", async () => {
+  const f = await erasureFixture();
+  try {
+    for (const [options, expected] of [
+      [{ auth: f.member, body: await f.body("close") }, 403],
+      [{ auth: f.admin, csrf: false, body: await f.body("close") }, 403],
+      [
+        {
+          auth: f.admin,
+          body: await f.body("close", { currentPassword: "wrong" }),
+        },
+        400,
+      ],
+      [
+        {
+          auth: f.admin,
+          body: await f.body("close", { confirmation: "different workspace" }),
+        },
+        400,
+      ],
+      [
+        { auth: f.admin, body: await f.body("close", { revision: "100" }) },
+        409,
+      ],
+    ])
+      assert.equal(
+        (await fetchApi(f.route, { method: "POST", ...options })).status,
+        expected,
+      );
+    assert.equal(
+      (
+        await fetchApi(`/admin/tenants/${f.actor.tenant}/offboarding`, {
+          auth: f.admin,
+          method: "POST",
+          body: await f.body("close", {
+            confirmation: "Lifecycle administrator",
+          }),
+        })
+      ).status,
+      409,
+    );
+    assert.equal((await f.status()).phase, "none");
+    assert.equal((await f.change("close")).status, 200);
+    assert.equal(
+      (await f.change("erase", { eraseConfirmed: false })).status,
+      409,
+    );
+    await f.guard({ checkedAt: new Date(Date.now() - 301000).toISOString() });
+    assert.equal((await f.change("erase")).status, 409);
+    assert.equal((await f.status()).authorizedAt, null);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("workspace erasure closure revokes sessions, stops collection and cancels into suspension without rearming", async () => {
+  const f = await erasureFixture();
+  try {
+    await pool.query(
+      "INSERT INTO workspace_retention(tenant_id,enabled) VALUES($1,true)",
+      [f.target.tenant],
+    );
+    assert.equal((await f.change("close")).status, 200);
+    assert.equal(
+      (await fetchApi("/auth/session", { auth: f.member })).status,
+      401,
+    );
+    const member = await login(f.address);
+    assert.equal(
+      (await fetchApi("/workspace/offboarding", { auth: member })).status,
+      200,
+    );
+    const runtime = await hub.forTenant(f.target.tenant);
+    assert.equal(runtime.lifecycle, "offboarding");
+    assert.equal(runtime.status().control.canStart, false);
+    assert.equal(runtime.status().mode, "offboarding");
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT enabled FROM workspace_retention WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].enabled,
+      false,
+    );
+    assert.equal((await f.change("cancel")).status, 200);
+    const state = (
+      await pool.query(
+        "SELECT t.lifecycle,c.paused,c.control_enabled FROM tenants t JOIN controller_state c ON c.tenant_id=t.id WHERE t.id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    assert.deepEqual(state, {
+      lifecycle: "suspended",
+      paused: true,
+      control_enabled: false,
+    });
+    assert.equal((await f.status()).phase, "none");
+    assert.equal((await f.change("close")).status, 200);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("workspace erasure cannot discard unknown inverter writes or running commands", async () => {
+  const f = await erasureFixture();
+  try {
+    assert.equal((await f.change("close")).status, 200);
+    await pool.query(
+      "INSERT INTO device_control_state(tenant_id,account_id,device,state) VALUES($1,$2,$3,'uncertain')",
+      [f.target.tenant, f.target.account, f.target.device],
+    );
+    const intent = randomUUID();
+    await pool.query(
+      "INSERT INTO inverter_write_intents(id,tenant_id,account_id,device,operation,address,register_values,status) VALUES($1,$2,$3,$4,'enable',206,'[0,25]','uncertain')",
+      [intent, f.target.tenant, f.target.account, f.target.device],
+    );
+    assert.equal((await f.change("erase")).status, 409);
+    assert.equal((await f.status()).phase, "cleanup");
+    await pool.query(
+      "UPDATE device_control_state SET state='clear' WHERE tenant_id=$1",
+      [f.target.tenant],
+    );
+    assert.equal((await f.change("erase")).status, 409);
+    await pool.query(
+      "UPDATE inverter_write_intents SET reconciled_at=clock_timestamp() WHERE id=$1",
+      [intent],
+    );
+    const job = randomUUID();
+    await pool.query(
+      "INSERT INTO command_executions(id,tenant_id,actor,action,status) VALUES($1,$2,'fixture','refresh','running')",
+      [job, f.target.tenant],
+    );
+    assert.equal((await f.change("erase")).status, 409);
+    await pool.query(
+      "UPDATE command_executions SET status='succeeded' WHERE id=$1",
+      [job],
+    );
+    assert.equal((await f.change("erase")).status, 200);
+    assert.equal((await f.change("cancel")).status, 409);
+    assert.equal((await f.status()).phase, "awaiting-receipt");
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT credentials IS NOT NULL AS retained FROM solarman_accounts WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].retained,
+      true,
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("workspace erasure authorization prevents legacy sessions, recovery, routine requests and reactivation", async () => {
+  const f = await erasureFixture();
+  try {
+    assert.equal((await f.change("close")).status, 200);
+    const member = await login(f.address);
+    assert.equal((await f.change("erase")).status, 200);
+    assert.equal(
+      (await fetchApi("/auth/session", { auth: member })).status,
+      401,
+    );
+    assert.equal(
+      (
+        await fetchApi("/auth/login", {
+          method: "POST",
+          body: { email: f.address, password },
+        })
+      ).status,
+      401,
+    );
+    const statements = [
+      [
+        "INSERT INTO sessions(user_id,token_hash,csrf_token,expires_at) VALUES($1,$2,'fixture',now()+interval '1 day')",
+        [f.target.user, tokenHash(randomUUID())],
+      ],
+      [
+        "INSERT INTO account_recovery_tokens(user_id,token_hash,kind) VALUES($1,$2,'saved_key')",
+        [f.target.user, tokenHash(randomUUID())],
+      ],
+      [
+        "INSERT INTO api_requests(tenant_id,account_id,kind,purpose) VALUES($1,$2,'read','routine')",
+        [f.target.tenant, f.target.account],
+      ],
+      ["UPDATE tenants SET lifecycle='active' WHERE id=$1", [f.target.tenant]],
+      [
+        "UPDATE controller_state SET control_enabled=true WHERE tenant_id=$1",
+        [f.target.tenant],
+      ],
+      [
+        "UPDATE controller_state SET paused=false WHERE tenant_id=$1",
+        [f.target.tenant],
+      ],
+    ];
+    for (const [sql, values] of statements)
+      await assert.rejects(pool.query(sql, values), { code: "23514" });
+    await pool.query(
+      "INSERT INTO api_requests(tenant_id,account_id,kind,purpose) VALUES($1,$2,'read','recovery')",
+      [f.target.tenant, f.target.account],
+    );
+    await pool.query(
+      "INSERT INTO api_requests(tenant_id,account_id,kind,purpose) VALUES($1,$2,'read','balance')",
+      [f.target.tenant, f.target.account],
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("workspace erasure guards serialize a delayed legacy login against authorization", async () => {
+  const f = await erasureFixture();
+  const connection = await pool.connect();
+  let pending;
+  try {
+    assert.equal((await f.change("close")).status, 200);
+    await connection.query("BEGIN");
+    await connection.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [
+      f.target.user,
+    ]);
+    pending = Promise.allSettled([
+      pool.query(
+        "/* erasure legacy session */ INSERT INTO sessions(user_id,token_hash,csrf_token,expires_at) VALUES($1,$2,'fixture',now()+interval '1 day')",
+        [f.target.user, tokenHash(randomUUID())],
+      ),
+    ]);
+    let waiting = false;
+    for (let i = 0; i < 100; i++) {
+      const observed = await pool.query(
+        "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '/* erasure legacy session */%'",
+      );
+      if (observed.rows[0].n > 0) {
+        waiting = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(waiting, true);
+    await connection.query(
+      "UPDATE workspace_offboarding SET erasure_authorized_at=date_trunc('milliseconds',clock_timestamp()) WHERE tenant_id=$1",
+      [f.target.tenant],
+    );
+    await connection.query("COMMIT");
+    const result = (await pending)[0];
+    assert.equal(result.status, "rejected");
+    assert.equal(result.reason.code, "23514");
+  } finally {
+    await connection.query("ROLLBACK");
+    connection.release();
+    if (pending) await pending;
+    await f.dispose();
+  }
+});
+
+test("workspace erasure needs both matching local and offsite acknowledgment at the final removal boundary", async () => {
+  const f = await erasureFixture();
+  try {
+    assert.equal((await f.change("close")).status, 200);
+    assert.equal((await f.change("erase")).status, 200);
+    assert.equal(await f.closure.purge(f.target.tenant), false);
+    await f.publish();
+    await f.guard({ checkedAt: new Date(Date.now() - 301000).toISOString() });
+    await assert.rejects(f.closure.purge(f.target.tenant), /unavailable/);
+    await f.guard({ records: [{ ...f.records[0], id: randomUUID() }] });
+    assert.equal(await f.closure.purge(f.target.tenant), false);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT credentials IS NOT NULL AS retained FROM solarman_accounts WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].retained,
+      true,
+    );
+    await f.guard();
+    assert.equal(await f.closure.runOnce(), true);
+    assert.equal((await f.status()).phase, "removed");
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM users WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].n,
+      0,
+    );
+    assert.equal(
+      (await fetchApi("/auth/session", { auth: alpha })).status,
+      200,
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("workspace erasure removes credentials in the first bounded batch and preserves anonymous shared quota accounting", async () => {
+  const f = await erasureFixture();
+  const appKey = apiAppKey(`lifecycle-${f.target.tenant}`);
+  try {
+    await pool.query(
+      "INSERT INTO api_app_budgets(app_key) VALUES($1) ON CONFLICT DO NOTHING",
+      [appKey],
+    );
+    await pool.query(
+      "UPDATE solarman_accounts SET api_app_key=$2 WHERE tenant_id=$1",
+      [f.target.tenant, appKey],
+    );
+    await pool.query(
+      `INSERT INTO measurements(tenant_id,account_id,device,observed_at,soc,temperature_c,pv_w,load_w,grid_w,battery_w,ac_enabled,snapshot)
+      SELECT $1,$2,$3,now()-n*interval '1 second',60,20,3000,1000,0,-2000,false,'{}' FROM generate_series(1,1201)n`,
+      [f.target.tenant, f.target.account, f.target.device],
+    );
+    await pool.query(
+      "INSERT INTO api_requests(tenant_id,account_id,kind,app_key,purpose) SELECT $1,$2,'read',$3,'routine' FROM generate_series(1,501)",
+      [f.target.tenant, f.target.account, appKey],
+    );
+    const invitation = randomUUID(),
+      replacement = randomUUID();
+    await pool.query(
+      "INSERT INTO invitations(id,token_hash,email,tenant_name,created_by,expires_at,used_at) VALUES($1,$2,$3,'fixture',$4,now(),now()),($5,$6,$3,'fixture',$4,now(),now())",
+      [
+        invitation,
+        tokenHash(randomUUID()),
+        f.address,
+        f.actor.user,
+        replacement,
+        tokenHash(randomUUID()),
+      ],
+    );
+    await pool.query("UPDATE invitations SET replaced_by_id=$2 WHERE id=$1", [
+      invitation,
+      replacement,
+    ]);
+    await readyForErasure(f);
+    assert.equal(await f.closure.runOnce(), true);
+    const account = (
+      await pool.query(
+        "SELECT credentials,email FROM solarman_accounts WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    assert.deepEqual(account, { credentials: null, email: "" });
+    assert.equal((await f.status()).phase, "erasing");
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM measurements WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].n,
+      701,
+    );
+    assert.equal((await verifyStoredCredentials(pool, key)) >= 2, true);
+    await assert.rejects(
+      pool.query(
+        "INSERT INTO api_requests(tenant_id,account_id,kind,purpose) VALUES($1,$2,'read','recovery')",
+        [f.target.tenant, f.target.account],
+      ),
+      { code: "23514" },
+    );
+    const restarted = new WorkspaceOffboarding(pool, hub, {
+      guardFile: f.guardFile,
+      requireRoot: false,
+    });
+    for (let i = 0; i < 8 && (await f.status()).phase !== "removed"; i++)
+      await restarted.runOnce();
+    assert.equal((await f.status()).phase, "removed");
+    const ledger = (
+      await pool.query(
+        "SELECT count(*)::int AS n,count(*) FILTER(WHERE tenant_id IS NULL AND account_id IS NULL)::int AS anonymous FROM api_requests WHERE app_key=$1",
+        [appKey],
+      )
+    ).rows[0];
+    assert.deepEqual(ledger, { n: 501, anonymous: 501 });
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM invitations WHERE id=ANY($1::uuid[])",
+          [[invitation, replacement]],
+        )
+      ).rows[0].n,
+      0,
+    );
+    const tombstone = (
+      await pool.query(
+        "SELECT t.name,t.lifecycle,o.requested_by,o.completed_at FROM tenants t JOIN workspace_offboarding o ON o.tenant_id=t.id WHERE t.id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    assert.equal(tombstone.name, "Removed workspace");
+    assert.equal(tombstone.requested_by, null);
+    assert.ok(tombstone.completed_at);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM measurements WHERE tenant_id=$1",
+          [ids.beta.tenant],
+        )
+      ).rows[0].n > 0,
+      true,
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("workspace erasure releases polling and resumes monitoring after cancellation", async () => {
+  const f = await erasureFixture();
+  const { runtime, calls } = await controlFixture(false, f.target);
+  hub.runtimes.set(f.target.tenant, runtime);
+  try {
+    runtime.start();
+    await runtime.work.idle();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(runtime.timer);
+    assert.equal((await f.change("close")).status, 200);
+    assert.equal(runtime.timer, null);
+    assert.equal(runtime.nextPollAt, null);
+    const before = calls.length;
+    await runtime.collect();
+    assert.equal(calls.length, before);
+    assert.equal((await f.change("cancel")).status, 200);
+    assert.equal(runtime.lifecycle, "suspended");
+    assert.ok(runtime.timer);
+    assert.equal(runtime.controlEnabled, false);
+    assert.equal(runtime.paused, true);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("workspace erasure rollback preserves credentials, records and retry obligations", async () => {
+  const f = await erasureFixture();
+  const name = "erasure_fixture_" + randomUUID().replaceAll("-", "");
+  try {
+    await pool.query(
+      "INSERT INTO measurements(tenant_id,account_id,device,observed_at,soc,temperature_c,pv_w,load_w,grid_w,battery_w,ac_enabled,snapshot) VALUES($1,$2,$3,now(),60,20,1000,500,0,-500,false,'{}')",
+      [f.target.tenant, f.target.account, f.target.device],
+    );
+    await readyForErasure(f);
+    await pool.query(
+      `CREATE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.tenant_id='${f.target.tenant}'::uuid THEN RAISE EXCEPTION 'fixture_delete_failure'; END IF; RETURN OLD; END $$`,
+    );
+    await pool.query(
+      `CREATE TRIGGER ${name} BEFORE DELETE ON measurements FOR EACH ROW EXECUTE FUNCTION ${name}()`,
+    );
+    await assert.rejects(f.closure.runOnce(), /fixture_delete_failure/);
+    const account = (
+      await pool.query(
+        "SELECT credentials IS NOT NULL AS retained FROM solarman_accounts WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    assert.equal(account.retained, true);
+    const status = await f.status();
+    assert.equal(status.startedAt, null);
+    assert.ok(status.lastFailedAt);
+    assert.equal(hub.erasingTenants.has(f.target.tenant), false);
+    assert.equal(hub.accountUpdates.has(f.target.tenant), false);
+    await pool.query(`DROP TRIGGER ${name} ON measurements`);
+    await pool.query(`DROP FUNCTION ${name}()`);
+    assert.equal(await f.closure.runOnce(), true);
+    assert.equal((await f.status()).phase, "removed");
+  } finally {
+    await pool.query(`DROP TRIGGER IF EXISTS ${name} ON measurements`);
+    await pool.query(`DROP FUNCTION IF EXISTS ${name}()`);
+    await f.dispose();
+  }
+});
+
+test("workspace erasure drains concurrent runtime loading before removing credentials", async () => {
+  const f = await erasureFixture();
+  const original = TenantRuntime.prototype.initialize;
+  let entered;
+  const waiting = new Promise((resolve) => {
+    entered = resolve;
+  });
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let loaded, worker;
+  try {
+    await readyForErasure(f);
+    TenantRuntime.prototype.initialize = async function () {
+      if (this.tenantId === f.target.tenant) {
+        entered();
+        await gate;
+      }
+      return original.call(this);
+    };
+    loaded = Promise.allSettled([hub.forTenant(f.target.tenant)]);
+    await waiting;
+    worker = f.closure.runOnce();
+    for (let i = 0; i < 100 && !hub.erasingTenants.has(f.target.tenant); i++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(hub.erasingTenants.has(f.target.tenant), true);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT credentials IS NOT NULL AS retained FROM solarman_accounts WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].retained,
+      true,
+    );
+    release();
+    const result = (await loaded)[0];
+    assert.equal(result.status, "rejected");
+    assert.equal(result.reason.status, 409);
+    assert.equal(await worker, true);
+    assert.equal((await f.status()).phase, "removed");
+    assert.equal(hub.runtimes.has(f.target.tenant), false);
+    assert.equal(hub.erasingTenants.has(f.target.tenant), false);
+  } finally {
+    release();
+    if (loaded) await loaded;
+    if (worker) await worker.catch(() => {});
+    TenantRuntime.prototype.initialize = original;
+    await f.dispose();
+  }
+});
+
+test("workspace erasure retains recovery when a closing runtime reveals a late cleanup obligation", async () => {
+  const f = await erasureFixture();
+  try {
+    await readyForErasure(f);
+    const late = {
+      close: async () => {
+        await pool.query(
+          "INSERT INTO device_control_state(tenant_id,account_id,device,state) VALUES($1,$2,$3,'uncertain')",
+          [f.target.tenant, f.target.account, f.target.device],
+        );
+      },
+    };
+    hub.runtimes.set(f.target.tenant, late);
+    assert.equal(await f.closure.runOnce(), false);
+    const restored = hub.runtimes.get(f.target.tenant);
+    assert.ok(restored);
+    assert.notEqual(restored, late);
+    assert.equal(restored.journal.pending, true);
+    assert.equal((await f.status()).phase, "cleanup");
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT credentials IS NOT NULL AS retained FROM solarman_accounts WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].retained,
+      true,
+    );
+    await pool.query(
+      "UPDATE device_control_state SET state='clear' WHERE tenant_id=$1",
+      [f.target.tenant],
+    );
+    await restored.journal.load();
+    assert.equal(await f.closure.runOnce(), true);
+    assert.equal((await f.status()).phase, "removed");
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("workspace erasure replays offsite fences before customer access and rejects administrator or conflicting fences", async () => {
+  const f = await erasureFixture();
+  const record = {
+    version: 1,
+    id: randomUUID(),
+    tenantId: f.target.tenant,
+    authorizedAt: new Date().toISOString(),
+  };
+  const recovery = tokenHash(randomUUID());
+  try {
+    await pool.query(
+      "UPDATE controller_state SET paused=false,control_enabled=true,manual_topup=true WHERE tenant_id=$1",
+      [f.target.tenant],
+    );
+    await pool.query(
+      "INSERT INTO account_recovery_tokens(user_id,token_hash,kind) VALUES($1,$2,'saved_key')",
+      [f.target.user, recovery],
+    );
+    await f.guard({ records: [record] });
+    const restored = new WorkspaceOffboarding(
+      pool,
+      {},
+      { guardFile: f.guardFile, requireRoot: false },
+    );
+    await restored.initialize();
+    const state = (
+      await pool.query(
+        "SELECT t.lifecycle,c.paused,c.control_enabled,c.manual_topup,c.control_epoch FROM tenants t JOIN controller_state c ON c.tenant_id=t.id WHERE t.id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    assert.equal(state.lifecycle, "offboarding");
+    assert.equal(state.paused, true);
+    assert.equal(state.control_enabled, false);
+    assert.equal(state.manual_topup, false);
+    assert.equal(
+      (await fetchApi("/auth/session", { auth: f.member })).status,
+      401,
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM account_recovery_tokens WHERE user_id=$1 AND revoked_at IS NULL",
+          [f.target.user],
+        )
+      ).rows[0].n,
+      0,
+    );
+    assert.equal(
+      (
+        await fetchApi("/auth/login", {
+          method: "POST",
+          body: { email: f.address, password },
+        })
+      ).status,
+      401,
+    );
+    await restored.replay([record]);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT control_epoch FROM controller_state WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].control_epoch,
+      state.control_epoch,
+    );
+    await assert.rejects(
+      restored.replay([
+        { ...record, authorizedAt: new Date(Date.now() + 1000).toISOString() },
+      ]),
+      /conflict/,
+    );
+    await assert.rejects(
+      restored.replay([
+        { ...record, id: randomUUID(), tenantId: f.actor.tenant },
+      ]),
+      /conflict/,
+    );
+    assert.equal(
+      (await fetchApi("/auth/session", { auth: f.admin })).status,
+      200,
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("workspace erasure blocked by cleanup does not starve another ready tenant", async () => {
+  const f = await erasureFixture();
+  const other = await lifecycleFixture();
+  try {
+    await readyForErasure(f);
+    await pool.query(
+      "INSERT INTO device_control_state(tenant_id,account_id,device,state) VALUES($1,$2,$3,'uncertain')",
+      [f.target.tenant, f.target.account, f.target.device],
+    );
+    const request = async (action) => {
+      const revision = (
+        await pool.query(
+          "SELECT lifecycle_revision::text AS revision FROM tenants WHERE id=$1",
+          [other.target.tenant],
+        )
+      ).rows[0].revision;
+      return f.closure.request(other.session, other.target.tenant, {
+        action,
+        revision,
+        currentPassword: password,
+        confirmation: "Lifecycle member",
+        eraseConfirmed: action === "erase",
+      });
+    };
+    await request("close");
+    await request("erase");
+    const row = (
+      await pool.query(
+        "SELECT id,erasure_authorized_at FROM workspace_offboarding WHERE tenant_id=$1",
+        [other.target.tenant],
+      )
+    ).rows[0];
+    f.records.push({
+      version: 1,
+      id: row.id,
+      tenantId: other.target.tenant,
+      authorizedAt: row.erasure_authorized_at.toISOString(),
+    });
+    await f.guard();
+    await pool.query(
+      "UPDATE workspace_offboarding SET offsite_acknowledged_at=clock_timestamp() WHERE tenant_id=$1",
+      [other.target.tenant],
+    );
+    assert.equal(await f.closure.runOnce(), false);
+    assert.equal(await f.closure.runOnce(), true);
+    assert.equal(
+      (await f.closure.status(other.target.tenant)).phase,
+      "removed",
+    );
+    assert.equal((await f.status()).phase, "cleanup");
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("workspace erasure health is private to administrators and reports a stale or missing fence service", async () => {
+  const f = await erasureFixture();
+  try {
+    const normal = await (
+      await fetchApi("/operations", { auth: f.member })
+    ).json();
+    assert.equal(Object.hasOwn(normal, "erasure"), false);
+    const healthy = await (
+      await fetchApi("/operations", { auth: f.admin })
+    ).json();
+    assert.equal(healthy.erasure.state, "verified");
+    assert.equal(healthy.erasure.receipts, 0);
+    await f.guard({ checkedAt: new Date(Date.now() - 301000).toISOString() });
+    assert.equal(
+      (await (await fetchApi("/operations", { auth: f.admin })).json()).erasure
+        .state,
+      "stale",
+    );
+    await rm(f.guardFile);
+    assert.equal(
+      (await (await fetchApi("/operations", { auth: f.admin })).json()).erasure
+        .state,
+      "unavailable",
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("workspace erasure administrator recovery is restricted to the original inverter and preserves paused intent", async () => {
+  const f = await erasureFixture();
+  let runtime;
+  try {
+    await readyForErasure(f);
+    const account = (
+      await pool.query("SELECT * FROM solarman_accounts WHERE tenant_id=$1", [
+        f.target.tenant,
+      ])
+    ).rows[0];
+    const runtimeHub = {
+      pool,
+      key,
+      stopping: false,
+      env: {
+        CALLBACK_PUBLIC_URL: "https://fixture.example.test",
+        WRITES_ENABLED: "false",
+      },
+      budget: new ApiBudget(pool, {}),
+      runLimited: async (fn) => fn(),
+      monitorPollMs: () => 300000,
+    };
+    runtime = new TenantRuntime(runtimeHub, f.target.tenant, account);
+    await runtime.initialize();
+    await pool.query(
+      "INSERT INTO device_control_state(tenant_id,account_id,device,state) VALUES($1,$2,$3,'uncertain') ON CONFLICT(tenant_id,account_id,device) DO UPDATE SET state='uncertain'",
+      [f.target.tenant, f.target.account, f.target.device],
+    );
+    await runtime.journal.load();
+    const commands = [];
+    runtime.client.command = async (command, options) => {
+      commands.push({ command, purpose: options.purpose });
+      return "010304000000093A35";
+    };
+    runtime.client.api = async (route, body, options) => {
+      assert.equal(route, "/device/v1.0/currentData");
+      assert.equal(options.purpose, "recovery");
+      return providerPayload({ device: runtime.device });
+    };
+    const scoped = Object.create(hub);
+    scoped.accountUpdates = new Set();
+    scoped.runtimes = new Map([[f.target.tenant, runtime]]);
+    scoped.forTenant = async (tenant) => {
+      assert.equal(tenant, f.target.tenant);
+      return runtime;
+    };
+    scoped.reload = async () => runtime;
+    let discovered = false;
+    scoped.discover = async (tenant) => {
+      assert.equal(tenant, f.target.tenant);
+      discovered = true;
+    };
+    const recovery = new WorkspaceOffboarding(pool, scoped, {
+      guardFile: f.guardFile,
+      requireRoot: false,
+    });
+    await assert.rejects(
+      recovery.recover(f.session, f.target.tenant, {
+        action: "enable_controls",
+        currentPassword: password,
+      }),
+      { status: 400 },
+    );
+    await recovery.recover(f.session, f.target.tenant, {
+      action: "stop",
+      currentPassword: password,
+    });
+    assert.equal(commands.length, 0);
+    assert.equal((await f.status()).cleanupPending, true);
+    await recovery.recover(f.session, f.target.tenant, {
+      action: "inspect",
+      currentPassword: password,
+    });
+    assert.equal(commands.length, 1);
+    assert.equal(commands[0].purpose, "recovery");
+    assert.equal(commands[0].command.slice(0, 4), "0103");
+    assert.equal((await f.status()).cleanupPending, false);
+    await runtime.readProvider();
+    await assert.rejects(
+      recovery.recover(f.session, f.target.tenant, {
+        action: "repair",
+        currentPassword: password,
+        email: "different@example.test",
+        password: "fixture-password",
+      }),
+      /already has a provider account/,
+    );
+    const replacement = "new-provider-fixture-password";
+    await recovery.recover(f.session, f.target.tenant, {
+      action: "repair",
+      currentPassword: password,
+      email: f.address,
+      password: replacement,
+      appId: "repaired-fixture-app",
+      appSecret: "repaired-fixture-secret",
+    });
+    assert.equal(discovered, true);
+    const updated = (
+      await pool.query(
+        "SELECT id,credentials,device_sn,profile FROM solarman_accounts WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    const privateValues = decryptCredentials(
+      updated.credentials,
+      key,
+      f.target.tenant,
+      updated.id,
+    );
+    assert.equal(
+      privateValues.passwordSha256,
+      createHash("sha256").update(replacement).digest("hex"),
+    );
+    assert.equal(privateValues.appId, "repaired-fixture-app");
+    assert.equal(updated.device_sn, f.target.device);
+    assert.equal(updated.profile, "bluesun-bse20kh3");
+    const control = (
+      await pool.query(
+        "SELECT paused,control_enabled,verification FROM controller_state WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    assert.deepEqual(control, {
+      paused: true,
+      control_enabled: false,
+      verification: null,
+    });
+  } finally {
+    await runtime?.close();
+    await f.dispose();
+  }
+});
+
+test("workspace erasure credential checks reject missing secrets before erasure has started", async () => {
+  const f = await erasureFixture();
+  let original;
+  try {
+    original = (
+      await pool.query(
+        "SELECT credentials FROM solarman_accounts WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0].credentials;
+    await pool.query(
+      "UPDATE solarman_accounts SET credentials=null WHERE tenant_id=$1",
+      [f.target.tenant],
+    );
+    await assert.rejects(
+      verifyStoredCredentials(pool, key),
+      /Missing credentials outside authorized erasure/,
+    );
+  } finally {
+    if (original)
+      await pool.query(
+        "UPDATE solarman_accounts SET credentials=$2 WHERE tenant_id=$1",
+        [f.target.tenant, original],
+      );
+    await f.dispose();
+  }
+});
+
+test("workspace erasure anonymous quota accounting retains 366 days without a tenant retention policy", async () => {
+  const appKey = apiAppKey(`anonymous-erasure-${randomUUID()}`);
+  await pool.query("INSERT INTO api_app_budgets(app_key) VALUES($1)", [appKey]);
+  const old = (
+    await pool.query(
+      "INSERT INTO api_requests(tenant_id,account_id,app_key,kind,purpose,created_at) VALUES(null,null,$1,'read','routine',clock_timestamp()-interval '367 days') RETURNING id",
+      [appKey],
+    )
+  ).rows[0].id;
+  const recent = (
+    await pool.query(
+      "INSERT INTO api_requests(tenant_id,account_id,app_key,kind,purpose,created_at) VALUES(null,null,$1,'command','recovery',clock_timestamp()-interval '365 days') RETURNING id",
+      [appKey],
+    )
+  ).rows[0].id;
+  const linked = (
+    await pool.query(
+      "INSERT INTO api_requests(tenant_id,account_id,app_key,kind,purpose,created_at) VALUES($1,$2,$3,'read','routine',clock_timestamp()-interval '367 days') RETURNING id",
+      [ids.beta.tenant, ids.beta.account, appKey],
+    )
+  ).rows[0].id;
+  await new DataMaintenance(pool).prune();
+  const remaining = (
+    await pool.query(
+      "SELECT id,tenant_id,account_id,app_key,kind,purpose FROM api_requests WHERE id=ANY($1::bigint[]) ORDER BY id",
+      [[old, recent, linked]],
+    )
+  ).rows;
+  assert.deepEqual(
+    remaining.map((row) => row.id),
+    [recent, linked],
+  );
+  assert.deepEqual(remaining[0], {
+    id: recent,
+    tenant_id: null,
+    account_id: null,
+    app_key: appKey,
+    kind: "command",
+    purpose: "recovery",
+  });
 });

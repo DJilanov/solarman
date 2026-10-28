@@ -109,7 +109,7 @@ export class AccountRecovery {
         // Administrative recovery targets ordinary users; these disjoint role locks cannot cycle.
         const target = (
           await client.query(
-            "SELECT id,tenant_id FROM users WHERE lower(email)=$1 AND NOT platform_admin FOR UPDATE",
+            "SELECT u.id,u.tenant_id FROM users u WHERE lower(u.email)=$1 AND NOT u.platform_admin AND NOT EXISTS(SELECT 1 FROM workspace_offboarding o WHERE o.tenant_id=u.tenant_id AND o.erasure_authorized_at IS NOT NULL) FOR UPDATE OF u",
             [email],
           )
         ).rows[0];

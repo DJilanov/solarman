@@ -5,6 +5,8 @@ import { useWorkspace } from "./context";
 import { tr } from "./i18n";
 import { Panel, Notice, Loading, Heading, when } from "./components";
 import { formatNumber } from "./format";
+import { MemberClosureStatus } from "./workspace-offboarding";
+import type { OffboardingStatus } from "./types";
 import type { RetentionPolicy } from "./types";
 
 interface RetentionDraft {
@@ -143,7 +145,7 @@ function ArchivePanel(): ReactNode {
   );
 }
 
-function WorkspaceDataPanels(): ReactNode {
+function WorkspaceDataPanels({ locked }: { locked: boolean }): ReactNode {
   const { session } = useWorkspace();
   const { data, error, reload } = useData<RetentionPolicy>(
     "/workspace/retention",
@@ -318,7 +320,7 @@ function WorkspaceDataPanels(): ReactNode {
               <div className="lifecycle-actions">
                 <button
                   className="button primary"
-                  disabled={pending || changed || !password}
+                  disabled={pending || locked || changed || !password}
                 >
                   {tr(pending ? "Saving…" : "Save retention policy")}
                 </button>
@@ -398,6 +400,9 @@ function WorkspaceDataPanels(): ReactNode {
 }
 
 export default function WorkspaceDataPage(): ReactNode {
+  const { data: closure } = useData<OffboardingStatus>(
+    "/workspace/offboarding",
+  );
   return (
     <>
       <Heading
@@ -407,7 +412,8 @@ export default function WorkspaceDataPage(): ReactNode {
           "Download your information and choose how long historical records are kept.",
         )}
       />
-      <WorkspaceDataPanels />
+      <MemberClosureStatus data={closure} />
+      <WorkspaceDataPanels locked={Boolean(closure?.id)} />
     </>
   );
 }

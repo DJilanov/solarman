@@ -1,4 +1,5 @@
 export const CONTROL_REASONS = {
+  closing: "This workspace is closing. New automation is unavailable.",
   suspended:
     "This workspace is suspended. New automation and administration are unavailable.",
   connection: "Connect your account and select an inverter first",
@@ -72,10 +73,11 @@ export function verificationStatus(
   };
 }
 
-/** @param {{ tenantActive?: boolean, connected: boolean, supported: boolean, serverAllowed: boolean, workspaceEnabled: boolean, verified: boolean, firmwareVerified: boolean, capacityAvailable: boolean, settingsMatch: boolean, clockVerified: boolean, clockFresh: boolean, cleanupVerified: boolean, stopping: boolean }} facts @returns {{ reasons: {code: string, message: string}[], canVerify: boolean, canEnable: boolean, canStart: boolean, canStop: boolean }} */
+/** @param {{ tenantClosing?:boolean, tenantActive?: boolean, connected: boolean, supported: boolean, serverAllowed: boolean, workspaceEnabled: boolean, verified: boolean, firmwareVerified: boolean, capacityAvailable: boolean, settingsMatch: boolean, clockVerified: boolean, clockFresh: boolean, cleanupVerified: boolean, stopping: boolean }} facts @returns {{ reasons: {code: string, message: string}[], canVerify: boolean, canEnable: boolean, canStart: boolean, canStop: boolean }} */
 export function controlReadiness(facts) {
   const codes = [];
-  if (facts.tenantActive === false) codes.push("suspended");
+  if (facts.tenantClosing) codes.push("closing");
+  else if (facts.tenantActive === false) codes.push("suspended");
   if (!facts.connected) codes.push("connection");
   if (!facts.supported) codes.push("profile");
   if (!facts.serverAllowed) codes.push("server");
@@ -94,6 +96,7 @@ export function controlReadiness(facts) {
     canVerify: available,
     canEnable:
       available &&
+      !facts.tenantClosing &&
       facts.tenantActive !== false &&
       facts.serverAllowed &&
       facts.verified &&

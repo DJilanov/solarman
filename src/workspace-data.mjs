@@ -31,6 +31,8 @@ const EXPORT_SECTIONS = {
     "SELECT id::text,account_id,kind,purpose,created_at FROM api_requests WHERE tenant_id=$1 ORDER BY created_at,id",
   workspaceChanges:
     "SELECT id,revision::text,state,message,created_at FROM tenant_lifecycle_events WHERE tenant_id=$1 ORDER BY revision",
+  closure:
+    "SELECT id,requested_at,erasure_authorized_at,offsite_acknowledged_at,erasure_started_at,completed_at,last_failed_at,removed_rows::text FROM workspace_offboarding WHERE tenant_id=$1",
   retention:
     "SELECT enabled,measurement_days,activity_days,revision::text,updated_at,last_run_at,last_failed_at,last_counts FROM workspace_retention WHERE tenant_id=$1",
   retentionChanges:

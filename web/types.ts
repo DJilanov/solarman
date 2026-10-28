@@ -20,7 +20,7 @@ export interface RetentionPolicy {
   }[];
 }
 export interface TenantLifecycleStatus {
-  state: "active" | "suspended";
+  state: LifecycleState;
   revision: string;
   changedAt: string | null;
   message: string;
@@ -29,7 +29,7 @@ export interface TenantLifecycleStatus {
   events: {
     id: string;
     revision: string;
-    state: "active" | "suspended";
+    state: LifecycleState;
     message: string;
     at: string;
   }[];
@@ -40,10 +40,33 @@ export interface TenantMetadata {
   created_at: string;
   members: number;
   connection_status: string | null;
-  lifecycle: "active" | "suspended";
+  lifecycle: LifecycleState;
   revision: string;
   protected: boolean;
   cleanup_pending: boolean;
+}
+export type LifecycleState = "active" | "suspended" | "offboarding" | "removed";
+export interface OffboardingStatus {
+  id: string | null;
+  state: LifecycleState;
+  requestedAt: string | null;
+  authorizedAt: string | null;
+  acknowledgedAt: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  processedRows: number;
+  lastFailedAt: string | null;
+  cleanupPending: boolean;
+  receiptService: boolean;
+  receiptReady: boolean;
+  phase:
+    | "none"
+    | "cleanup"
+    | "ready"
+    | "awaiting-receipt"
+    | "queued"
+    | "erasing"
+    | "removed";
 }
 export interface BrowserSession {
   id: string;
@@ -109,6 +132,7 @@ export interface AlertSummary {
 }
 export interface OperationsData {
   backup?: BackupStatus;
+  erasure?: ErasureServiceStatus;
   items: Incident[];
   hasMore: boolean;
   offset: number;
@@ -128,6 +152,11 @@ export interface OperationsData {
     controlFault: boolean;
     staleAfterSeconds: number;
   } | null;
+}
+export interface ErasureServiceStatus {
+  state: "verified" | "stale" | "unavailable" | "not-configured";
+  checkedAt: string | null;
+  receipts: number | null;
 }
 export type BackupIssue =
   | "backup_failed"

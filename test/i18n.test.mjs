@@ -41,6 +41,7 @@ test("every literal translation used by the interface exists in both catalogues"
     "access-admin.tsx",
     "tenant-lifecycle.tsx",
     "workspace-data.tsx",
+    "workspace-offboarding.tsx",
     "control-readiness.tsx",
   ]) {
     const source = readFileSync(
@@ -62,6 +63,8 @@ test("account security errors and event labels have English and Bulgarian transl
     "invitations.mjs",
     "tenant-lifecycle.mjs",
     "workspace-data.mjs",
+    "workspace-offboarding.mjs",
+    "account-hub.mjs",
   ]
     .map((file) =>
       readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"),
@@ -86,6 +89,26 @@ test("account security errors and event labels have English and Bulgarian transl
     "Other browser sessions signed out",
     "Unable to update account security",
     "Recovery details are invalid or no longer available",
+    "Closure recovery is unconfirmed. Refresh the closure status before retrying.",
+    "The closure change is unconfirmed. Refresh its status before trying again.",
+    "Unable to change workspace closure",
+    "Closure recovery remains unconfirmed",
+    "No closure requested",
+    "Inverter cleanup required",
+    "Ready for erasure authorization",
+    "Waiting for a verified offsite receipt",
+    "Erasure queued",
+    "Erasing workspace records",
+    "Workspace removed",
+    "Workspace closing",
+    "Routine collection and automation are stopped. Export needed data before erasure authorization.",
+    "No erasure authorized",
+    "Awaiting publication",
+    "Receipt service unavailable",
+    "Offsite receipts synchronized",
+    "Receipt synchronization is overdue",
+    "Erasure recovery status is unavailable",
+    "Erasure recovery is not configured",
     "Return to dashboard",
   ];
   for (const key of keys) {

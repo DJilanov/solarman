@@ -216,7 +216,7 @@ export class Operations {
     const [accounts, debts, tenants] = await Promise.all([
       this.pool
         .query(`SELECT a.tenant_id,a.id AS account_id,a.device_sn AS device,a.monitoring_admitted,h.created_at,h.attempted_at,h.succeeded_at,h.failed_at,h.uploaded_at,h.reported_at,h.device_state,h.failures,h.control_fault,h.control_fault_at
-        FROM solarman_accounts a LEFT JOIN device_health h ON h.tenant_id=a.tenant_id AND h.account_id=a.id AND h.device=a.device_sn WHERE a.device_sn IS NOT NULL`),
+        FROM solarman_accounts a JOIN tenants t ON t.id=a.tenant_id LEFT JOIN device_health h ON h.tenant_id=a.tenant_id AND h.account_id=a.id AND h.device=a.device_sn WHERE a.device_sn IS NOT NULL AND t.lifecycle IN('active','suspended')`),
       this.pool.query(
         "SELECT tenant_id,account_id,device,updated_at FROM device_control_state WHERE state IN ('uncertain','cleanup-required') AND updated_at<now()-interval '2 minutes'",
       ),

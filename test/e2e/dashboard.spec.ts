@@ -13,6 +13,9 @@ import type {
   BackupStatus,
   ApiCapacity,
   AccountSecurityData,
+  OffboardingStatus,
+  TenantLifecycleStatus,
+  TenantMetadata,
 } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
@@ -3057,4 +3060,428 @@ test("an incomplete archive never triggers a successful file download", async ({
   await expect(
     page.getByLabel("Dashboard password for the archive", { exact: true }),
   ).toHaveValue("");
+});
+
+test("workspace closure uses real cookies, reports a lost response and permits cancellation into suspension", async ({
+  page,
+  browser,
+}) => {
+  await signIn(page);
+  const owner = (await (
+    await page.request.get("/api/auth/session")
+  ).json()) as Session;
+  const name = `Closure browser ${randomUUID()}`;
+  const email = `closure-browser-${randomUUID()}@example.test`;
+  const memberPassword = "closure-browser-fixture-password";
+  const invited = await page.request.post("/api/admin/invitations", {
+    headers: {
+      origin: "http://localhost:3000",
+      "x-csrf-token": owner.csrfToken,
+    },
+    data: { email, tenantName: name },
+  });
+  expect(invited.status()).toBe(201);
+  const link = (await invited.json()) as { url: string };
+  const context = await browser.newContext({
+    baseURL: "http://localhost:3000",
+  });
+  try {
+    const activation = await context.request.post("/api/auth/activate", {
+      headers: { origin: "http://localhost:3000" },
+      data: {
+        token: new URLSearchParams(new URL(link.url).hash.slice(1)).get(
+          "token",
+        ),
+        password: memberPassword,
+      },
+    });
+    expect(activation.status()).toBe(200);
+    const child = (await activation.json()) as Session;
+    const member = await context.newPage();
+    await member.goto("/settings/data");
+    await expect(
+      member.getByRole("heading", { name: "Workspace data", exact: true }),
+    ).toBeVisible();
+    await page.goto("/workspaces");
+    await page
+      .getByRole("row")
+      .filter({ hasText: owner.tenant.name })
+      .getByRole("button", { name: "Manage workspace", exact: true })
+      .click();
+    const protectedPanel = page
+      .locator("section")
+      .filter({
+        has: page.getByRole("heading", {
+          name: owner.tenant.name,
+          exact: true,
+        }),
+      });
+    await expect(
+      protectedPanel.getByRole("heading", {
+        name: "Close or remove this workspace",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await protectedPanel
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
+    await page
+      .getByRole("row")
+      .filter({ hasText: name })
+      .getByRole("button", { name: "Manage workspace", exact: true })
+      .click();
+    const panel = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name, exact: true }) });
+    await page.route(
+      `**/api/admin/tenants/${child.tenant.id}/offboarding`,
+      async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        const action = (route.request().postDataJSON() as { action: string })
+          .action;
+        if (action !== "close") return route.continue();
+        const result = await route.fetch();
+        expect(result.status()).toBe(200);
+        await route.abort("failed");
+      },
+    );
+    await page.locator(".language-switch select").selectOption("bg");
+    await panel
+      .getByLabel("Парола за таблото при закриване", { exact: true })
+      .fill(process.env.E2E_PASSWORD!);
+    await panel
+      .getByLabel("Въведи името на пространството за потвърждение", {
+        exact: true,
+      })
+      .fill(name);
+    await panel
+      .getByRole("button", {
+        name: "Заяви закриване на пространството",
+        exact: true,
+      })
+      .click();
+    await expect(panel).toContainText(
+      "Промяната на закриването не е потвърдена.",
+    );
+    await expect(panel).toContainText("Готово за разрешаване на изтриването");
+    expect((await context.request.get("/api/auth/session")).status()).toBe(401);
+    await member.reload();
+    await member.getByLabel("Email address", { exact: true }).fill(email);
+    await member.getByLabel("Password", { exact: true }).fill(memberPassword);
+    await member.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(
+      member.getByText("Workspace closing", { exact: true }),
+    ).toHaveCount(2);
+    await panel
+      .getByLabel("Парола за таблото при закриване", { exact: true })
+      .fill(process.env.E2E_PASSWORD!);
+    await panel
+      .getByLabel("Въведи името на пространството за потвърждение", {
+        exact: true,
+      })
+      .fill(name);
+    await panel
+      .getByLabel(
+        "Необходимите данни са изтеглени. Разрешавам окончателното изтриване на това пространство.",
+        { exact: true },
+      )
+      .check();
+    await expect(
+      panel.getByRole("button", {
+        name: "Разреши окончателното изтриване",
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await panel
+      .getByRole("button", {
+        name: "Отмени закриването и остави пространството спряно",
+        exact: true,
+      })
+      .click();
+    await expect(panel).toContainText("Няма заявено закриване");
+    const overview = (await (
+      await context.request.get("/api/overview")
+    ).json()) as OverviewData;
+    expect(overview.controller.paused).toBe(true);
+    expect(overview.controller.control.workspaceEnabled).toBe(false);
+    await page.setViewportSize({ width: 320, height: 900 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  } finally {
+    await context.close();
+  }
+});
+
+test("workspace erasure UI requires consent, tracks receipts and exposes private recovery health in Bulgarian", async ({
+  page,
+}) => {
+  await signIn(page);
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const name = "Isolated erasure interface";
+  const item: TenantMetadata = {
+    id,
+    name,
+    created_at: now,
+    members: 1,
+    connection_status: "connected",
+    lifecycle: "offboarding",
+    revision: "3",
+    protected: false,
+    cleanup_pending: true,
+  };
+  const lifecycle: TenantLifecycleStatus = {
+    state: "offboarding",
+    revision: "3",
+    changedAt: now,
+    message: "",
+    protected: false,
+    cleanupPending: true,
+    events: [],
+  };
+  const status: OffboardingStatus = {
+    id: randomUUID(),
+    state: "offboarding",
+    requestedAt: now,
+    authorizedAt: null,
+    acknowledgedAt: null,
+    startedAt: null,
+    completedAt: null,
+    processedRows: 0,
+    lastFailedAt: null,
+    cleanupPending: true,
+    receiptService: true,
+    receiptReady: false,
+    phase: "cleanup",
+  };
+  await page.route("**/api/admin/tenants", (route) =>
+    route.fulfill({ json: { items: [item] } }),
+  );
+  await page.route(`**/api/admin/tenants/${id}/lifecycle`, (route) =>
+    route.fulfill({ json: lifecycle }),
+  );
+  const actions: {
+    action: string;
+    consent: boolean;
+    confirmed: boolean;
+    reauthenticated: boolean;
+  }[] = [];
+  await page.route(
+    `**/api/admin/tenants/${id}/offboarding/recovery`,
+    (route) => {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      expect(body.action).toBe("repair");
+      expect(Boolean(body.currentPassword === process.env.E2E_PASSWORD)).toBe(
+        true,
+      );
+      expect(
+        Boolean(
+          body.appId === "fixture-app" && body.appSecret === "fixture-secret",
+        ),
+      ).toBe(true);
+      status.cleanupPending = false;
+      status.phase = "ready";
+      lifecycle.cleanupPending = false;
+      actions.push({
+        action: "repair",
+        consent: false,
+        confirmed: true,
+        reauthenticated: true,
+      });
+      return route.fulfill({ json: status });
+    },
+  );
+  await page.route(`**/api/admin/tenants/${id}/offboarding`, (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      actions.push({
+        action: String(body.action),
+        consent: body.eraseConfirmed === true,
+        confirmed: body.confirmation === name,
+        reauthenticated: body.currentPassword === process.env.E2E_PASSWORD,
+      });
+      status.authorizedAt = now;
+      status.phase = "awaiting-receipt";
+      lifecycle.revision = "4";
+    }
+    return route.fulfill({ json: status });
+  });
+  await page.goto("/workspaces");
+  await page
+    .getByRole("row")
+    .filter({ hasText: name })
+    .getByRole("button", { name: "Manage workspace", exact: true })
+    .click();
+  const panel = page
+    .locator("section")
+    .filter({ has: page.getByRole("heading", { name, exact: true }) });
+  await expect(
+    panel.getByRole("button", {
+      name: "Authorize permanent erasure",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await panel
+    .getByLabel("Dashboard password for closure recovery", { exact: true })
+    .fill(process.env.E2E_PASSWORD!);
+  await panel
+    .getByText("Repair provider access for cleanup", { exact: true })
+    .click();
+  await panel
+    .getByLabel("Original SOLARMAN account email", { exact: true })
+    .fill("cleanup-provider@example.test");
+  await panel
+    .getByLabel("SOLARMAN password for closure recovery", { exact: true })
+    .fill("fixture-provider-password");
+  await panel
+    .getByText("OpenAPI credentials for cleanup", { exact: true })
+    .click();
+  await panel.getByLabel("App ID", { exact: true }).fill("fixture-app");
+  await panel.getByLabel("App Secret", { exact: true }).fill("fixture-secret");
+  await panel
+    .getByRole("button", { name: "Test repaired provider access", exact: true })
+    .click();
+  await expect(panel).toContainText("Ready for erasure authorization");
+  await expect(
+    panel.getByLabel("SOLARMAN password for closure recovery", { exact: true }),
+  ).toHaveCount(0);
+  await panel
+    .getByLabel("Dashboard password for closure", { exact: true })
+    .fill(process.env.E2E_PASSWORD!);
+  await panel
+    .getByLabel("Type the workspace name to confirm", { exact: true })
+    .fill(name);
+  await panel
+    .getByLabel("Dashboard password for closure", { exact: true })
+    .press("Enter");
+  expect(actions.map((a) => a.action)).toEqual(["repair"]);
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(
+    panel.getByLabel("Въведи името на пространството за потвърждение", {
+      exact: true,
+    }),
+  ).toHaveValue(name);
+  await panel
+    .getByLabel(
+      "Необходимите данни са изтеглени. Разрешавам окончателното изтриване на това пространство.",
+      { exact: true },
+    )
+    .check();
+  await panel
+    .getByRole("button", {
+      name: "Разреши окончателното изтриване",
+      exact: true,
+    })
+    .click();
+  await expect(panel).toContainText(
+    "Изчаква се проверено потвърждение извън сървъра",
+  );
+  expect(actions[1]).toEqual({
+    action: "erase",
+    consent: true,
+    confirmed: true,
+    reauthenticated: true,
+  });
+  await expect(
+    panel.getByRole("button", {
+      name: "Отмени закриването и остави пространството спряно",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  status.acknowledgedAt = now;
+  status.receiptReady = true;
+  status.phase = "erasing";
+  status.startedAt = now;
+  status.processedRows = 500;
+  await panel
+    .getByRole("button", {
+      name: "Обнови състоянието на закриването",
+      exact: true,
+    })
+    .click();
+  await expect(panel).toContainText("Записите на пространството се изтриват");
+  status.phase = "removed";
+  status.state = "removed";
+  status.completedAt = now;
+  lifecycle.state = "removed";
+  lifecycle.revision = "5";
+  item.name = "Removed workspace";
+  item.lifecycle = "removed";
+  item.members = 0;
+  await panel
+    .getByRole("button", {
+      name: "Обнови състоянието на закриването",
+      exact: true,
+    })
+    .click();
+  const removed = page
+    .locator("section")
+    .filter({
+      has: page.getByRole("heading", {
+        name: "Пространството е изтрито",
+        exact: true,
+      }),
+    });
+  await expect(removed).toContainText("Пространството е изтрито");
+  const download = page.waitForEvent("download");
+  await removed
+    .getByRole("button", {
+      name: "Изтегли потвърждението за изтриване",
+      exact: true,
+    })
+    .click();
+  const file = await download;
+  const stream = await file.createReadStream();
+  if (!stream) throw new Error("Fixture receipt download is unavailable");
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  expect(JSON.parse(Buffer.concat(chunks).toString())).toEqual({
+    version: 1,
+    id: status.id,
+    tenantId: id,
+    authorizedAt: now,
+  });
+  const health = (await (
+    await page.request.get("/api/operations")
+  ).json()) as OperationsData;
+  health.erasure = { state: "verified", checkedAt: now, receipts: 1 };
+  await page.route("**/api/operations?*", (route) =>
+    route.fulfill({ json: health }),
+  );
+  await page.goto("/settings/health");
+  const protection = page
+    .locator("section")
+    .filter({
+      has: page.getByRole("heading", {
+        name: "Защита при възстановяване на изтрити акаунти",
+        exact: true,
+      }),
+    });
+  await expect(protection).toContainText(
+    "Потвържденията извън сървъра са синхронизирани",
+  );
+  health.erasure.state = "stale";
+  await page.reload();
+  await expect(protection).toContainText(
+    "Синхронизацията на потвържденията е просрочена",
+  );
+  health.erasure.state = "unavailable";
+  health.erasure.checkedAt = null;
+  health.erasure.receipts = null;
+  await page.reload();
+  await expect(protection).toContainText(
+    "Състоянието на защитата при възстановяване е недостъпно",
+  );
+  await page.setViewportSize({ width: 320, height: 1000 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await protection.screenshot({
+    path: "test-results/erasure-health-mobile-bg.png",
+  });
 });

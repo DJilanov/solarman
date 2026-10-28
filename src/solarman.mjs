@@ -341,8 +341,8 @@ export class SolarmanClient {
     }
   }
 
-  /** @param {string} path @param {object} body @returns {Promise<Record<string, unknown>>} */
-  api(path, body) {
+  /** @param {string} path @param {object} body @param {{purpose?:'routine'|'recovery'}} [options] @returns {Promise<Record<string, unknown>>} */
+  api(path, body, options = {}) {
     if (
       ![
         "/station/v1.0/list",
@@ -354,7 +354,10 @@ export class SolarmanClient {
       return Promise.reject(new Error("Unsupported provider read endpoint"));
     }
     const result = this.tail.then(async () => {
-      const purpose = path === "/account/v1.0/balance" ? "balance" : "routine";
+      const purpose =
+        path === "/account/v1.0/balance"
+          ? "balance"
+          : (options.purpose ?? "routine");
       return this.post(
         path,
         body,

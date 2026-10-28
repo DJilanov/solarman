@@ -3,8 +3,10 @@ import { createServer } from "node:http";
 import assert from "node:assert/strict";
 import { createPool, migrate } from "./database.mjs";
 import { createApp } from "./http-app.mjs";
+import { WorkspaceOffboarding } from "./workspace-offboarding.mjs";
+import { erasureReceipt } from "./erasure-guard.mjs";
 import { hashPassword, validPasswordHash } from "./auth.mjs";
-import { decryptCredentials, encryptionKey } from "./credentials.mjs";
+import { verifyStoredCredentials, encryptionKey } from "./credentials.mjs";
 import {
   BackupError,
   identifier,
@@ -33,6 +35,14 @@ export function validateDrill(header, dump) {
   )
     throw new BackupError("drill_payload_invalid");
   encryptionKey(header.credentialKey);
+  if (header.erasureReceipts !== undefined) {
+    if (
+      !Array.isArray(header.erasureReceipts) ||
+      header.erasureReceipts.length > 50000
+    )
+      throw new BackupError("drill_erasure_fences_invalid");
+    header.erasureReceipts.forEach(erasureReceipt);
+  }
   for (const [table, count] of Object.entries(header.contents.counts))
     if (!table || !Number.isSafeInteger(count) || count < 0)
       throw new BackupError("drill_inventory_invalid");
@@ -60,8 +70,8 @@ async function createAuthenticationFixture(pool) {
   return { password, user, email };
 }
 
-/** @param {import('pg').Pool} pool @param {AuthenticationFixture} fixture @returns {Promise<void>} */
-async function verifyAuthentication(pool, { password, user, email }) {
+/** @param {import('pg').Pool} pool @param {AuthenticationFixture} fixture @param {{user:string,email:string,password:string,token:string,recoveryKey:string}} erased @returns {Promise<void>} */
+async function verifyAuthentication(pool, { password, user, email }, erased) {
   let accessAttempts = 0;
   const hub = {
     forTenant: async () => {
@@ -80,6 +90,58 @@ async function verifyAuthentication(pool, { password, user, email }) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const origin = `http://127.0.0.1:${server.address().port}`;
+    assert.equal(
+      (
+        await fetch(origin + "/api/auth/session", {
+          headers: { cookie: `solarman_session=${erased.token}` },
+        })
+      ).status,
+      401,
+    );
+    assert.equal(
+      (
+        await fetch(origin + "/api/auth/login", {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            email: erased.email,
+            password: erased.password,
+          }),
+        })
+      ).status,
+      401,
+    );
+    assert.equal(
+      (
+        await fetch(origin + "/api/auth/recover", {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            email: erased.email,
+            key: erased.recoveryKey,
+            newPassword: randomBytes(32).toString("base64url"),
+          }),
+        })
+      ).status,
+      400,
+    );
+    await assert.rejects(
+      pool.query(
+        "INSERT INTO sessions(user_id,token_hash,csrf_token,expires_at) VALUES($1,$2,$3,clock_timestamp()+interval '1 hour')",
+        [
+          erased.user,
+          createHash("sha256").update(randomBytes(32)).digest("hex"),
+          randomBytes(32).toString("hex"),
+        ],
+      ),
+      { code: "23514" },
+    );
     const login = await fetch(origin + "/api/auth/login", {
       method: "POST",
       headers: {
@@ -354,20 +416,13 @@ export async function restoreDrill(header, dump) {
       const users = (await connection.query("SELECT password_hash FROM users"))
         .rows;
       assert.ok(users.every((user) => validPasswordHash(user.password_hash)));
-      const accounts = (
-        await connection.query(
-          "SELECT tenant_id,id,credentials FROM solarman_accounts",
-        )
-      ).rows;
-      assert.equal(accounts.length, header.accountCount);
-      const key = encryptionKey(header.credentialKey);
-      for (const account of accounts)
-        decryptCredentials(
-          account.credentials,
-          key,
-          account.tenant_id,
-          account.id,
-        );
+      assert.equal(
+        await verifyStoredCredentials(
+          connection,
+          encryptionKey(header.credentialKey),
+        ),
+        header.accountCount,
+      );
       await connection.query("COMMIT");
     } finally {
       connection.release();
@@ -380,6 +435,66 @@ export async function restoreDrill(header, dump) {
       .map((row) => row.version)
       .filter((version) => !header.contents.migrations.includes(version));
     stage = "quarantine";
+    const closure = new WorkspaceOffboarding(pool, {}, { guardFile: null });
+    await closure.replay(header.erasureReceipts ?? []);
+    const erasureTenant = randomUUID(),
+      erasureUser = randomUUID();
+    const erased = {
+      user: erasureUser,
+      email: `fence-${erasureUser}@example.invalid`,
+      password: randomBytes(32).toString("base64url"),
+      token: randomBytes(32).toString("hex"),
+      recoveryKey: randomBytes(32).toString("base64url"),
+    };
+    await pool.query(
+      "INSERT INTO tenants(id,name) VALUES($1,'Isolated erasure fence')",
+      [erasureTenant],
+    );
+    await pool.query(
+      "INSERT INTO users(id,tenant_id,email,password_hash) VALUES($1,$2,$3,$4)",
+      [
+        erasureUser,
+        erasureTenant,
+        erased.email,
+        await hashPassword(erased.password),
+      ],
+    );
+    await pool.query(
+      "INSERT INTO controller_state(tenant_id,control_enabled,paused) VALUES($1,true,false)",
+      [erasureTenant],
+    );
+    await pool.query(
+      "INSERT INTO sessions(user_id,token_hash,csrf_token,expires_at) VALUES($1,$2,$3,clock_timestamp()+interval '1 hour')",
+      [
+        erasureUser,
+        createHash("sha256").update(erased.token).digest("hex"),
+        randomBytes(32).toString("hex"),
+      ],
+    );
+    await pool.query(
+      "INSERT INTO account_recovery_tokens(user_id,token_hash,kind) VALUES($1,$2,'saved_key')",
+      [
+        erasureUser,
+        createHash("sha256").update(erased.recoveryKey).digest("hex"),
+      ],
+    );
+    const fence = erasureReceipt({
+      version: 1,
+      id: randomUUID(),
+      tenantId: erasureTenant,
+      authorizedAt: new Date().toISOString(),
+    });
+    await closure.replay([fence]);
+    const fenced = (
+      await pool.query(
+        "SELECT t.lifecycle,c.control_enabled,c.paused,o.id,o.erasure_authorized_at FROM tenants t JOIN controller_state c ON c.tenant_id=t.id JOIN workspace_offboarding o ON o.tenant_id=t.id WHERE t.id=$1",
+        [erasureTenant],
+      )
+    ).rows[0];
+    assert.equal(fenced.lifecycle, "offboarding");
+    assert.equal(fenced.control_enabled, false);
+    assert.equal(fenced.paused, true);
+    assert.equal(fenced.id, fence.id);
     const authenticationFixture = await createAuthenticationFixture(pool);
     assert.ok(
       (
@@ -444,7 +559,7 @@ export async function restoreDrill(header, dump) {
       0,
     );
     stage = "authentication";
-    await verifyAuthentication(pool, authenticationFixture);
+    await verifyAuthentication(pool, authenticationFixture, erased);
     Object.assign(report, {
       state: "verified",
       inventoryVerified: true,
@@ -455,6 +570,7 @@ export async function restoreDrill(header, dump) {
       tenantLifecycleVerified: true,
       retentionQuarantined: true,
       workspaceExportVerified: true,
+      erasureFencesVerified: true,
       recoveryQuarantined: true,
       schemaUpgradeVerified: true,
       controlQuarantined: true,

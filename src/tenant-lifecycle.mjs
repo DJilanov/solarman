@@ -14,6 +14,28 @@ export async function requireActiveTenant(client, tenantId) {
     throw new SecurityError(409, SUSPENDED_MESSAGE);
 }
 
+/** @param {import('pg').PoolClient} client @param {string} tenantId @param {boolean} enabled @returns {Promise<void>} */
+export async function quarantineWorkspace(client, tenantId, enabled) {
+  await client.query(
+    "UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,control_enabled=false,verification=null,control_epoch=control_epoch+1,updated_at=now() WHERE tenant_id=$1",
+    [tenantId],
+  );
+  await client.query(
+    "UPDATE device_control_state SET state='cleanup-required',updated_at=now() WHERE tenant_id=$1 AND state<>'clear'",
+    [tenantId],
+  );
+  if (enabled)
+    await client.query(
+      `INSERT INTO device_control_state(tenant_id,account_id,device,state) SELECT tenant_id,id,device_sn,'cleanup-required' FROM solarman_accounts WHERE tenant_id=$1 AND device_sn IS NOT NULL
+    ON CONFLICT(tenant_id,account_id,device) DO UPDATE SET state='cleanup-required',updated_at=now()`,
+      [tenantId],
+    );
+  await client.query(
+    "UPDATE command_executions SET status='interrupted',message='Control request cancelled; workspace state changed',completed_at=now() WHERE tenant_id=$1 AND action IN ('resume','topup','enable_controls') AND status='queued'",
+    [tenantId],
+  );
+}
+
 export class TenantLifecycle {
   /** @param {import('pg').Pool} pool */
   constructor(pool) {
@@ -105,6 +127,11 @@ export class TenantLifecycle {
       ).rows[0];
       if (!tenant || !control)
         throw new SecurityError(404, "Workspace not found");
+      if (!["active", "suspended"].includes(tenant.lifecycle))
+        throw new SecurityError(
+          409,
+          "Use the closure workflow for this workspace",
+        );
       if (
         (
           await client.query(
@@ -123,25 +150,7 @@ export class TenantLifecycle {
           "Workspace state changed. Refresh before making another change.",
         );
       if (tenant.lifecycle === body.state) return { changed: false, appKey };
-      await client.query(
-        `UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,control_enabled=false,verification=null,control_epoch=control_epoch+1,updated_at=now() WHERE tenant_id=$1`,
-        [tenantId],
-      );
-      await client.query(
-        "UPDATE device_control_state SET state='cleanup-required',updated_at=now() WHERE tenant_id=$1 AND state<>'clear'",
-        [tenantId],
-      );
-      if (control.control_enabled)
-        await client.query(
-          `INSERT INTO device_control_state (tenant_id,account_id,device,state)
-        SELECT tenant_id,id,device_sn,'cleanup-required' FROM solarman_accounts WHERE tenant_id=$1 AND device_sn IS NOT NULL
-        ON CONFLICT (tenant_id,account_id,device) DO UPDATE SET state='cleanup-required',updated_at=now()`,
-          [tenantId],
-        );
-      await client.query(
-        "UPDATE command_executions SET status='interrupted',message='Control request cancelled; workspace state changed',completed_at=now() WHERE tenant_id=$1 AND action IN ('resume','topup','enable_controls') AND status='queued'",
-        [tenantId],
-      );
+      await quarantineWorkspace(client, tenantId, control.control_enabled);
       if (body.state === "suspended")
         await client.query(
           "UPDATE invitations SET revoked_at=clock_timestamp(),revoked_by=$2 WHERE created_by IN (SELECT id FROM users WHERE tenant_id=$1) AND used_at IS NULL AND revoked_at IS NULL",

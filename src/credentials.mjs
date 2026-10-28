@@ -53,3 +53,30 @@ export function decryptCredentials(encrypted, key, tenantId, accountId) {
     throw new Error("Linked account credentials could not be decrypted");
   }
 }
+
+/** @param {import('pg').PoolClient|import('pg').Pool} client @param {Buffer} key @returns {Promise<number>} */
+export async function verifyStoredCredentials(client, key) {
+  const accounts = (
+    await client.query("SELECT tenant_id,id,credentials FROM solarman_accounts")
+  ).rows;
+  let count = 0;
+  for (const account of accounts) {
+    if (account.credentials === null) {
+      const retired = await client.query(
+        "SELECT 1 FROM workspace_offboarding o JOIN tenants t ON t.id=o.tenant_id WHERE o.tenant_id=$1 AND t.lifecycle='offboarding' AND o.erasure_started_at IS NOT NULL AND o.completed_at IS NULL",
+        [account.tenant_id],
+      );
+      if (!retired.rowCount)
+        throw new Error("Missing credentials outside authorized erasure");
+    } else {
+      decryptCredentials(
+        account.credentials,
+        key,
+        account.tenant_id,
+        account.id,
+      );
+      count++;
+    }
+  }
+  return count;
+}

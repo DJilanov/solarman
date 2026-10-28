@@ -12,6 +12,7 @@ import { AccountRecovery } from "./account-recovery.mjs";
 import { Invitations } from "./invitations.mjs";
 import { TenantLifecycle } from "./tenant-lifecycle.mjs";
 import { WorkspaceData } from "./workspace-data.mjs";
+import { WorkspaceOffboarding } from "./workspace-offboarding.mjs";
 import { summarize, localDay, dayStart, addDays } from "./analytics.mjs";
 import { historyEvidence, writeHistory } from "./command-history.mjs";
 import { readBackupStatus } from "./backup-status.mjs";
@@ -87,6 +88,12 @@ export function createApp({ pool, hub, config }) {
   const invitations = new Invitations(pool);
   const lifecycle = new TenantLifecycle(pool);
   const workspaceData = new WorkspaceData(pool);
+  const offboarding =
+    hub.offboarding ??
+    new WorkspaceOffboarding(pool, hub, {
+      guardFile: config.erasureGuardFile ?? null,
+      requireRoot: config.secure,
+    });
   /** @param {import('node:http').IncomingMessage} request @param {import('node:http').ServerResponse} response @param {string} purpose @returns {string} */
   const limitPublic = (request, response, purpose) => {
     const trusted = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(
@@ -138,7 +145,8 @@ export function createApp({ pool, hub, config }) {
           SELECT s.token_hash,s.csrf_token,s.id AS session_id,u.id,u.email,u.tenant_id,u.platform_admin,t.name AS tenant_name,a.timezone FROM sessions s
       JOIN users u ON u.id=s.user_id JOIN tenants t ON t.id=u.tenant_id
       LEFT JOIN solarman_accounts a ON a.tenant_id=u.tenant_id
-      WHERE s.token_hash=$1 AND s.expires_at>now()`,
+      LEFT JOIN workspace_offboarding o ON o.tenant_id=u.tenant_id
+      WHERE s.token_hash=$1 AND s.expires_at>now() AND o.erasure_authorized_at IS NULL`,
           [tokenHash(token), browserDescription(request.headers["user-agent"])],
         )
       ).rows[0] ?? null
@@ -454,6 +462,50 @@ export function createApp({ pool, hub, config }) {
         return;
       }
       if (
+        pathname === "/api/workspace/offboarding" &&
+        request.method === "GET"
+      ) {
+        json(response, 200, await offboarding.status(session.tenant_id));
+        return;
+      }
+      const closureMatch =
+        /^\/api\/admin\/tenants\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/offboarding$/i.exec(
+          pathname,
+        );
+      if (closureMatch && ["GET", "POST"].includes(request.method)) {
+        if (!session.platform_admin)
+          throw new HttpError(403, "Administrator access is required");
+        if (request.method === "POST") {
+          const body = await bodyJson(request);
+          limitSecurity(response, session);
+          await hub.updateAccount(closureMatch[1], async () => {
+            const result = await offboarding.request(
+              session,
+              closureMatch[1],
+              body,
+            );
+            await hub.lifecycleChanged(closureMatch[1], result.appKey);
+          });
+          securityLimiter.clear(session.id);
+        }
+        json(response, 200, await offboarding.status(closureMatch[1]));
+        return;
+      }
+      const recoveryMatch =
+        /^\/api\/admin\/tenants\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/offboarding\/recovery$/i.exec(
+          pathname,
+        );
+      if (recoveryMatch && request.method === "POST") {
+        if (!session.platform_admin)
+          throw new HttpError(403, "Administrator access is required");
+        const body = await bodyJson(request);
+        limitSecurity(response, session);
+        await offboarding.recover(session, recoveryMatch[1], body);
+        securityLimiter.clear(session.id);
+        json(response, 200, await offboarding.status(recoveryMatch[1]));
+        return;
+      }
+      if (
         pathname === "/api/workspace/retention" &&
         request.method === "POST"
       ) {
@@ -673,7 +725,10 @@ export function createApp({ pool, hub, config }) {
           ...history,
           deviceHealth,
           ...(session.platform_admin
-            ? { backup: await readBackupStatus(config.backupStatusFile) }
+            ? {
+                backup: await readBackupStatus(config.backupStatusFile),
+                erasure: await offboarding.serviceStatus(),
+              }
             : {}),
         });
         return;
