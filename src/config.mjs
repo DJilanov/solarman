@@ -85,6 +85,7 @@ export function loadConfig(env, { deviceRequired = true } = {}) {
     port: integer("PORT", 3000, 1, 65535),
     writesEnabled: writes === "true",
     pollMs: pollSeconds * 1000,
+    telemetryPollMs: integer("TELEMETRY_POLL_SECONDS", 300, 300, 1800) * 1000,
     commandTimeoutMs: integer("COMMAND_TIMEOUT_SECONDS", 30, 10, 60) * 1000,
     timezone,
     chargeWindowMinutes,

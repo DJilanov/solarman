@@ -107,3 +107,22 @@ test("CSV resolution retains every real sample and excludes chart-only gap marke
   assert.ok(full.points.every((point) => point.pvW !== null));
   assert.deepEqual(chart.totals, full.totals);
 });
+
+test("changing monitoring cadence preserves historical coverage and excludes later gaps", () => {
+  const rows = [
+    sample(start, { sampling_seconds: 900 }),
+    sample(start + 900_000, { sampling_seconds: 900 }),
+    sample(start + 1200_000, { sampling_seconds: 300 }),
+    sample(start + 1500_000, { sampling_seconds: 300 }),
+    sample(start + 2700_000, { sampling_seconds: 300 }),
+  ];
+  const options = { start, end: start + 2700_000 };
+  const oldCadence = summarize(rows, { ...options, pollMs: 900_000 });
+  const newCadence = summarize(rows, { ...options, pollMs: 300_000 });
+  assert.deepEqual(oldCadence.totals, newCadence.totals);
+  assert.equal(newCadence.totals.coveredSeconds, 1500);
+  assert.equal(
+    newCadence.points.filter((point) => point.pvW === null).length,
+    1,
+  );
+});

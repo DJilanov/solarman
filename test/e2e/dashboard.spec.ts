@@ -432,6 +432,19 @@ test("read-only device verification explains locks and keeps Stop available afte
   const response = await page.request.get("/api/overview");
   const overview = (await response.json()) as OverviewData;
   const now = new Date().toISOString();
+  overview.latest = {
+    at: new Date(Date.now() - 120_000).toISOString(),
+    receivedAt: now,
+    source: "provider",
+    samplingSeconds: 300,
+    soc: 45,
+    pvW: 494,
+    loadW: 304,
+    gridW: 1779,
+    batteryW: -1945,
+    temperatureC: 16,
+    acEnabled: null,
+  };
   Object.assign(overview.controller, {
     apiConfigured: true,
     deviceSelected: true,
@@ -517,6 +530,14 @@ test("read-only device verification explains locks and keeps Stop available afte
             unit: "%",
             passed: true,
           },
+          {
+            label: "Inverter clock difference",
+            actual: 55,
+            expected: 120,
+            unit: "s",
+            passed: true,
+            comparison: "at_most",
+          },
         ],
       };
     }
@@ -551,12 +572,20 @@ test("read-only device verification explains locks and keeps Stop available afte
     .getByRole("button", { name: "Verify device settings", exact: true })
     .click();
   await expect(page.locator(".readiness-details summary")).toContainText(
-    "7 of 7 checks verified",
+    "8 of 8 checks verified",
   );
   await page.locator(".readiness-details summary").click();
-  await expect(page.locator(".readiness-check")).toHaveCount(7);
+  await expect(page.locator(".readiness-check")).toHaveCount(8);
   await expect(page.locator(".readiness-check").first()).toContainText("20 kW");
   expect(lastAction).toBe("verify");
+  await expect(
+    page.getByText("Scheduled AC permission", { exact: true }).locator(".."),
+  ).toContainText("Not read yet");
+  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  await expect(page.locator(".reading-provenance")).toContainText(
+    "Logger readings",
+  );
+  await page.getByRole("link", { name: "Controls", exact: true }).click();
   overview.controller.error = "Device settings need attention";
   overview.controller.control.canStart = false;
   await page.reload();

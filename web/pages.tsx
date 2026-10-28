@@ -64,7 +64,12 @@ type VerificationCheck = NonNullable<
   ControllerStatus["control"]["verification"]
 >["checks"][number];
 
-function verificationValue(check: VerificationCheck, value: number): string {
+function verificationValue(
+  check: VerificationCheck,
+  value: number | null,
+): string {
+  if (value === null) return tr("Unavailable");
+  if (check.unit === "s") return tr("{{count}} seconds", { count: value });
   if (check.label === "Operating mode")
     return tr(value === 0 ? "SelfUse" : "Other operating mode");
   if (check.label === "Run and backup flags")
@@ -96,10 +101,13 @@ export function Overview(): ReactNode {
       </Notice>
     );
   const { latest, controller, today, recent } = data;
-  const stale = latest
-    ? Date.now() - new Date(latest.at).getTime() >
-      (controller.pollSeconds + 180) * 1000
-    : true;
+  const stale =
+    (controller.telemetry?.deviceState !== undefined &&
+      controller.telemetry.deviceState !== 1) ||
+    (latest
+      ? Date.now() - new Date(latest.at).getTime() >
+        (controller.pollSeconds + 180) * 1000
+      : true);
   const date = new Intl.DateTimeFormat(locale(), {
     timeZone: session.tenant.timezone,
     weekday: "long",
@@ -206,11 +214,28 @@ export function Overview(): ReactNode {
             <Clock3 size={14} />
             <span>
               {tr(
-                "Device sampling every {{count}} minutes. Refreshing this page uses stored data.",
+                "Checking for device uploads every {{count}} minutes. Refreshing this page uses stored data.",
                 { count: Math.round(controller.pollSeconds / 60) },
               )}
             </span>
           </div>
+          {latest && (
+            <div className="reading-provenance">
+              <span className={`reading-source ${latest.source}`}>
+                {tr(
+                  latest.source === "provider"
+                    ? "Logger readings"
+                    : "Live diagnostics",
+                )}
+              </span>
+              <span>
+                {tr("Collected {{time}} · Received {{received}}", {
+                  time: when(latest.at, session.tenant.timezone),
+                  received: age(latest.receivedAt),
+                })}
+              </span>
+            </div>
+          )}
         </Panel>
         {controller.profile === "bluesun-bse20kh3" ? (
           <BatteryReserve reading={latest} controller={controller} />
@@ -606,9 +631,14 @@ export function Controls(): ReactNode {
                   <span>{tr(check.label)}</span>
                   <strong>{verificationValue(check, check.actual)}</strong>
                   <small>
-                    {tr("Expected {{value}}", {
-                      value: verificationValue(check, check.expected),
-                    })}
+                    {tr(
+                      check.comparison === "at_most"
+                        ? "Maximum {{value}}"
+                        : "Expected {{value}}",
+                      {
+                        value: verificationValue(check, check.expected),
+                      },
+                    )}
                   </small>
                   <span className="sr-only">
                     {tr(check.passed ? "Verified" : "Needs attention")}
@@ -654,7 +684,7 @@ export function Controls(): ReactNode {
         )}
         <p className="fine-print">
           {tr(
-            "Verification reads the inverter rating and charge settings. It does not test physical charging, the inverter clock or the separate solar power limit.",
+            "Verification checks the inverter rating, charge settings and clock. Physical charging behavior and the separate solar power limit require additional verification.",
           )}
         </p>
       </Panel>
@@ -801,7 +831,7 @@ export function Controls(): ReactNode {
             <div>
               <span>{tr("Grid charge permission")}</span>
               <strong>
-                {latest
+                {latest && latest.acEnabled !== null
                   ? latest.acEnabled
                     ? tr("Enabled")
                     : tr("Disabled")

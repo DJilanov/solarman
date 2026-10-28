@@ -95,6 +95,7 @@ export function summarize(
   const total = emptyEnergy();
   const days = new Map();
   const samples = [];
+  const cadence = new WeakMap();
   for (const row of rows) {
     const at = new Date(row.observed_at).getTime();
     const point = {
@@ -106,14 +107,25 @@ export function summarize(
       batteryW: Number(row.battery_w),
       temperatureC: Number(row.temperature_c),
     };
-    if (Object.values(point).every(Number.isFinite)) samples.push(point);
+    if (Object.values(point).every(Number.isFinite)) {
+      samples.push(point);
+      const seconds = Number(row.sampling_seconds);
+      cadence.set(
+        point,
+        Number.isInteger(seconds) && seconds >= 30 && seconds <= 1800
+          ? seconds * 1000
+          : pollMs,
+      );
+    }
   }
+  /** @param {object} a @param {object} b @returns {number} */
+  const gapLimit = (a, b) => 2 * Math.max(cadence.get(a), cadence.get(b));
   samples.sort((a, b) => a.at - b.at);
   for (let i = 1; i < samples.length; i++) {
     const a = samples[i - 1];
     const b = samples[i];
     const span = b.at - a.at;
-    if (span <= 0 || span > pollMs * 2 || b.at <= start || a.at >= end)
+    if (span <= 0 || span > gapLimit(a, b) || b.at <= start || a.at >= end)
       continue;
     let left = Math.max(start, a.at);
     const right = Math.min(end, b.at);
@@ -172,7 +184,11 @@ export function summarize(
   for (let i = 0; i < selected.length; i++) {
     const current = selected[i];
     const previous = selected[i - 1];
-    if (!fullResolution && previous && current.at - previous.at > pollMs * 2) {
+    if (
+      !fullResolution &&
+      previous &&
+      current.at - previous.at > gapLimit(previous, current)
+    ) {
       points.push({
         at: previous.at + 1,
         pvW: null,

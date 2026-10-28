@@ -16,6 +16,7 @@ test("defaults to read-only, official global API and quota-conscious polling", (
   assert.equal(config.writesEnabled, false);
   assert.equal(config.baseUrl, "https://globalapi.solarmanpv.com");
   assert.equal(config.pollMs, 900_000);
+  assert.equal(config.telemetryPollMs, 300_000);
 });
 
 test("rejects missing credentials, plaintext passwords and invalid booleans", () => {

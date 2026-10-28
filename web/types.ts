@@ -19,10 +19,11 @@ export interface ControllerStatus {
       passed: boolean;
       checks: {
         label: string;
-        actual: number;
+        actual: number | null;
         expected: number;
         unit: string;
         passed: boolean;
+        comparison?: "at_most";
       }[];
     } | null;
   };
@@ -31,6 +32,18 @@ export interface ControllerStatus {
   manualTopup: boolean;
   topupExpiresAt: string | null;
   lastSuccessAt: string | null;
+  telemetry: {
+    source: "provider" | "register";
+    collectedAt: string;
+    receivedAt: string;
+    deviceState: number;
+    clock: {
+      passed: boolean;
+      skewSeconds: number | null;
+      reportedTime: string | null;
+      collectedAt: string;
+    } | null;
+  } | null;
   error: string | null;
   setupError: string | null;
   pollSeconds: number;
@@ -47,13 +60,16 @@ export interface ControllerStatus {
 }
 export interface Measurement {
   at: string;
+  receivedAt: string;
+  source: "provider" | "register";
+  samplingSeconds: number;
   soc: number;
   pvW: number;
   loadW: number;
   gridW: number;
   batteryW: number;
   temperatureC: number;
-  acEnabled: boolean;
+  acEnabled: boolean | null;
 }
 export interface Energy {
   solarKwh: number;

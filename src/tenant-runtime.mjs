@@ -6,6 +6,12 @@ import { decryptCredentials } from "./credentials.mjs";
 import { saveMeasurement } from "./database.mjs";
 import { WorkQueue } from "./work-queue.mjs";
 import { controlReadiness } from "./control-readiness.mjs";
+import {
+  BLUESUN_MAPPING,
+  TELEMETRY_MAX_AGE_MS,
+  parseProviderReading,
+  normalizeBluesun,
+} from "./telemetry.mjs";
 
 export class TenantRuntime {
   /** @param {object} hub @param {string} tenantId @param {object | null} account */
@@ -28,7 +34,12 @@ export class TenantRuntime {
     this.verification = null;
     this.enableEpoch = 0;
     this.inhibitStarts = false;
-    this.pollMs = 900_000;
+    this.controlPollMs = 900_000;
+    this.monitorPollMs = 300_000;
+    this.telemetry = null;
+    this.clock = null;
+    this.initialized = false;
+    this.cleanupRequired = false;
     this.writesEnabled = false;
     this.hostWritesAllowed = false;
     this.client = null;
@@ -63,7 +74,8 @@ export class TenantRuntime {
         },
         { deviceRequired: false },
       );
-      this.pollMs = config.pollMs;
+      this.controlPollMs = config.pollMs;
+      this.monitorPollMs = config.telemetryPollMs;
       this.hostWritesAllowed = config.writesEnabled;
       this.ready = Boolean(account.validated_at && account.device_sn);
       this.writesEnabled =
@@ -122,6 +134,12 @@ export class TenantRuntime {
     this.controlEnabled = result.rows[0].control_enabled;
     this.verification = result.rows[0].verification;
     this.topupExpiresAt = result.rows[0].topup_expires_at;
+    if (!this.initialized) {
+      this.profileVerified = this.verifiedDevice();
+      this.ratedPowerChecked = this.verifiedDevice();
+      this.cleanupRequired = this.controlEnabled;
+      this.initialized = true;
+    }
     if (this.controller)
       this.controller.options.writesEnabled =
         this.writesEnabled && this.controlEnabled;
@@ -131,6 +149,7 @@ export class TenantRuntime {
   verifiedDevice() {
     return Boolean(
       this.verification?.passed &&
+        this.verification.mapping === BLUESUN_MAPPING &&
         this.verification.device === this.device &&
         this.verification.profile === this.account?.profile,
     );
@@ -149,6 +168,12 @@ export class TenantRuntime {
         this.verifiedDevice() &&
         (this.controlEnabled || (age >= 0 && age <= 1800_000)),
       settingsMatch: this.profileVerified,
+      cleanupVerified: !this.cleanupRequired,
+      clockVerified: Boolean(
+        this.clock?.passed &&
+          Date.now() - new Date(this.clock.collectedAt).getTime() <=
+            TELEMETRY_MAX_AGE_MS,
+      ),
       stopping: this.stopping || this.hub.stopping,
     });
   }
@@ -179,14 +204,12 @@ export class TenantRuntime {
       manualTopup: this.manualTopup,
       topupExpiresAt: this.topupExpiresAt,
       lastSuccessAt: this.lastSuccessAt,
+      telemetry: this.telemetry,
       error: this.lastError || this.profileError,
       setupError: this.setupError,
       pollSeconds: this.pollMs / 1000,
       annualProjectedCalls: Math.round(
-        ((this.account?.profile === "bluesun-bse20kh3" ? 5 : 1) *
-          365 *
-          86400_000) /
-          this.pollMs,
+        ((this.usesControlCycle() ? 6 : 1) * 365 * 86400_000) / this.pollMs,
       ),
       profile: this.account?.profile ?? "monitor-only",
       deviceSelected: Boolean(this.device),
@@ -196,6 +219,120 @@ export class TenantRuntime {
         solarTargetSoc: 100,
         acChargeKw: 2,
         solarPowerCapVerified: false,
+      },
+    };
+  }
+
+  /** @returns {boolean} */
+  usesControlCycle() {
+    return Boolean(
+      this.writesEnabled &&
+        this.controlEnabled &&
+        this.verifiedDevice() &&
+        (!this.paused || this.manualTopup),
+    );
+  }
+
+  get pollMs() {
+    return this.usesControlCycle() ? this.controlPollMs : this.monitorPollMs;
+  }
+
+  /** @returns {Promise<void>} */
+  async clearScheduledPermission() {
+    if (!this.writesEnabled || !this.controlEnabled) return;
+    this.cleanupRequired = true;
+    await this.controller.disable();
+    this.cleanupRequired = false;
+  }
+
+  /** @param {number} soc @returns {Promise<void>} */
+  async finishTopup(soc) {
+    if (!this.manualTopup || soc < 50) return;
+    await this.q(
+      "UPDATE controller_state SET manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
+    );
+    this.manualTopup = false;
+    this.topupExpiresAt = null;
+    if (this.paused && this.controlEnabled) {
+      this.cleanupRequired = true;
+      await this.clearScheduledPermission();
+    }
+  }
+
+  /** @returns {Promise<import('./telemetry.mjs').ProviderReading>} */
+  async readProvider() {
+    this.clock = null;
+    const data = await this.client.api("/device/v1.0/currentData", {
+      deviceSn: this.device,
+    });
+    const reading = parseProviderReading(data, this.device);
+    const receivedAt = new Date().toISOString();
+    this.telemetry = {
+      source: "provider",
+      collectedAt: reading.collectedAt.toISOString(),
+      receivedAt,
+      deviceState: reading.deviceState,
+      clock: null,
+    };
+    await this.q(
+      `INSERT INTO provider_readings (tenant_id,account_id,device,collected_at,data_list) VALUES ($1,$2,$3,$4,$5)
+      ON CONFLICT (tenant_id,account_id,device) DO UPDATE SET collected_at=EXCLUDED.collected_at,data_list=EXCLUDED.data_list,received_at=now()
+      WHERE EXCLUDED.collected_at>=provider_readings.collected_at`,
+      [
+        this.account.id,
+        this.device,
+        reading.collectedAt,
+        JSON.stringify(reading.points),
+      ],
+    );
+    return reading;
+  }
+
+  /** @param {import('./telemetry.mjs').ProviderReading} reading @returns {ReturnType<typeof normalizeBluesun>} */
+  mapProvider(reading) {
+    this.clock = null;
+    const mapped = normalizeBluesun(reading, this.timezone);
+    this.clock = {
+      ...mapped.clock,
+      collectedAt: reading.collectedAt.toISOString(),
+    };
+    this.telemetry.clock = this.clock;
+    return mapped;
+  }
+
+  /** @returns {Promise<object>} */
+  async collectProvider() {
+    const reading = await this.readProvider();
+    if (this.account.profile === "monitor-only") {
+      this.lastSuccessAt = reading.collectedAt.toISOString();
+      this.lastError =
+        reading.deviceState === 1 &&
+        Date.now() - reading.collectedAt.getTime() <= TELEMETRY_MAX_AGE_MS
+          ? null
+          : "The inverter is offline or has stale readings";
+      return { decision: { charge: false, reason: "monitor_only" } };
+    }
+    const mapped = this.mapProvider(reading);
+    const inserted = await saveMeasurement(
+      this.pool,
+      this.tenantId,
+      this.account.id,
+      this.device,
+      mapped.snapshot,
+      {
+        source: "provider",
+        observedAt: reading.collectedAt,
+        samplingSeconds: this.monitorPollMs / 1000,
+      },
+    );
+    this.lastSuccessAt = reading.collectedAt.toISOString();
+    this.lastError = null;
+    await this.finishTopup(mapped.snapshot.soc);
+    return {
+      snapshot: mapped.snapshot,
+      decision: {
+        charge: false,
+        reason: inserted ? "telemetry_updated" : "telemetry_unchanged",
       },
     };
   }
@@ -232,6 +369,7 @@ export class TenantRuntime {
     const rated = await this.inspector.read(4, 7, 2);
     const snapshot = await this.inspector.snapshot(false);
     const settings = await this.inspector.settings();
+    const mapped = this.mapProvider(await this.readProvider());
     if (Date.now() - startedAt > 120_000)
       throw new Error("Live readings are too old");
     const checks = [
@@ -273,9 +411,19 @@ export class TenantRuntime {
         unit: "%",
       },
     ].map((check) => ({ ...check, passed: check.actual === check.expected }));
+    checks.push({
+      label: "Inverter clock difference",
+      actual: mapped.clock.skewSeconds,
+      expected: 120,
+      unit: "s",
+      comparison: "at_most",
+      passed: mapped.clock.passed,
+    });
     const verification = {
       device: this.device,
       profile: this.account.profile,
+      mapping: BLUESUN_MAPPING,
+      clock: this.clock,
       checkedAt: new Date().toISOString(),
       passed: checks.every((check) => check.passed),
       checks,
@@ -296,8 +444,16 @@ export class TenantRuntime {
       this.account.id,
       this.device,
       snapshot,
+      { samplingSeconds: this.pollMs / 1000 },
     );
     this.lastSuccessAt = verification.checkedAt;
+    this.telemetry = {
+      source: "register",
+      collectedAt: verification.checkedAt,
+      receivedAt: verification.checkedAt,
+      deviceState: 1,
+      clock: this.clock,
+    };
     this.lastError = null;
     return verification;
   }
@@ -317,48 +473,17 @@ export class TenantRuntime {
     if (!this.client || !this.ready)
       throw new Error("Connect your account and choose an inverter first");
     this.events = [];
-    if (this.account.profile === "monitor-only") {
-      const data = await this.client.api("/device/v1.0/currentData", {
-        deviceSn: this.device,
-      });
-      const collected = Number(data.collectionTime) * 1000;
-      if (
-        !Array.isArray(data.dataList) ||
-        data.dataList.length > 2000 ||
-        !Number.isFinite(collected) ||
-        collected < Date.now() - 366 * 86400_000 ||
-        collected > Date.now() + 30_000
-      )
-        throw new Error(
-          "Provider readings have an invalid format or timestamp",
-        );
-      const points = data.dataList
-        .filter(
-          (p) =>
-            p &&
-            typeof p.key === "string" &&
-            ["string", "number"].includes(typeof p.value),
-        )
-        .map((p) => ({
-          key: p.key.slice(0, 200),
-          value: String(p.value).slice(0, 1000),
-          name: String(p.name ?? p.key).slice(0, 200),
-          unit: String(p.unit ?? "").slice(0, 30),
-        }));
-      await this.q(
-        `INSERT INTO provider_readings (tenant_id,account_id,device,collected_at,data_list) VALUES ($1,$2,$3,$4,$5)
-        ON CONFLICT (tenant_id,account_id,device) DO UPDATE SET collected_at=EXCLUDED.collected_at,data_list=EXCLUDED.data_list,received_at=now()
-        WHERE EXCLUDED.collected_at>=provider_readings.collected_at`,
-        [
-          this.account.id,
-          this.device,
-          new Date(collected),
-          JSON.stringify(points),
-        ],
-      );
-      this.lastSuccessAt = new Date().toISOString();
-      this.lastError = null;
-      return { decision: { charge: false, reason: "monitor_only" } };
+    if (!inspectOnly && this.cleanupRequired)
+      await this.clearScheduledPermission();
+    if (
+      this.account.profile === "monitor-only" ||
+      (!inspectOnly && !this.usesControlCycle())
+    )
+      return this.collectProvider();
+    if (!inspectOnly) {
+      const mapped = this.mapProvider(await this.readProvider());
+      if (!mapped.clock.passed)
+        throw new Error("The inverter clock must match the workspace timezone");
     }
     const canWrite =
       this.writesEnabled && this.controlEnabled && this.verifiedDevice();
@@ -406,7 +531,7 @@ export class TenantRuntime {
       this.profileVerified &&
       result.snapshot.flags & 16
     ) {
-      await this.controller.disable();
+      await this.clearScheduledPermission();
       result.snapshot.flags &= ~16;
     }
     await saveMeasurement(
@@ -415,20 +540,18 @@ export class TenantRuntime {
       this.account.id,
       this.device,
       result.snapshot,
+      { samplingSeconds: this.pollMs / 1000 },
     );
+    this.telemetry = {
+      source: "register",
+      collectedAt: new Date().toISOString(),
+      receivedAt: new Date().toISOString(),
+      deviceState: 1,
+      clock: this.clock,
+    };
     this.lastSuccessAt = new Date().toISOString();
     this.lastError = null;
-    if (
-      !inspectOnly &&
-      this.manualTopup &&
-      result.decision.reason === "reserve_reached"
-    ) {
-      await this.q(
-        "UPDATE controller_state SET manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
-      );
-      this.manualTopup = false;
-      this.topupExpiresAt = null;
-    }
+    if (!inspectOnly) await this.finishTopup(result.snapshot.soc);
     return result;
   }
 
@@ -451,7 +574,7 @@ export class TenantRuntime {
         );
         this.manualTopup = false;
         this.topupExpiresAt = null;
-        await this.controller.disable();
+        await this.clearScheduledPermission();
         if (this.paused) this.events.push({ event: "manual_topup_expired" });
       }
       const result = await this.collect();
@@ -474,7 +597,7 @@ export class TenantRuntime {
       error instanceof Error ? error.message : "Device request failed";
     if (disable) {
       try {
-        await this.controller?.disable();
+        await this.clearScheduledPermission();
       } catch {
         this.lastError += "; grid charging off could not be confirmed";
       }
@@ -619,7 +742,7 @@ export class TenantRuntime {
             this.paused = true;
             this.manualTopup = false;
             this.topupExpiresAt = null;
-            await this.controller?.disable();
+            await this.clearScheduledPermission();
             message =
               this.writesEnabled && this.controlEnabled
                 ? "Scheduled AC charging permission cleared; automation paused. Native inverter settings still apply."
@@ -695,7 +818,7 @@ export class TenantRuntime {
     this.closePromise = (async () => {
       await this.work.idle();
       try {
-        await this.controller?.disable();
+        await this.clearScheduledPermission();
       } catch {
         console.error(
           JSON.stringify({ event: "shutdown_grid_disable_unconfirmed" }),
@@ -719,6 +842,9 @@ export function reasonLabel(reason) {
       grid_not_available: "Grid voltage is unavailable; the top-up is waiting",
       battery_not_ready: "Battery is not ready for a grid top-up",
       monitor_only: "Read-only device readings updated",
+      telemetry_updated: "Logger readings updated",
+      telemetry_unchanged:
+        "Logger data is unchanged; waiting for the next device upload",
       monitoring_settings_mismatch:
         "Device readings updated; control settings require configuration",
       midnight_boundary:

@@ -14,6 +14,8 @@ const ready = {
   workspaceEnabled: true,
   verified: true,
   settingsMatch: true,
+  clockVerified: true,
+  cleanupVerified: true,
   stopping: false,
 };
 
@@ -24,6 +26,8 @@ test("each control requirement independently blocks starts without blocking a st
     "workspaceEnabled",
     "verified",
     "settingsMatch",
+    "clockVerified",
+    "cleanupVerified",
   ]) {
     const status = controlReadiness({ ...ready, [key]: false });
     assert.equal(status.canStart, false, key);

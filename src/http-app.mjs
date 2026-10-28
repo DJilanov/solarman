@@ -56,6 +56,9 @@ function measurement(row) {
   return row
     ? {
         at: new Date(row.observed_at).toISOString(),
+        receivedAt: new Date(row.received_at).toISOString(),
+        source: row.reading_source,
+        samplingSeconds: row.sampling_seconds,
         soc: Number(row.soc),
         pvW: Number(row.pv_w),
         loadW: Number(row.load_w),
@@ -135,14 +138,14 @@ export function createApp({ pool, hub, config }) {
     const current = await latest(tenantId);
     const device = runtime.device ?? current?.device ?? "";
     const rows = await pool.query(
-      `SELECT observed_at,soc,temperature_c,pv_w,load_w,grid_w,battery_w
+      `SELECT observed_at,soc,temperature_c,pv_w,load_w,grid_w,battery_w,sampling_seconds
       FROM measurements WHERE tenant_id=$1 AND account_id=$2 AND device=$3 AND observed_at BETWEEN $4 AND $5 ORDER BY observed_at`,
       [
         tenantId,
         runtime.account?.id ?? null,
         device,
-        new Date(start - runtime.pollMs * 2),
-        new Date(end + runtime.pollMs * 2),
+        new Date(start - 3600_000),
+        new Date(end + 3600_000),
       ],
     );
     return summarize(rows.rows, {

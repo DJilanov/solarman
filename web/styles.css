@@ -2796,3 +2796,22 @@ html[lang="bg"] .segmented button {
     width: 100%;
   }
 }
+.reading-provenance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding-top: 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.reading-source {
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 5px 9px;
+  color: var(--grid);
+  white-space: nowrap;
+}
+.reading-source.register {
+  color: var(--battery);
+}

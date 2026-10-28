@@ -11,6 +11,7 @@ import { createApp } from "../../src/http-app.mjs";
 import { localDay } from "../../src/analytics.mjs";
 import { TenantRuntime } from "../../src/tenant-runtime.mjs";
 import { decide } from "../../src/controller.mjs";
+import { providerPayload } from "../fixtures/provider.mjs";
 
 let pool;
 let hub;
@@ -391,6 +392,22 @@ async function controlFixture(writes = false) {
     gridVoltages: [230, 230, 230],
   };
   const calls = [];
+  runtime.client.api = async (path, body) => {
+    assert.equal(path, "/device/v1.0/currentData");
+    assert.equal(body.deviceSn, runtime.device);
+    calls.push("provider-read");
+    return providerPayload({
+      device: runtime.device,
+      values: {
+        PVTP: String(snapshot.pvW),
+        EP: String(snapshot.loadW),
+        PG_Pt1: String(snapshot.gridW),
+        B_P1: String(snapshot.batteryW),
+        B_left_cap1: String(snapshot.soc),
+        B_T1: String(snapshot.temperatureC),
+      },
+    });
+  };
   runtime.inspector = {
     read: async (fn, address, count) => {
       assert.deepEqual([fn, address, count], [4, 7, 2]);
@@ -438,7 +455,7 @@ test("read-only verification persists checked values but cannot enable control w
       "succeeded",
     );
     assert.equal(runtime.status().control.verification.passed, true);
-    assert.equal(runtime.status().control.verification.checks.length, 7);
+    assert.equal(runtime.status().control.verification.checks.length, 8);
     assert.equal(runtime.status().control.canEnable, false);
     assert.equal(
       (await completeCommand(runtime, "enable_controls", user)).status,
@@ -453,7 +470,7 @@ test("read-only verification persists checked values but cannot enable control w
       ).rows[0].control_enabled,
       false,
     );
-    assert.deepEqual(calls, ["rated-read"]);
+    assert.deepEqual(calls, ["rated-read", "provider-read"]);
   } finally {
     await runtime.close();
   }
@@ -648,8 +665,10 @@ test("simultaneous retries of a stop dispatch cleanup exactly once", async () =>
 });
 
 test("an expired top-up cannot silently restart after the service resumes", async () => {
-  const { runtime, calls } = await controlFixture(true);
+  const { runtime, calls, user } = await controlFixture(true);
   try {
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
     await pool.query(
       "UPDATE controller_state SET manual_topup=true,topup_expires_at=now()-interval '1 minute' WHERE tenant_id=$1",
       [ids.alpha.tenant],
@@ -658,6 +677,34 @@ test("an expired top-up cannot silently restart after the service resumes", asyn
     assert.equal(runtime.manualTopup, false);
     assert.equal(calls.includes("tick"), false);
     assert.equal(calls.includes("disable"), true);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("paused monitoring retries an unconfirmed stop before fetching new uploads", async () => {
+  const { runtime, user, calls } = await controlFixture(true);
+  try {
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    runtime.controller.disable = async () => {
+      throw new Error("Inverter temporarily unreachable");
+    };
+    assert.equal(
+      (await completeCommand(runtime, "stop", user)).status,
+      "failed",
+    );
+    assert.equal(runtime.cleanupRequired, true);
+    assert.equal(runtime.status().control.canStart, false);
+    assert.equal(runtime.status().control.canStop, true);
+    runtime.controller.disable = async () => {
+      calls.push("cleanup-recovered");
+    };
+    await runtime.collect();
+    assert.equal(runtime.cleanupRequired, false);
+    assert.equal(runtime.paused, true);
+    assert.equal(calls.includes("tick"), false);
+    assert.equal(calls.includes("cleanup-recovered"), true);
   } finally {
     await runtime.close();
   }
@@ -687,6 +734,93 @@ test("shutdown during command acceptance leaves a terminal audit record", async 
     }
     assert.equal(status, "failed");
     assert.equal(runtime.scheduled.has(job.id), false);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("single-request monitoring preserves collection time and deduplicates cached uploads", async () => {
+  const { runtime } = await controlFixture();
+  try {
+    const collectedAt = Math.floor((Date.now() - 120_000) / 1000) * 1000;
+    const body = providerPayload({ device: runtime.device, collectedAt });
+    let requests = 0;
+    runtime.client.api = async () => {
+      requests++;
+      return structuredClone(body);
+    };
+    runtime.inspector.snapshot = async () => {
+      throw new Error("Unexpected diagnostic polling");
+    };
+    assert.equal(
+      (await runtime.collect()).decision.reason,
+      "telemetry_updated",
+    );
+    assert.equal(
+      (await runtime.collect()).decision.reason,
+      "telemetry_unchanged",
+    );
+    assert.equal(requests, 2);
+    const rows = (
+      await pool.query(
+        "SELECT observed_at,received_at,reading_source,sampling_seconds,ac_enabled,soc FROM measurements WHERE tenant_id=$1 AND device=$2 AND observed_at=$3",
+        [runtime.tenantId, runtime.device, new Date(collectedAt)],
+      )
+    ).rows;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].observed_at.getTime(), collectedAt);
+    assert.ok(rows[0].received_at.getTime() > collectedAt);
+    assert.equal(rows[0].reading_source, "provider");
+    assert.equal(rows[0].sampling_seconds, 300);
+    assert.equal(rows[0].ac_enabled, null);
+    assert.equal(runtime.lastSuccessAt, new Date(collectedAt).toISOString());
+    assert.equal(runtime.status().pollSeconds, 300);
+    assert.equal(runtime.status().annualProjectedCalls, 105120);
+    body.deviceState = 3;
+    body.collectionTime += 60;
+    await assert.rejects(runtime.collect(), /offline|alarm/);
+    assert.equal(runtime.telemetry.deviceState, 3);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::integer AS count FROM measurements WHERE tenant_id=$1 AND device=$2 AND observed_at=$3",
+          [
+            runtime.tenantId,
+            runtime.device,
+            new Date(body.collectionTime * 1000),
+          ],
+        )
+      ).rows[0].count,
+      0,
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("diagnostic refresh cannot bypass a failed inverter clock check", async () => {
+  const { runtime, user } = await controlFixture(true);
+  try {
+    runtime.client.api = async () =>
+      providerPayload({
+        device: runtime.device,
+        values: { SYSTIM1: "2000-01-01 00:00:00" },
+      });
+    const report = await runtime.verifyDevice();
+    assert.equal(report.passed, false);
+    assert.equal(
+      report.checks.find((check) => check.label === "Inverter clock difference")
+        .passed,
+      false,
+    );
+    await runtime.collect(true);
+    assert.equal(runtime.profileVerified, true);
+    assert.equal(runtime.status().control.canEnable, false);
+    assert.equal(
+      (await completeCommand(runtime, "enable_controls", user)).status,
+      "failed",
+    );
+    assert.equal(runtime.controlEnabled, false);
   } finally {
     await runtime.close();
   }

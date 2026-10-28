@@ -68,6 +68,11 @@ export function tr(
     ],
     [/^Invalid integer: ([A-Z_0-9]+)$/, "Invalid integer: {{name}}", ["name"]],
     [
+      /^Invalid telemetry value: ([A-Za-z0-9_]{1,64})$/,
+      "Invalid telemetry value: {{key}}",
+      ["key"],
+    ],
+    [
       /^([A-Z_0-9]+) must be between (\d+) and (\d+)$/,
       "{{name}} must be between {{min}} and {{max}}",
       ["name", "min", "max"],
