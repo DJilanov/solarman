@@ -92,14 +92,18 @@ export function CapacityDetails({
           <dt>{tr("Telemetry interval")}</dt>
           <dd>{minutes(capacity.monitorMs)}</dd>
         </div>
-        <div>
-          <dt>{tr("Scheduled charging interval")}</dt>
-          <dd>{minutes(capacity.scheduledMs)}</dd>
-        </div>
-        <div>
-          <dt>{tr("Below-reserve assessment interval")}</dt>
-          <dd>{minutes(capacity.assessmentMs)}</dd>
-        </div>
+        {capacity.controlWorkspaces > 0 && (
+          <>
+            <div>
+              <dt>{tr("Scheduled charging interval")}</dt>
+              <dd>{minutes(capacity.scheduledMs)}</dd>
+            </div>
+            <div>
+              <dt>{tr("Below-reserve assessment interval")}</dt>
+              <dd>{minutes(capacity.assessmentMs)}</dd>
+            </div>
+          </>
+        )}
       </dl>
       {preview && (
         <p className="fine-print">

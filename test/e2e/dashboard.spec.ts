@@ -883,6 +883,16 @@ test("capacity admission explains waiting, retries without premature success and
   await expect(page.locator(".capacity-details")).toContainText(
     "reserve assessments 32 minutes",
   );
+  await expect(
+    page
+      .locator(".capacity-details dt")
+      .filter({ hasText: "Scheduled charging interval" }),
+  ).toHaveCount(0);
+  await expect(
+    page
+      .locator(".capacity-details dt")
+      .filter({ hasText: "Below-reserve assessment interval" }),
+  ).toHaveCount(0);
   await page.setViewportSize({ width: 320, height: 740 });
   await page.locator(".language-switch select").selectOption("bg");
   await expect(page.locator(".capacity-details")).toContainText(

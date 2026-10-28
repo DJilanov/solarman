@@ -34,6 +34,8 @@ Recovery-release checks passed: type/syntax checks, build, 95 local unit tests (
 
 The capacity follow-up passed type/syntax checks, build, 103 local unit tests (one Linux-only test skipped locally), 67 PostgreSQL integration tests and 17 browser tests. New cases cover independent concurrent admission/activation, a Stop epoch defeating delayed activation, no fake device success while waiting, capacity release with failed cleanup, recovery after restart and revocation after an allowance reduction. Browser coverage includes EN/BG capacity states, a pending retry, activation cadence preview and narrow mobile layouts. Device writes remain disabled.
 
+Production deployment passed all 104 unit tests on Linux. After the capacity migration, a new encrypted offsite backup and restore of that exact copy passed inventory, account decryption, HTTP authentication, control quarantine and zero device access. Live Bulgarian settings show five-minute monitoring and a separate 17/32-minute activation preview; inactive control intervals are omitted.
+
 ### Required physical outcomes
 
 | Situation | Required result | Evidence still needed |
