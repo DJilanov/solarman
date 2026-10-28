@@ -6,6 +6,7 @@ import { ApiBudget, monitoringInterval } from "./api-budget.mjs";
 import { Operations } from "./operations.mjs";
 import { DataMaintenance } from "./data-maintenance.mjs";
 import { WorkspaceOffboarding } from "./workspace-offboarding.mjs";
+import { PolicyObservations } from "./policy-observations.mjs";
 import { SecurityError } from "./account-security.mjs";
 
 export class AccountHub {
@@ -29,6 +30,7 @@ export class AccountHub {
     });
     this.operations = new Operations(pool, this);
     this.dataMaintenance = new DataMaintenance(pool);
+    this.policyObservations = new PolicyObservations(pool);
     const requireErasureGuard =
       env.NODE_ENV === "production" ||
       env.PUBLIC_URL?.startsWith("https:") === true;
@@ -279,6 +281,10 @@ export class AccountHub {
     runtime.inhibitStarts = true;
     runtime.enableEpoch++;
     await runtime.journal.requestCleanup({ pause: true, cancelStarts: true });
+    await this.pool.query(
+      "UPDATE policy_observation_runs SET state='invalidated',reason='connection_changed',ended_at=clock_timestamp() WHERE tenant_id=$1 AND state='observing'",
+      [runtime.tenantId],
+    );
     runtime.paused = true;
     runtime.manualTopup = false;
     runtime.topupExpiresAt = null;
@@ -555,12 +561,14 @@ export class AccountHub {
     const monitorStopped = this.operations.stop();
     const maintenanceStopped = this.dataMaintenance.stop();
     const offboardingStopped = this.offboarding.stop();
+    const observationsStopped = this.policyObservations.stop();
     await Promise.allSettled(
       [...this.runtimes.values()].map((runtime) => runtime.close()),
     );
     await monitorStopped;
     await maintenanceStopped;
     await offboardingStopped;
+    await observationsStopped;
     if (this.lock) {
       try {
         await this.lock.query("SELECT pg_advisory_unlock(193401,2)");

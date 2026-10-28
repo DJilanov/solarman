@@ -6,7 +6,13 @@ import { createApp } from "./http-app.mjs";
 import { WorkspaceOffboarding } from "./workspace-offboarding.mjs";
 import { erasureReceipt } from "./erasure-guard.mjs";
 import { hashPassword, validPasswordHash } from "./auth.mjs";
-import { verifyStoredCredentials, encryptionKey } from "./credentials.mjs";
+import { verifyStoredCredentials, encryptionKey,encryptCredentials } from "./credentials.mjs";
+import {
+  observationIdentity,
+  observationBinding,
+  emptyObservationProgress,
+  quarantineObservationRuns,
+} from "./policy-observations.mjs";
 import {
   BackupError,
   identifier,
@@ -49,8 +55,8 @@ export function validateDrill(header, dump) {
 }
 
 /** @typedef {{password:string,user:string,email:string}} AuthenticationFixture */
-/** @param {import('pg').Pool} pool @returns {Promise<AuthenticationFixture>} */
-async function createAuthenticationFixture(pool) {
+/** @param {import('pg').Pool} pool @param {Buffer} key @returns {Promise<AuthenticationFixture>} */
+async function createAuthenticationFixture(pool, key) {
   const password = randomBytes(32).toString("base64url");
   const tenant = randomUUID();
   const user = randomUUID();
@@ -66,6 +72,44 @@ async function createAuthenticationFixture(pool) {
   await pool.query(
     "INSERT INTO workspace_retention(tenant_id,enabled) VALUES($1,true)",
     [tenant],
+  );
+  const account = randomUUID(),
+    device = `restore-observation-${account}`;
+  await pool.query(
+    "INSERT INTO solarman_accounts(id,tenant_id,email,credentials,device_sn,profile) VALUES($1,$2,$3,$4,$5,'bluesun-bse20kh3')",
+    [
+      account,
+      tenant,
+      `provider-${account}@example.invalid`,
+      encryptCredentials(
+        { passwordSha256: randomBytes(32).toString("hex") },
+        key,
+        tenant,
+        account,
+      ),
+      device,
+    ],
+  );
+  const identity = observationIdentity({
+    accountId: account,
+    device,
+    profile: "bluesun-bse20kh3",
+    timezone: "Europe/Sofia",
+    firmware: { protocol: "2.02", dsp: "1.57", hmi: "1.45" },
+  });
+  await pool.query(
+    "INSERT INTO policy_observation_runs(id,tenant_id,account_id,device,binding,identity,verification,created_by,cursor_id,progress) VALUES($1,$2,$3,$4,$5,$6,$7,$8,0,$9)",
+    [
+      randomUUID(),
+      tenant,
+      account,
+      device,
+      observationBinding(identity),
+      identity,
+      { checkedAt: new Date().toISOString(), passed: false, checks: [] },
+      user,
+      emptyObservationProgress(),
+    ],
   );
   return { password, user, email };
 }
@@ -284,6 +328,15 @@ async function verifyAuthentication(pool, { password, user, email }, erased) {
     assert.equal(complete.type, "complete");
     assert.equal(complete.counts.workspace, 1);
     assert.equal(complete.counts.members, 1);
+    assert.equal(complete.counts.observations, 1);
+    const observation = lines
+      .map((line) => JSON.parse(line))
+      .find(
+        (record) =>
+          record.type === "record" && record.section === "observations",
+      );
+    assert.equal(observation.data.state, "invalidated");
+    assert.equal(observation.data.reason, "restore");
     assert.equal(
       complete.sha256,
       createHash("sha256")
@@ -495,7 +548,26 @@ export async function restoreDrill(header, dump) {
     assert.equal(fenced.control_enabled, false);
     assert.equal(fenced.paused, true);
     assert.equal(fenced.id, fence.id);
-    const authenticationFixture = await createAuthenticationFixture(pool);
+    const authenticationFixture = await createAuthenticationFixture(
+      pool,
+      encryptionKey(header.credentialKey),
+    );
+    assert.ok(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM policy_observation_runs WHERE state='observing'",
+        )
+      ).rows[0].n > 0,
+    );
+    await quarantineObservationRuns(pool);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM policy_observation_runs WHERE state='observing'",
+        )
+      ).rows[0].n,
+      0,
+    );
     assert.ok(
       (
         await pool.query(
@@ -571,6 +643,7 @@ export async function restoreDrill(header, dump) {
       retentionQuarantined: true,
       workspaceExportVerified: true,
       erasureFencesVerified: true,
+      observationsQuarantined: true,
       recoveryQuarantined: true,
       schemaUpgradeVerified: true,
       controlQuarantined: true,

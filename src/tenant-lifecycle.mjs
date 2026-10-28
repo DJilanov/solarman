@@ -17,6 +17,10 @@ export async function requireActiveTenant(client, tenantId) {
 /** @param {import('pg').PoolClient} client @param {string} tenantId @param {boolean} enabled @returns {Promise<void>} */
 export async function quarantineWorkspace(client, tenantId, enabled) {
   await client.query(
+    "UPDATE policy_observation_runs SET state='invalidated',reason='workspace_changed',ended_at=clock_timestamp() WHERE tenant_id=$1 AND state='observing'",
+    [tenantId],
+  );
+  await client.query(
     "UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,control_enabled=false,verification=null,control_epoch=control_epoch+1,updated_at=now() WHERE tenant_id=$1",
     [tenantId],
   );

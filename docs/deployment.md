@@ -21,7 +21,7 @@ Production values include `DB_HOST=127.0.0.1`, `DB_PORT=5432`, `DB_NAME=solarman
 
 ## Release
 
-For releases containing workspace erasure, install the matching root capsule with `bash scripts/install-backup.sh` before the application deploy. Verify `solarman-erasure.timer` and a fresh root-owned `/var/lib/solarman-backup/public/erasure-guard.json`, then prove an older backup upgrade using that capsule. The new application fails HTTPS startup without this recovery fence. See [erasure receipts](backups.md#erasure-receipts-and-restored-access); do not bypass it with a fabricated empty file. After the application upgrade, prove a fresh backup/restore as well.
+For schema or recovery releases, install the matching root capsule with `bash scripts/install-backup.sh` before the application deploy. Verify `solarman-erasure.timer` and a fresh root-owned `/var/lib/solarman-backup/public/erasure-guard.json`, then prove an older backup upgrade using that capsule. Policy-observation releases additionally require `observationsQuarantined` in the restore report. The application fails HTTPS startup without the erasure recovery fence. See [erasure receipts](backups.md#erasure-receipts-and-restored-access); do not bypass it with a fabricated empty file. After the application upgrade, prove a fresh backup/restore as well.
 
 Run local checks, inspect changes and commit/push the intended release, then:
 

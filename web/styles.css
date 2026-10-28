@@ -3273,3 +3273,90 @@ textarea {
   flex: 0 0 16px;
   margin-top: 0;
 }
+
+.observation-progress {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0 24px;
+}
+.observation-progress > span {
+  color: var(--muted);
+  font-size: 13px;
+}
+.observation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.observation-card {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px;
+}
+.observation-card.observed {
+  border-color: rgba(71, 207, 159, 0.4);
+}
+.observation-card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.observation-card-heading > svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.observation-card.observed .observation-card-heading > svg {
+  color: var(--battery);
+}
+.observation-card h3 {
+  font-size: 15px;
+  margin: 0 0 7px;
+}
+.observation-card-heading strong {
+  color: var(--muted);
+  font-size: 12px;
+}
+.observation-card p {
+  color: var(--muted);
+  line-height: 1.65;
+  font-size: 13px;
+}
+.observation-card > small {
+  color: var(--muted);
+}
+.observation-readings {
+  margin-top: 14px;
+  font-size: 12px;
+}
+.observation-readings summary {
+  cursor: pointer;
+}
+.observation-readings .readings-table {
+  margin-top: 12px;
+}
+.observation-targets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 20px 0;
+}
+.observation-targets > span {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.observation-targets strong {
+  color: #edf2f4;
+  font-size: 24px;
+}
+@media (max-width: 760px) {
+  .observation-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .observation-targets {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -29,6 +29,10 @@ import { WorkspaceData } from "../../src/workspace-data.mjs";
 import { DataMaintenance } from "../../src/data-maintenance.mjs";
 import { TenantLifecycle } from "../../src/tenant-lifecycle.mjs";
 import { WorkspaceOffboarding } from "../../src/workspace-offboarding.mjs";
+import {
+  PolicyObservations,
+  emptyObservationProgress,
+} from "../../src/policy-observations.mjs";
 import { Invitations, lockInvitationEmail } from "../../src/invitations.mjs";
 import {
   AccountSecurity,
@@ -177,6 +181,7 @@ after(async () => {
 test("all data routes require a session", async () => {
   for (const path of [
     "/overview",
+    "/policy-observations",
     "/analytics",
     "/activity",
     "/settings",
@@ -6370,4 +6375,451 @@ test("workspace erasure anonymous quota accounting retains 366 days without a te
     kind: "command",
     purpose: "recovery",
   });
+});
+
+async function observationFixture() {
+  const fixture = await lifecycleFixture();
+  const control = await controlFixture(false, fixture.target);
+  await completeCommand(control.runtime, "verify", control.user);
+  hub.runtimes.set(fixture.target.tenant, control.runtime);
+  const session = {
+    id: fixture.target.user,
+    tenant_id: fixture.target.tenant,
+    token_hash: tokenHash(fixture.member.cookie.split("=")[1]),
+  };
+  const create = async () =>
+    fetchApi("/policy-observations", {
+      auth: fixture.member,
+      method: "POST",
+      body: { action: "start" },
+    });
+  const state = async () =>
+    hub.policyObservations.status(fixture.target.tenant, control.runtime);
+  const insert = async (minutes, values = {}) => {
+    const date = new Date(Date.now() - 3600000 + minutes * 60000);
+    return (
+      await pool.query(
+        `INSERT INTO measurements(tenant_id,account_id,device,observed_at,received_at,soc,temperature_c,pv_w,load_w,grid_w,battery_w,ac_enabled,snapshot,reading_source,sampling_seconds,control_binding)
+  VALUES($1,$2,$3,$4,$4::timestamptz+interval '1 second',$5,16,$6,$7,$8,$9,null,'{}','provider',300,$10) RETURNING id`,
+        [
+          fixture.target.tenant,
+          fixture.target.account,
+          fixture.target.device,
+          date,
+          values.soc ?? 51,
+          values.pvW ?? 2500,
+          values.loadW ?? 1000,
+          values.gridW ?? 0,
+          values.batteryW ?? -1400,
+          values.binding === undefined
+            ? control.runtime.controlBinding()
+            : values.binding,
+        ],
+      )
+    ).rows[0].id;
+  };
+  const dispose = async () => {
+    await control.runtime.close();
+    hub.runtimes.delete(fixture.target.tenant);
+  };
+  return { ...fixture, ...control, session, create, state, insert, dispose };
+}
+
+test("policy observations require a fresh verified binding, CSRF and tenant ownership without enabling writes", async () => {
+  const f = await observationFixture();
+  try {
+    const before = f.calls.length;
+    assert.equal((await f.state()).canStart, true);
+    assert.equal(
+      (
+        await fetchApi("/policy-observations", {
+          auth: f.member,
+          method: "POST",
+          body: { action: "start" },
+          csrf: false,
+        })
+      ).status,
+      403,
+    );
+    assert.equal((await f.create()).status, 200);
+    const saved = await f.state();
+    assert.equal(saved.run.state, "observing");
+    assert.equal(saved.run.currentBinding, true);
+    assert.equal(saved.run.progress.accepted, 0);
+    assert.equal((await f.create()).status, 409);
+    assert.equal(
+      (
+        await fetchApi("/policy-observations?run=" + saved.run.id, {
+          auth: beta,
+        })
+      ).status,
+      404,
+    );
+    assert.equal(
+      (
+        await fetchApi("/policy-observations", {
+          auth: beta,
+          method: "POST",
+          body: { action: "stop", id: saved.run.id },
+        })
+      ).status,
+      404,
+    );
+    assert.equal(
+      (
+        await hub.policyObservations.status(
+          ids.beta.tenant,
+          await hub.forTenant(ids.beta.tenant),
+        )
+      ).history.length,
+      0,
+    );
+    assert.equal(f.calls.length, before);
+    const control = (
+      await pool.query(
+        "SELECT paused,control_enabled,manual_topup FROM controller_state WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    assert.deepEqual(control, {
+      paused: true,
+      control_enabled: false,
+      manual_topup: false,
+    });
+    await hub.policyObservations.change(f.session, f.runtime, {
+      action: "stop",
+      id: saved.run.id,
+    });
+    f.runtime.verification.checkedAt = new Date(
+      Date.now() - 1800001,
+    ).toISOString();
+    assert.equal((await f.create()).status, 409);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("policy observations persist evidence across collector restart and export it without provider access", async () => {
+  const f = await observationFixture();
+  try {
+    assert.equal((await f.create()).status, 200);
+    const id = (await f.state()).run.id;
+    await pool.query(
+      "UPDATE policy_observation_runs SET started_at=clock_timestamp()-interval '2 hours' WHERE id=$1",
+      [id],
+    );
+    await f.insert(0, { soc: 51 });
+    await f.insert(5, { soc: 52 });
+    const before = f.calls.length;
+    await new PolicyObservations(pool).process(f.target.tenant, id);
+    const saved = await new PolicyObservations(pool).status(
+      f.target.tenant,
+      f.runtime,
+    );
+    assert.equal(saved.run.progress.accepted, 2);
+    assert.ok(saved.run.progress.solar.observedAt);
+    assert.equal(saved.run.progress.discharge.observedAt, null);
+    assert.equal(saved.run.window.cycleObserved, false);
+    assert.equal(saved.run.progress.solar.first.soc, 51);
+    assert.equal(saved.run.progress.solar.last.soc, 52);
+    await pool.query("DELETE FROM measurements WHERE tenant_id=$1", [
+      f.target.tenant,
+    ]);
+    await new PolicyObservations(pool).process(f.target.tenant, id);
+    assert.deepEqual((await f.state()).run.progress, saved.run.progress);
+    const archive = await fetchApi("/workspace/archive", {
+      auth: f.member,
+      method: "POST",
+      body: { currentPassword: password },
+    });
+    assert.equal(archive.status, 200);
+    const records = (await archive.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const observations = records.filter(
+      (record) => record.section === "observations" && record.type === "record",
+    );
+    assert.equal(observations.length, 1);
+    assert.equal(observations[0].data.id, id);
+    assert.equal(observations[0].data.progress.solar.first.soc, 51);
+    assert.equal(f.calls.length, before);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("policy observations cannot relabel invalidated evidence when a stale browser ends a run", async () => {
+  const f = await observationFixture();
+  try {
+    assert.equal((await f.create()).status, 200);
+    const id = (await f.state()).run.id;
+    await f.lifecycle
+      .change(f.session, f.target.tenant, lifecycleBody())
+      .catch((error) => {
+        assert.equal(error.status, 403);
+      });
+    await f.lifecycle.change(
+      { id: f.actor.user, token_hash: tokenHash(f.admin.cookie.split("=")[1]) },
+      f.target.tenant,
+      lifecycleBody(),
+    );
+    await hub.policyObservations.change(f.session, f.runtime, {
+      action: "stop",
+      id,
+    });
+    const run = (await f.state()).run;
+    assert.equal(run.state, "invalidated");
+    assert.equal(run.reason, "workspace_changed");
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("policy observations invalidate on a changed firmware before accepting its new readings", async () => {
+  const f = await observationFixture();
+  try {
+    assert.equal((await f.create()).status, 200);
+    f.runtime.hub.policyObservations = hub.policyObservations;
+    f.firmware.DSP_V_M = "1.58";
+    await f.runtime.collectProvider();
+    const saved = await f.state();
+    assert.equal(saved.run.state, "invalidated");
+    assert.equal(saved.run.reason, "binding_changed");
+    assert.equal(saved.run.identity.firmware.dsp, "1.57");
+    assert.equal(saved.run.progress.accepted, 0);
+    assert.equal(saved.run.currentBinding, null);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("policy observations reject a measurement with missing binding rather than certifying it", async () => {
+  const f = await observationFixture();
+  try {
+    assert.equal((await f.create()).status, 200);
+    const id = (await f.state()).run.id;
+    await pool.query(
+      "UPDATE policy_observation_runs SET started_at=clock_timestamp()-interval '2 hours' WHERE id=$1",
+      [id],
+    );
+    await f.insert(0, { binding: null });
+    await f.insert(5, { soc: 52 });
+    await hub.policyObservations.process(f.target.tenant, id);
+    const saved = await f.state();
+    assert.equal(saved.run.state, "invalidated");
+    assert.equal(saved.run.progress.accepted, 0);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("policy observations serialize two members starting the same workspace run", async () => {
+  const f = await observationFixture();
+  try {
+    const id = randomUUID(),
+      email = `observation-member-${id}@example.test`;
+    await pool.query(
+      "INSERT INTO users(id,tenant_id,email,password_hash) VALUES($1,$2,$3,$4)",
+      [id, f.target.tenant, email, await hashPassword(password)],
+    );
+    const second = await login(email);
+    const results = await Promise.all([
+      f.create(),
+      fetchApi("/policy-observations", {
+        auth: second,
+        method: "POST",
+        body: { action: "start" },
+      }),
+    ]);
+    assert.deepEqual(results.map((result) => result.status).sort(), [200, 409]);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM policy_observation_runs WHERE tenant_id=$1 AND state='observing'",
+          [f.target.tenant],
+        )
+      ).rows[0].n,
+      1,
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("policy observations bound each database pass and retain its cursor for a resumed collector", async () => {
+  const f = await observationFixture();
+  try {
+    assert.equal((await f.create()).status, 200);
+    const id = (await f.state()).run.id;
+    await pool.query(
+      "UPDATE policy_observation_runs SET started_at=clock_timestamp()-interval '2 hours' WHERE id=$1",
+      [id],
+    );
+    await pool.query(
+      `INSERT INTO measurements(tenant_id,account_id,device,observed_at,received_at,soc,temperature_c,pv_w,load_w,grid_w,battery_w,ac_enabled,snapshot,reading_source,sampling_seconds,control_binding)
+    SELECT $1,$2,$3,clock_timestamp()-interval '1 hour'+n*interval '1 second',clock_timestamp()-interval '1 hour'+n*interval '1 second',50,16,0,1000,1100,0,null,'{}','provider',300,$4 FROM generate_series(1,1201)n`,
+      [
+        f.target.tenant,
+        f.target.account,
+        f.target.device,
+        f.runtime.controlBinding(),
+      ],
+    );
+    await hub.policyObservations.process(f.target.tenant, id);
+    assert.equal((await f.state()).run.progress.accepted, 500);
+    await new PolicyObservations(pool).process(f.target.tenant, id);
+    assert.equal((await f.state()).run.progress.accepted, 1000);
+    await new PolicyObservations(pool).process(f.target.tenant, id);
+    assert.equal((await f.state()).run.progress.accepted, 1201);
+    await new PolicyObservations(pool).process(f.target.tenant, id);
+    assert.equal((await f.state()).run.progress.accepted, 1201);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("policy observations are invalidated by credential repair and erased with their workspace", async () => {
+  const f = await observationFixture();
+  try {
+    assert.equal((await f.create()).status, 200);
+    await AccountHub.prototype.prepareAccountUpdate.call(hub, f.runtime);
+    const run = (await f.state()).run;
+    assert.equal(run.state, "invalidated");
+    assert.equal(run.reason, "connection_changed");
+  } finally {
+    await f.dispose();
+  }
+  const erased = await erasureFixture();
+  try {
+    const fixture = await controlFixture(false, erased.target);
+    await completeCommand(fixture.runtime, "verify", fixture.user);
+    hub.runtimes.set(erased.target.tenant, fixture.runtime);
+    await hub.policyObservations.change(
+      {
+        id: erased.target.user,
+        tenant_id: erased.target.tenant,
+        token_hash: tokenHash(erased.member.cookie.split("=")[1]),
+      },
+      fixture.runtime,
+      { action: "start" },
+    );
+    await readyForErasure(erased);
+    await erased.closure.runOnce();
+    assert.equal((await erased.status()).phase, "removed");
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM policy_observation_runs WHERE tenant_id=$1",
+          [erased.target.tenant],
+        )
+      ).rows[0].n,
+      0,
+    );
+  } finally {
+    await erased.dispose();
+  }
+});
+
+test("policy observations roll back a failed evidence save and retry without losing or duplicating samples", async () => {
+  const f = await observationFixture();
+  try {
+    assert.equal((await f.create()).status, 200);
+    const id = (await f.state()).run.id;
+    await pool.query(
+      "UPDATE policy_observation_runs SET started_at=clock_timestamp()-interval '2 hours' WHERE id=$1",
+      [id],
+    );
+    await f.insert(0, { soc: 51 });
+    await f.insert(5, { soc: 52 });
+    const before = (
+      await pool.query(
+        "SELECT cursor_id FROM policy_observation_runs WHERE id=$1",
+        [id],
+      )
+    ).rows[0].cursor_id;
+    await pool.query(
+      "CREATE FUNCTION observation_save_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.progress IS DISTINCT FROM OLD.progress THEN RAISE EXCEPTION 'Injected observation failure'; END IF; RETURN NEW; END $$",
+    );
+    await pool.query(
+      "CREATE TRIGGER observation_save_failure BEFORE UPDATE ON policy_observation_runs FOR EACH ROW EXECUTE FUNCTION observation_save_failure()",
+    );
+    try {
+      await assert.rejects(
+        hub.policyObservations.process(f.target.tenant, id),
+        { code: "P0001" },
+      );
+      const failed = (
+        await pool.query(
+          "SELECT cursor_id,progress,failed_at,checked_at FROM policy_observation_runs WHERE id=$1",
+          [id],
+        )
+      ).rows[0];
+      assert.equal(failed.cursor_id, before);
+      assert.equal(failed.progress.accepted, 0);
+      assert.ok(failed.failed_at);
+      assert.ok(failed.checked_at);
+    } finally {
+      await pool.query(
+        "DROP TRIGGER observation_save_failure ON policy_observation_runs",
+      );
+      await pool.query("DROP FUNCTION observation_save_failure()");
+    }
+    await hub.policyObservations.process(f.target.tenant, id);
+    const saved = (await f.state()).run;
+    assert.equal(saved.progress.accepted, 2);
+    assert.ok(saved.progress.solar.observedAt);
+    assert.equal(saved.failedAt, null);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("policy observations reject malformed saved evidence instead of displaying a completed signal", async () => {
+  const f = await observationFixture();
+  try {
+    assert.equal((await f.create()).status, 200);
+    const id = (await f.state()).run.id;
+    await pool.query(
+      "UPDATE policy_observation_runs SET progress=jsonb_set(progress,'{solarSeen}',$2::jsonb) WHERE id=$1",
+      [id, JSON.stringify("false")],
+    );
+    await assert.rejects(f.state(), /Invalid saved observation progress/);
+    await assert.rejects(
+      hub.policyObservations.process(f.target.tenant, id),
+      /Invalid saved observation progress/,
+    );
+    const record = (
+      await pool.query(
+        "SELECT progress,failed_at FROM policy_observation_runs WHERE id=$1",
+        [id],
+      )
+    ).rows[0];
+    assert.equal(record.progress.accepted, 0);
+    assert.ok(record.failed_at);
+    await pool.query(
+      "UPDATE policy_observation_runs SET progress=$2 WHERE id=$1",
+      [id, emptyObservationProgress()],
+    );
+    assert.equal((await f.state()).run.progress.solarSeen, false);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("policy observations distinguish unavailable current identity from a changed binding", async () => {
+  const f = await observationFixture();
+  try {
+    assert.equal((await f.create()).status, 200);
+    const firmware = f.runtime.firmware;
+    f.runtime.firmware = null;
+    const waiting = await f.state();
+    assert.equal(waiting.run.currentBinding, null);
+    assert.equal(waiting.run.state, "observing");
+    assert.equal(waiting.canStart, false);
+    f.runtime.firmware = firmware;
+    assert.equal((await f.state()).run.currentBinding, true);
+  } finally {
+    await f.dispose();
+  }
 });

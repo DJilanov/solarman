@@ -15,6 +15,7 @@ import { apiAppKey, ApiBudgetError, YEAR_MS } from "./api-budget.mjs";
 import { ApiCapacityError } from "./api-capacity.mjs";
 import { ControlJournal } from "./control-journal.mjs";
 import { Supervision } from "./supervision.mjs";
+import { observationBinding } from "./policy-observations.mjs";
 import { DeviceHealth } from "./operations.mjs";
 import {
   BLUESUN_MAPPING,
@@ -531,6 +532,11 @@ export class TenantRuntime {
     const modelMatches =
       reading.points.find((point) => point.key === "MMN")?.value.trim() ===
       "BSE20KH3";
+    if (currentUpload)
+      await this.hub.policyObservations?.checkBinding(
+        this.tenantId,
+        modelMatches ? this.controlBinding() : null,
+      );
     const verificationInvalidated = Boolean(
       currentUpload &&
         (verification?.passed || this.controlEnabled) &&
@@ -591,6 +597,7 @@ export class TenantRuntime {
         source: "provider",
         observedAt: reading.collectedAt,
         samplingSeconds: this.pollMs / 1000,
+        controlBinding: this.controlBinding(),
       },
     );
     this.lastSuccessAt = reading.collectedAt.toISOString();
@@ -736,7 +743,10 @@ export class TenantRuntime {
       this.account.id,
       this.device,
       snapshot,
-      { samplingSeconds: this.pollMs / 1000 },
+      {
+        samplingSeconds: this.pollMs / 1000,
+        controlBinding: this.controlBinding(),
+      },
     );
     this.lastSuccessAt = verification.checkedAt;
     this.telemetry = {
@@ -930,7 +940,10 @@ export class TenantRuntime {
       this.account.id,
       this.device,
       result.snapshot,
-      { samplingSeconds: this.pollMs / 1000 },
+      {
+        samplingSeconds: this.pollMs / 1000,
+        controlBinding: this.controlBinding(),
+      },
     );
     this.telemetry = {
       source: "register",
@@ -1349,6 +1362,17 @@ export class TenantRuntime {
       );
     });
     return job;
+  }
+
+  /** @returns {string|null} */
+  controlBinding() {
+    return observationBinding({
+      accountId: this.account?.id,
+      device: this.device,
+      profile: this.account?.profile,
+      timezone: this.timezone,
+      firmware: this.firmware,
+    });
   }
 
   close() {

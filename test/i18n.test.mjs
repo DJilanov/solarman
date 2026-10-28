@@ -43,6 +43,7 @@ test("every literal translation used by the interface exists in both catalogues"
     "workspace-data.tsx",
     "workspace-offboarding.tsx",
     "control-readiness.tsx",
+    "policy-observations.tsx",
   ]) {
     const source = readFileSync(
       new URL(`../web/${file}`, import.meta.url),
@@ -65,6 +66,7 @@ test("account security errors and event labels have English and Bulgarian transl
     "workspace-data.mjs",
     "workspace-offboarding.mjs",
     "account-hub.mjs",
+    "policy-observations.mjs",
   ]
     .map((file) =>
       readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"),
@@ -110,6 +112,15 @@ test("account security errors and event labels have English and Bulgarian transl
     "Erasure recovery status is unavailable",
     "Erasure recovery is not configured",
     "Return to dashboard",
+    "Observation run started. New stored readings will be evaluated.",
+    "Observation run ended. Recorded evidence is retained.",
+    "Stored observation evidence checked.",
+    "The observation change is unconfirmed. Reload its status before trying again.",
+    "Unable to update observations",
+    "Observed in readings",
+    "Waiting for conditions",
+    "Window recorded",
+    "More observation time needed",
   ];
   for (const key of keys) {
     assert.ok(Object.hasOwn(english, key), key);

@@ -54,6 +54,7 @@ import type { Action, Command, OverviewData, Session } from "./types";
 
 const CommandDetailsPage = lazy(() => import("./command-details"));
 const SystemHealthPage = lazy(() => import("./system-health"));
+const PolicyObservationsPage = lazy(() => import("./policy-observations"));
 const AccountSecurityPage = lazy(() => import("./account-security"));
 const WorkspaceDataPage = lazy(() => import("./workspace-data"));
 const RecoverAccountPage = lazy(() => import("./account-recovery"));
@@ -644,6 +645,14 @@ function Dashboard({
               <Route path="/" element={<Overview />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/controls" element={<Controls />} />
+              <Route
+                path="/controls/observations"
+                element={
+                  <Suspense fallback={<Loading />}>
+                    <PolicyObservationsPage />
+                  </Suspense>
+                }
+              />
               <Route path="/activity" element={<ActivityPage />} />
               <Route
                 path="/activity/writes"

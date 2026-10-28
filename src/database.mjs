@@ -108,19 +108,26 @@ export async function bootstrapAdmin(pool, email, passwordHash, key, env) {
   }
 }
 
-/** @param {pg.Pool} pool @param {string} tenantId @param {string} accountId @param {string} device @param {object} snapshot @param {{source?: 'register' | 'provider', observedAt?: Date, samplingSeconds?: number}} [options] @returns {Promise<boolean>} */
+/** @param {pg.Pool} pool @param {string} tenantId @param {string} accountId @param {string} device @param {object} snapshot @param {{source?: 'register' | 'provider', observedAt?: Date, samplingSeconds?: number,controlBinding?:string|null}} [options] @returns {Promise<boolean>} */
 export async function saveMeasurement(
   pool,
   tenantId,
   accountId,
   device,
   snapshot,
-  { source = "register", observedAt = new Date(), samplingSeconds = 900 } = {},
+  {
+    source = "register",
+    observedAt = new Date(),
+    samplingSeconds = 900,
+    controlBinding = null,
+  } = {},
 ) {
+  if (controlBinding !== null && !/^[a-f0-9]{64}$/.test(controlBinding))
+    throw new Error("Invalid measurement control binding");
   const result = await pool.query(
     `INSERT INTO measurements
-    (tenant_id,account_id,device,observed_at,soc,temperature_c,pv_w,load_w,grid_w,battery_w,ac_enabled,snapshot,reading_source,sampling_seconds)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+    (tenant_id,account_id,device,observed_at,soc,temperature_c,pv_w,load_w,grid_w,battery_w,ac_enabled,snapshot,reading_source,sampling_seconds,control_binding)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
     ON CONFLICT (tenant_id,device,observed_at) DO NOTHING`,
     [
       tenantId,
@@ -137,6 +144,7 @@ export async function saveMeasurement(
       snapshot,
       source,
       samplingSeconds,
+      controlBinding,
     ],
   );
   return result.rowCount === 1;

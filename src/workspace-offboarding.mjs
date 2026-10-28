@@ -13,6 +13,7 @@ import { unsigned32 } from "./modbus.mjs";
 
 const LIMIT = 500;
 const ERASE = {
+  observations: `DELETE FROM policy_observation_runs WHERE id IN(SELECT id FROM policy_observation_runs WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   writes: `DELETE FROM inverter_write_intents WHERE id IN(SELECT id FROM inverter_write_intents WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   commands: `DELETE FROM command_executions WHERE id IN(SELECT c.id FROM command_executions c WHERE c.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM inverter_write_intents w WHERE w.tenant_id=$1 AND w.execution_id=c.id) LIMIT ${LIMIT})`,
   measurements: `DELETE FROM measurements WHERE id IN(SELECT id FROM measurements WHERE tenant_id=$1 LIMIT ${LIMIT})`,

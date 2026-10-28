@@ -473,3 +473,75 @@ export type Action =
   | "stop"
   | "pause"
   | "resume";
+
+export interface ObservationIdentity {
+  accountId: string;
+  device: string;
+  profile: string;
+  model: string;
+  timezone: string;
+  mapping: string;
+  policy: string;
+  firmware: { protocol: string; dsp: string; hmi: string };
+}
+export interface ObservationSample {
+  id: string;
+  at: string;
+  receivedAt: string;
+  samplingSeconds: number;
+  soc: number;
+  pvW: number;
+  loadW: number;
+  gridW: number;
+  batteryW: number;
+  source: "provider" | "register";
+}
+export interface ObservationEvidence {
+  count: number;
+  first: ObservationSample | null;
+  last: ObservationSample | null;
+  observedAt: string | null;
+}
+export interface ObservationProgress {
+  version: 1;
+  accepted: number;
+  rejected: number;
+  firstAt: string | null;
+  last: ObservationSample | null;
+  coveredSeconds: number;
+  solarSeen: boolean;
+  nightSeen: boolean;
+  approach: ObservationSample | null;
+  solar: ObservationEvidence;
+  discharge: ObservationEvidence;
+  gridCharge: ObservationEvidence;
+  gridStop: ObservationEvidence;
+}
+export type ObservationState = "observing" | "stopped" | "invalidated";
+export interface PolicyObservationRun {
+  id: string;
+  state: ObservationState;
+  reason: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  checkedAt: string | null;
+  failedAt: string | null;
+  identity: ObservationIdentity;
+  verification: NonNullable<ControllerStatus["control"]["verification"]>;
+  currentBinding: boolean | null;
+  progress: ObservationProgress;
+  window: { spanSeconds: number; coverage: number; cycleObserved: boolean };
+}
+export interface PolicyObservationData {
+  canStart: boolean;
+  activeRunId: string | null;
+  identity: ObservationIdentity | null;
+  run: PolicyObservationRun | null;
+  history: {
+    id: string;
+    state: ObservationState;
+    reason: string | null;
+    started_at: string;
+    ended_at: string | null;
+  }[];
+}

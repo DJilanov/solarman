@@ -644,6 +644,27 @@ export function createApp({ pool, hub, config }) {
         return;
       }
       const runtime = await hub.forTenant(session.tenant_id);
+      if (
+        pathname === "/api/policy-observations" &&
+        ["GET", "POST"].includes(request.method)
+      ) {
+        if (request.method === "POST")
+          await hub.policyObservations.change(
+            session,
+            runtime,
+            await bodyJson(request),
+          );
+        json(
+          response,
+          200,
+          await hub.policyObservations.status(
+            session.tenant_id,
+            runtime,
+            url.searchParams.get("run"),
+          ),
+        );
+        return;
+      }
       if (pathname === "/api/overview" && request.method === "GET") {
         const today = localDay(Date.now(), runtime.timezone);
         const [current, stats, recent, alerts] = await Promise.all([

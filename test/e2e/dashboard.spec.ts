@@ -16,6 +16,8 @@ import type {
   OffboardingStatus,
   TenantLifecycleStatus,
   TenantMetadata,
+  PolicyObservationData,
+  PolicyObservationRun,
 } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
@@ -3484,4 +3486,260 @@ test("workspace erasure UI requires consent, tracks receipts and exposes private
   await protection.screenshot({
     path: "test-results/erasure-health-mobile-bg.png",
   });
+});
+
+test("policy observations explain the real empty state without sending inverter commands", async ({
+  page,
+}) => {
+  await signIn(page);
+  let commands = 0;
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname === "/api/commands" &&
+      request.method() === "POST"
+    )
+      commands++;
+  });
+  await page.goto("/controls");
+  await page
+    .getByRole("link", { name: "Observe the home policy", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Observe the home policy", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Start observations", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByText(
+      "No observation run yet. Verify the device in Controls, then record its normal behavior through daylight and night.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Reload observation status", exact: true })
+    .click();
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(
+    page.getByRole("button", { name: "Започни наблюдение", exact: true }),
+  ).toBeDisabled();
+  expect(commands).toBe(0);
+  await page.setViewportSize({ width: 320, height: 1000 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+});
+
+test("policy observations preserve an unknown start, distinguish physical signals from limits and retain invalidated history in Bulgarian", async ({
+  page,
+}) => {
+  await signIn(page);
+  const now = new Date().toISOString();
+  const account = randomUUID(),
+    runId = randomUUID();
+  const identity = {
+    accountId: account,
+    device: "observation-interface-fixture",
+    profile: "bluesun-bse20kh3",
+    model: "BSE20KH3",
+    timezone: "Europe/Sofia",
+    mapping: "bluesun-bse20kh3/2.02",
+    policy: "reserve-50/ac-2kw/solar-100/v1",
+    firmware: { protocol: "2.02", dsp: "1.57", hmi: "1.45" },
+  };
+  const empty = { count: 0, first: null, last: null, observedAt: null };
+  const run: PolicyObservationRun = {
+    id: runId,
+    state: "observing",
+    reason: null,
+    startedAt: now,
+    endedAt: null,
+    checkedAt: null,
+    failedAt: null,
+    identity,
+    verification: { checkedAt: now, passed: true, checks: [] },
+    currentBinding: true,
+    progress: {
+      version: 1,
+      accepted: 0,
+      rejected: 0,
+      firstAt: null,
+      last: null,
+      coveredSeconds: 0,
+      solarSeen: false,
+      nightSeen: false,
+      approach: null,
+      solar: { ...empty },
+      discharge: { ...empty },
+      gridCharge: { ...empty },
+      gridStop: { ...empty },
+    },
+    window: { spanSeconds: 0, coverage: 0, cycleObserved: false },
+  };
+  const data: PolicyObservationData = {
+    canStart: true,
+    activeRunId: null,
+    identity,
+    run: null,
+    history: [],
+  };
+  let firstStart = true;
+  const actions: string[] = [];
+  await page.route("**/api/policy-observations*", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as {
+        action: string;
+        id?: string;
+      };
+      actions.push(body.action);
+      expect(Boolean(route.request().headers()["x-csrf-token"])).toBe(true);
+      if (body.action === "start") {
+        data.activeRunId = runId;
+        data.run = run;
+        data.history = [
+          {
+            id: runId,
+            state: "observing",
+            reason: null,
+            started_at: now,
+            ended_at: null,
+          },
+        ];
+        if (firstStart) {
+          firstStart = false;
+          return route.abort("failed");
+        }
+      } else if (body.action === "check") {
+        expect(body.id).toBe(runId);
+        const first = {
+          id: "1",
+          at: now,
+          receivedAt: now,
+          samplingSeconds: 300,
+          soc: 51,
+          pvW: 2500,
+          loadW: 1000,
+          gridW: 0,
+          batteryW: -1400,
+          source: "provider" as const,
+        };
+        const last = {
+          ...first,
+          id: "2",
+          at: new Date(Date.parse(now) + 300000).toISOString(),
+          soc: 52,
+        };
+        run.checkedAt = now;
+        run.progress.accepted = 2;
+        run.progress.firstAt = now;
+        run.progress.last = last;
+        run.progress.solar = { count: 2, first, last, observedAt: last.at };
+        run.window = { spanSeconds: 300, coverage: 1, cycleObserved: false };
+      } else if (body.action === "stop") {
+        expect(body.id).toBe(runId);
+        run.state = "stopped";
+        run.endedAt = now;
+        data.activeRunId = null;
+        data.history[0]!.state = "stopped";
+      }
+    }
+    return route.fulfill({ json: data });
+  });
+  await page.goto("/controls/observations");
+  await page.locator(".language-switch select").selectOption("bg");
+  await page
+    .getByRole("button", { name: "Започни наблюдение", exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      "Промяната на наблюдението не е потвърдена. Обнови състоянието му, преди да опиташ отново.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Приключи наблюдението", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Започни наблюдение", exact: true }),
+  ).toBeDisabled();
+  await page
+    .getByRole("button", { name: "Провери запазените данни", exact: true })
+    .click();
+  await expect(
+    page.getByText("1 от 5 признака в наблюдението", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("2 приети отчета", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "Отделният лимит от 5 kW за соларно зареждане няма проверено съответствие с настройка. Наблюдаването на мощност под 5 kW не доказва наличие на лимит.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await page
+    .getByText("Покажи отчетените стойности", { exact: true })
+    .first()
+    .click();
+  await expect(
+    page.locator(".observation-readings table tbody tr"),
+  ).toHaveCount(2);
+  await expect(page.locator(".observation-readings")).toContainText("-1400");
+  run.currentBinding = null;
+  await page
+    .getByRole("button", {
+      name: "Обнови състоянието на наблюдението",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByText(
+      "Текущата идентичност на устройството е недостъпна. Записаните данни се запазват, без да се приема, че конфигурацията е променена.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  run.currentBinding = true;
+  await page
+    .getByRole("button", { name: "Приключи наблюдението", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Приключи наблюдението", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("1 от 5 признака в наблюдението", { exact: true }),
+  ).toBeVisible();
+  run.state = "invalidated";
+  run.reason = "binding_changed";
+  run.currentBinding = false;
+  data.canStart = false;
+  data.history[0]!.state = "invalidated";
+  await page
+    .getByRole("button", {
+      name: "Обнови състоянието на наблюдението",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByText(
+      "Устройството или фърмуерът са променени. Тези данни се отнасят за предишната конфигурация.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Виж наблюдението", exact: true })
+    .click();
+  await expect(page).toHaveURL(new RegExp("run=" + runId));
+  await page.setViewportSize({ width: 320, height: 1100 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "test-results/policy-observations-mobile-bg.png",
+    fullPage: true,
+  });
+  expect(actions).toEqual(["start", "check", "stop"]);
 });

@@ -639,6 +639,21 @@ export function Controls(): ReactNode {
         submitting={submitting}
         command={command}
       />
+      <Panel
+        title={tr("Commissioning evidence")}
+        subtitle={tr(
+          "Compare the configured policy with observed battery behavior",
+        )}
+      >
+        <p>
+          {tr(
+            "Record solar charging above 50%, battery use above the reserve and the grid charging transition using existing readings.",
+          )}
+        </p>
+        <Link className="button secondary" to="/controls/observations">
+          {tr("Observe the home policy")}
+        </Link>
+      </Panel>
       <div className="controls-grid">
         <Panel
           title={tr("Grid top-up")}
