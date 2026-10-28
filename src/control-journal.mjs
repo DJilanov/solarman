@@ -53,6 +53,7 @@ export class ControlJournal {
       updatedAt: this.state?.updated_at ?? null,
       writes: this.writes.map((write) => ({
         id: write.id,
+        executionId: write.execution_id,
         operation: write.operation,
         status: write.status,
         inFlight: inFlight(write),

@@ -2,6 +2,7 @@ import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { createPool, migrate } from "../../src/database.mjs";
 import { dashboardConfig } from "../../src/dashboard-config.mjs";
 import { hashPassword, tokenHash } from "../../src/auth.mjs";
@@ -150,7 +151,14 @@ after(async () => {
 });
 
 test("all data routes require a session", async () => {
-  for (const path of ["/overview", "/analytics", "/activity", "/settings"])
+  for (const path of [
+    "/overview",
+    "/analytics",
+    "/activity",
+    "/settings",
+    "/write-history",
+    `/activity/${randomUUID()}`,
+  ])
     assert.equal((await fetchApi(path)).status, 401);
 });
 
@@ -468,10 +476,15 @@ async function completeCommand(runtime, action, user) {
 test("read-only verification persists checked values but cannot enable control without host permission", async () => {
   const { runtime, calls, user } = await controlFixture();
   try {
-    assert.equal(
-      (await completeCommand(runtime, "verify", user)).status,
-      "succeeded",
-    );
+    const job = await completeCommand(runtime, "verify", user);
+    assert.equal(job.status, "succeeded");
+    const history = await (
+      await fetchApi(`/activity/${job.id}`, { auth: alpha })
+    ).json();
+    assert.equal(history.evidence.verification.checks.length, 8);
+    assert.equal(history.evidence.verification.passed, true);
+    assert.equal(history.device, runtime.device);
+    assert.deepEqual(history.writes, []);
     assert.equal(runtime.status().control.verification.passed, true);
     assert.equal(runtime.status().control.verification.checks.length, 8);
     assert.equal(runtime.status().control.canEnable, false);
@@ -1674,5 +1687,227 @@ test("a persisted pause reconciles owned permission before returning to monitori
     assert.equal(calls.filter((call) => call === "disable").length, 1);
   } finally {
     await runtime.close();
+  }
+});
+
+test("command history paginates every write and preserves original uncertainty, device and tenant ownership", async () => {
+  const { runtime, user } = await armedFixture();
+  try {
+    const job = await completeCommand(runtime, "topup", user);
+    assert.equal(job.device, runtime.device);
+    await pool.query(
+      "UPDATE command_executions SET status='running',completed_at=null,detail=$2 WHERE id=$1",
+      [
+        job.id,
+        {
+          secret: "history-private-marker",
+          events: [
+            {
+              event: "native_policy_check",
+              reason: "topup_assessment",
+              token: "history-private-marker",
+            },
+          ],
+        },
+      ],
+    );
+    const uncertain = await runtime.journal.prepare(206, [0, 25], job.id);
+    await runtime.journal.acknowledge(uncertain);
+    const running = await (
+      await fetchApi(`/activity/${job.id}`, { auth: alpha })
+    ).json();
+    assert.equal(running.writes[0].inFlight, true);
+    assert.equal(running.writes[0].verifiedAt, null);
+    await runtime.journal.uncertain(uncertain);
+    await pool.query(
+      "UPDATE command_executions SET status='failed',completed_at=now(),message='Device acknowledgment timed out; command outcome is unknown' WHERE id=$1",
+      [job.id],
+    );
+    await runtime.journal.confirmOff(9);
+    for (let index = 0; index < 25; index++)
+      await pool.query(
+        `INSERT INTO inverter_write_intents (id,tenant_id,account_id,device,execution_id,operation,address,register_values,status,created_at,acknowledged_at,verified_at)
+        VALUES ($1,$2,$3,$4,$5,'window',2509,'[4096,4121,0,0,0,0,0,0]','verified',now()-interval '1 hour'+($6*interval '1 second'),now(),now())`,
+        [
+          randomUUID(),
+          runtime.tenantId,
+          runtime.account.id,
+          runtime.device,
+          job.id,
+          index,
+        ],
+      );
+    const originalDevice = runtime.device;
+    await pool.query(
+      "UPDATE solarman_accounts SET device_sn='new-binding-for-history-test' WHERE tenant_id=$1",
+      [runtime.tenantId],
+    );
+    const first = await (
+      await fetchApi(`/activity/${job.id}`, { auth: alpha })
+    ).json();
+    assert.equal(first.device, originalDevice);
+    assert.equal(first.writes.length, 25);
+    assert.equal(first.hasMoreWrites, true);
+    assert.equal(
+      first.writes.every(
+        (write) =>
+          write.device === originalDevice && write.status === "verified",
+      ),
+      true,
+    );
+    assert.deepEqual(
+      first.writes[0].registerValues,
+      [4096, 4121, 0, 0, 0, 0, 0, 0],
+    );
+    assert.equal(first.writes[0].address, 2509);
+    assert.equal(
+      JSON.stringify(first).includes("history-private-marker"),
+      false,
+    );
+    const second = await (
+      await fetchApi(`/activity/${job.id}?offset=25`, { auth: alpha })
+    ).json();
+    assert.equal(second.writes.length, 1);
+    assert.equal(second.hasMoreWrites, false);
+    assert.equal(second.writes[0].id, uncertain);
+    assert.equal(second.writes[0].status, "uncertain");
+    assert.equal(second.writes[0].verifiedAt, null);
+    assert.ok(second.writes[0].acknowledgedAt);
+    assert.ok(second.writes[0].reconciledAt);
+    assert.equal(second.writes[0].inFlight, false);
+    const allFirst = await (
+      await fetchApi("/write-history", { auth: alpha })
+    ).json();
+    const allSecond = await (
+      await fetchApi("/write-history?offset=25", { auth: alpha })
+    ).json();
+    assert.equal(allFirst.writes[0].id, uncertain);
+    assert.equal(allFirst.hasMoreWrites, true);
+    assert.equal(allSecond.writes.length, 1);
+    assert.equal(allSecond.hasMoreWrites, false);
+    assert.equal(
+      new Set(
+        [...allFirst.writes, ...allSecond.writes].map((write) => write.id),
+      ).size,
+      26,
+    );
+    assert.equal(
+      (await fetchApi(`/activity/${job.id}`, { auth: beta })).status,
+      404,
+    );
+    assert.equal(
+      (await fetchApi(`/activity/${randomUUID()}`, { auth: alpha })).status,
+      404,
+    );
+    for (const offset of ["-1", "1.5", "1000000"])
+      assert.equal(
+        (
+          await fetchApi(`/activity/${job.id}?offset=${offset}`, {
+            auth: alpha,
+          })
+        ).status,
+        400,
+      );
+    const list = await (await fetchApi("/activity", { auth: alpha })).json();
+    assert.equal(
+      JSON.stringify(list).includes("history-private-marker"),
+      false,
+    );
+  } finally {
+    await pool.query(
+      "UPDATE solarman_accounts SET device_sn=$2 WHERE tenant_id=$1",
+      [runtime.tenantId, runtime.device],
+    );
+    await runtime.close();
+  }
+});
+
+test("full write history includes unlinked recovery writes and previous bindings, with tenant isolation", async () => {
+  const { runtime } = await armedFixture();
+  try {
+    const recovery = await runtime.journal.prepare(206, [0, 9], null);
+    await runtime.journal.acknowledge(recovery);
+    await runtime.journal.verify(recovery);
+    await pool.query(
+      "UPDATE solarman_accounts SET device_sn='replacement-for-recovery-history' WHERE tenant_id=$1",
+      [runtime.tenantId],
+    );
+    const response = await fetchApi("/write-history", { auth: alpha });
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(data.writes.length, 1);
+    assert.equal(data.writes[0].id, recovery);
+    assert.equal(data.writes[0].executionId, null);
+    assert.equal(data.writes[0].status, "verified");
+    assert.deepEqual(data.writes[0].registerValues, [0, 9]);
+    assert.deepEqual(
+      (await (await fetchApi("/write-history", { auth: beta })).json()).writes,
+      [],
+    );
+    assert.equal(
+      (await fetchApi("/write-history?offset=-1", { auth: alpha })).status,
+      400,
+    );
+  } finally {
+    await pool.query(
+      "UPDATE solarman_accounts SET device_sn=$2 WHERE tenant_id=$1",
+      [runtime.tenantId, runtime.device],
+    );
+    await runtime.close();
+  }
+});
+
+test("history migration backfills only unambiguous devices within the original tenant", async () => {
+  const connection = await pool.connect();
+  try {
+    await connection.query("BEGIN");
+    await connection.query(
+      "CREATE TEMP TABLE command_executions (tenant_id text,id text,detail jsonb) ON COMMIT DROP",
+    );
+    await connection.query(
+      "CREATE TEMP TABLE inverter_write_intents (tenant_id text,execution_id text,device text,created_at timestamptz,id text) ON COMMIT DROP",
+    );
+    await connection.query(
+      "INSERT INTO command_executions (tenant_id,id) VALUES ('a','shared-id'),('b','shared-id'),('a','ambiguous'),('a','unwritten'),('a','verified-only'),('a','conflicting-report')",
+    );
+    await connection.query(
+      "INSERT INTO inverter_write_intents (tenant_id,execution_id,device) VALUES ('a','shared-id','old-a'),('a','shared-id','old-a'),('b','shared-id','old-b'),('a','ambiguous','old-a'),('a','ambiguous','other-device')",
+    );
+    await connection.query(
+      "UPDATE command_executions SET detail=$1 WHERE id IN ('verified-only','conflicting-report')",
+      [
+        {
+          events: [
+            {
+              event: "device_verification",
+              report: { device: "verified-device" },
+            },
+          ],
+        },
+      ],
+    );
+    await connection.query(
+      "INSERT INTO inverter_write_intents (tenant_id,execution_id,device) VALUES ('a','conflicting-report','different-device')",
+    );
+    await connection.query(
+      await readFile(
+        new URL("../../migrations/009_command_history.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    const result = await connection.query(
+      "SELECT tenant_id,id,device FROM command_executions ORDER BY tenant_id,id",
+    );
+    assert.deepEqual(result.rows, [
+      { tenant_id: "a", id: "ambiguous", device: null },
+      { tenant_id: "a", id: "conflicting-report", device: null },
+      { tenant_id: "a", id: "shared-id", device: "old-a" },
+      { tenant_id: "a", id: "unwritten", device: null },
+      { tenant_id: "a", id: "verified-only", device: "verified-device" },
+      { tenant_id: "b", id: "shared-id", device: "old-b" },
+    ]);
+  } finally {
+    await connection.query("ROLLBACK");
+    connection.release();
   }
 });

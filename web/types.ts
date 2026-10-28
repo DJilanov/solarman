@@ -3,6 +3,22 @@ export interface Session {
   tenant: { id: string; name: string; timezone: string };
   csrfToken: string;
 }
+export interface WriteSummary {
+  id: string;
+  executionId: string | null;
+  operation: "enable" | "disable" | "window";
+  status: "prepared" | "acknowledged" | "verified" | "uncertain";
+  inFlight: boolean;
+  createdAt: string;
+  acknowledgedAt: string | null;
+  verifiedAt: string | null;
+  reconciledAt: string | null;
+}
+export interface WriteRecord extends WriteSummary {
+  device: string;
+  address: number;
+  registerValues: number[];
+}
 export interface ControllerStatus {
   apiConfigured: boolean;
   writesEnabled: boolean;
@@ -20,16 +36,7 @@ export interface ControllerStatus {
       inFlight: boolean;
       confirmedOffAt: string | null;
       updatedAt: string | null;
-      writes: {
-        id: string;
-        operation: "enable" | "disable" | "window";
-        status: "prepared" | "acknowledged" | "verified" | "uncertain";
-        inFlight: boolean;
-        createdAt: string;
-        acknowledgedAt: string | null;
-        verifiedAt: string | null;
-        reconciledAt: string | null;
-      }[];
+      writes: WriteSummary[];
     };
     verification: {
       checkedAt: string;
@@ -132,6 +139,42 @@ export interface Command {
   message: string | null;
   created_at: string;
   completed_at: string | null;
+}
+export interface WriteHistoryData {
+  writes: WriteRecord[];
+  hasMoreWrites: boolean;
+  offset: number;
+}
+export interface CommandDetails extends Command, WriteHistoryData {
+  device: string | null;
+  evidence: {
+    decision: {
+      charge: boolean;
+      reason: string;
+      dryRun: boolean | null;
+      acEnabled: boolean | null;
+      soc: number | null;
+      pvW: number | null;
+      loadW: number | null;
+      gridW: number | null;
+      batteryW: number | null;
+    } | null;
+    verification: ControllerStatus["control"]["verification"];
+    events: {
+      code:
+        | "native_policy_check"
+        | "manual_topup_expired"
+        | "ac_charge_changed"
+        | "write_acknowledgement_audit_recovered"
+        | "write_journal_unavailable";
+      enabled: boolean | null;
+      reason:
+        | "native_audit"
+        | "observed_policy_deviation"
+        | "topup_assessment"
+        | null;
+    }[];
+  };
 }
 export interface OverviewData {
   latest: Measurement | null;

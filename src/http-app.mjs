@@ -12,6 +12,7 @@ import {
   equalToken,
 } from "./auth.mjs";
 import { summarize, localDay, dayStart, addDays } from "./analytics.mjs";
+import { historyEvidence, writeHistory } from "./command-history.mjs";
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -465,7 +466,7 @@ export function createApp({ pool, hub, config }) {
         const offset = Number(offsetText);
         const search = (url.searchParams.get("search") ?? "").slice(0, 100);
         const result = await pool.query(
-          `SELECT id,actor,action,status,message,detail,created_at,completed_at FROM command_executions
+          `SELECT id,actor,action,status,message,created_at,completed_at FROM command_executions
           WHERE tenant_id=$1 AND ($2='' OR action ILIKE $3 OR actor ILIKE $3 OR message ILIKE $3)
           ORDER BY created_at DESC LIMIT 26 OFFSET $4`,
           [session.tenant_id, search, `%${search}%`, offset],
@@ -474,6 +475,44 @@ export function createApp({ pool, hub, config }) {
           items: result.rows.slice(0, 25),
           hasMore: result.rows.length > 25,
           offset,
+        });
+        return;
+      }
+      if (pathname === "/api/write-history" && request.method === "GET") {
+        const offsetText = url.searchParams.get("offset") ?? "0";
+        if (!/^\d{1,6}$/.test(offsetText))
+          throw new HttpError(400, "Invalid page");
+        json(
+          response,
+          200,
+          await writeHistory(pool, session.tenant_id, {
+            offset: Number(offsetText),
+          }),
+        );
+        return;
+      }
+      const activityMatch =
+        /^\/api\/activity\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i.exec(
+          pathname,
+        );
+      if (activityMatch && request.method === "GET") {
+        const offsetText = url.searchParams.get("offset") ?? "0";
+        if (!/^\d{1,6}$/.test(offsetText))
+          throw new HttpError(400, "Invalid page");
+        const offset = Number(offsetText);
+        const result = await pool.query(
+          "SELECT id,actor,action,status,message,device,detail,created_at,completed_at FROM command_executions WHERE tenant_id=$1 AND id=$2",
+          [session.tenant_id, activityMatch[1]],
+        );
+        if (!result.rowCount) throw new HttpError(404, "Command not found");
+        const { detail, ...job } = result.rows[0];
+        json(response, 200, {
+          ...job,
+          evidence: historyEvidence(detail),
+          ...(await writeHistory(pool, session.tenant_id, {
+            executionId: job.id,
+            offset,
+          })),
         });
         return;
       }

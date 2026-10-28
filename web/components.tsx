@@ -1,6 +1,6 @@
 import { tr } from "./i18n";
 import { Children, lazy, Suspense, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import {
   Activity,
   AlertCircle,
@@ -440,23 +440,7 @@ export function DailyChart({ data }: { data: Analytics }): ReactNode {
   );
 }
 
-export function ActivityList({
-  items,
-  timezone = "Europe/Sofia",
-}: {
-  items: Command[];
-  timezone?: string;
-}): ReactNode {
-  if (!items.length)
-    return (
-      <EmptyState
-        icon={Clock3}
-        title={tr("A clear record of every action")}
-        description={tr(
-          "Commands and automation evaluations will appear here with their requested action and verified result.",
-        )}
-      />
-    );
+export function commandLabel(action: string): string {
   const labels: Record<string, string> = {
     evaluate: "Reserve evaluation",
     refresh: "Refresh diagnostics",
@@ -467,6 +451,27 @@ export function ActivityList({
     pause: "Pause automation",
     resume: "Resume automation",
   };
+  return tr(labels[action] ?? action);
+}
+
+export function ActivityList({
+  items,
+  timezone = "Europe/Sofia",
+}: {
+  items: Command[];
+  timezone?: string;
+}): ReactNode {
+  const location = useLocation();
+  if (!items.length)
+    return (
+      <EmptyState
+        icon={Clock3}
+        title={tr("A clear record of every action")}
+        description={tr(
+          "Commands and automation evaluations will appear here with their requested action and verified result.",
+        )}
+      />
+    );
   return (
     <div className="activity-list">
       {items.map((item) => (
@@ -482,7 +487,7 @@ export function ActivityList({
           </span>
           <div className="activity-copy">
             <div>
-              <strong>{tr(labels[item.action] ?? item.action)}</strong>
+              <strong>{commandLabel(item.action)}</strong>
               <StatusBadge status={item.status} />
             </div>
             <p>
@@ -495,6 +500,21 @@ export function ActivityList({
               {item.actor === "Automation" ? tr("Automation") : item.actor} ·{" "}
               {when(item.created_at, timezone)}
             </small>
+            <Link
+              className="text-link activity-detail-link"
+              to={`/activity/${item.id}`}
+              state={{
+                returnTo:
+                  location.pathname === "/activity"
+                    ? location.pathname + location.search
+                    : "/activity",
+              }}
+              aria-label={tr("View details for {{action}}", {
+                action: commandLabel(item.action),
+              })}
+            >
+              {tr("View command details")} <ArrowRight size={13} />
+            </Link>
           </div>
         </div>
       ))}

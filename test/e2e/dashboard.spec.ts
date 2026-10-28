@@ -2,7 +2,13 @@ import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 import pg from "pg";
-import type { OverviewData, SettingsData } from "../../web/types";
+import { randomUUID } from "node:crypto";
+import type {
+  OverviewData,
+  SettingsData,
+  Session,
+  Command,
+} from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
   const email = process.env.E2E_EMAIL;
@@ -726,6 +732,7 @@ test("uncertain writes remain distinct from confirmed cleanup in English and Bul
     writes: [
       {
         id: "4d2ace90-639a-4d0a-b640-c760ef93ff13",
+        executionId: null,
         operation: "enable",
         status: "uncertain",
         inFlight: false,
@@ -858,4 +865,240 @@ test("native supervision and observed charging problems remain clear on mobile i
   await expect(
     page.getByText(/Домът се захранва от мрежата над резерва/),
   ).toBeVisible();
+});
+
+test("activity details preserve filters, explain a command without writes and handle a missing record in Bulgarian", async ({
+  page,
+}) => {
+  await signIn(page);
+  const session = (await (
+    await page.request.get("/api/auth/session")
+  ).json()) as Session;
+  const response = await page.request.post("/api/commands", {
+    headers: {
+      origin: "http://localhost:3000",
+      "x-csrf-token": session.csrfToken,
+      "idempotency-key": randomUUID(),
+    },
+    data: { action: "pause" },
+  });
+  expect(response.status()).toBe(202);
+  const job = (await response.json()) as Command;
+  await expect
+    .poll(async () => {
+      const result = (await (
+        await page.request.get(`/api/commands/${job.id}`)
+      ).json()) as Command;
+      return result.status;
+    })
+    .toBe("succeeded");
+  await page.goto("/activity");
+  await page.getByLabel("Search activity").fill("pause");
+  await expect(page).toHaveURL(/search=pause/);
+  await page.locator(`a[href="/activity/${job.id}"]`).click();
+  await expect(
+    page.getByRole("heading", { name: "Command details", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".command-writes")).toContainText(
+    "No inverter write intents were recorded for this command.",
+  );
+  await expect(page.locator(".command-record")).toContainText(job.id);
+  await page
+    .getByRole("link", { name: "Back to activity", exact: true })
+    .click();
+  await expect(page.getByLabel("Search activity")).toHaveValue("pause");
+  await expect(page).toHaveURL(/search=pause/);
+  await page.locator(`a[href="/activity/${job.id}"]`).click();
+  await page.locator(".language-switch select").selectOption("bg");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(
+    page.getByRole("heading", {
+      name: "Подробности за командата",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.locator(".command-writes")).toContainText(
+    "За тази команда няма записани заявки за промени по инвертора.",
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+  await page.goto(`/activity/${randomUUID()}`);
+  await expect(page.getByRole("alert")).toContainText(
+    "Командата не е намерена",
+  );
+  await expect(page.locator(".command-record")).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Обновяване на записа", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Командата не е намерена",
+  );
+});
+
+test("full write history includes recovery and paginated command evidence without confirming an uncertain write", async ({
+  page,
+}) => {
+  const env = parseEnv(readFileSync(".env", "utf8"));
+  const pool = new pg.Pool({
+    host: env.DB_HOST,
+    port: Number(env.DB_PORT),
+    user: env.DB_USERNAME,
+    password: env.DB_PASSWORD,
+    database: "solarman_test",
+  });
+  const account = (
+    await pool.query(
+      "SELECT a.id,a.tenant_id FROM solarman_accounts a JOIN users u ON u.tenant_id=a.tenant_id WHERE lower(u.email)=$1",
+      [process.env.E2E_EMAIL?.toLowerCase()],
+    )
+  ).rows[0] as { id: string; tenant_id: string };
+  const jobId = randomUUID();
+  const device =
+    "historical-inverter-" + jobId + "-" + "a-long-serial-".repeat(6);
+  const writeIds = Array.from({ length: 27 }, () => randomUUID());
+  try {
+    await pool.query(
+      "INSERT INTO command_executions (tenant_id,id,account_id,device,actor,action,status,message,completed_at,detail) VALUES ($1,$2,$3,$4,'fixture-owner@example.test','topup','failed','Device acknowledgment timed out; command outcome is unknown',now(),$5)",
+      [
+        account.tenant_id,
+        jobId,
+        account.id,
+        device,
+        {
+          decision: { charge: false, reason: "reserve_reached" },
+          events: [
+            {
+              event: "decision",
+              charge: false,
+              reason: "reserve_reached",
+              soc: 51,
+              pvW: 1600,
+              loadW: 800,
+              gridW: 0,
+              batteryW: -750,
+              dryRun: false,
+              acEnabled: false,
+            },
+            { event: "native_policy_check", reason: "native_audit" },
+          ],
+        },
+      ],
+    );
+    await pool.query(
+      "INSERT INTO device_control_state (tenant_id,account_id,device,state,confirmed_off_at) VALUES ($1,$2,$3,'clear',now())",
+      [account.tenant_id, account.id, device],
+    );
+    for (const [index, id] of writeIds.entries()) {
+      const uncertain = index === 25;
+      const recovery = index === 26;
+      await pool.query(
+        `INSERT INTO inverter_write_intents (id,tenant_id,account_id,device,execution_id,operation,address,register_values,status,created_at,acknowledged_at,verified_at,reconciled_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now()-interval '1 hour'+($10*interval '1 second'),now(),CASE WHEN $11 THEN null ELSE now() END,CASE WHEN $11 THEN now() ELSE null END)`,
+        [
+          id,
+          account.tenant_id,
+          account.id,
+          device,
+          recovery ? null : jobId,
+          recovery ? "disable" : uncertain ? "enable" : "window",
+          uncertain || recovery ? 206 : 2509,
+          JSON.stringify(
+            uncertain
+              ? [0, 25]
+              : recovery
+                ? [0, 9]
+                : [4096, 4121, 0, 0, 0, 0, 0, 0],
+          ),
+          uncertain ? "uncertain" : "verified",
+          index,
+          uncertain,
+        ],
+      );
+    }
+    await signIn(page);
+    await page.getByRole("link", { name: "Activity", exact: true }).click();
+    await page
+      .getByRole("link", { name: "All inverter writes", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "All inverter writes", exact: true }),
+    ).toBeVisible();
+    await expect(page.locator(".write-history > li")).toHaveCount(25);
+    await expect(page.locator(".write-history > li").first()).toContainText(
+      "System recovery; no linked command record",
+    );
+    await page.locator(".write-history > li").nth(1).locator("summary").click();
+    await page
+      .getByRole("link", { name: "View command details", exact: true })
+      .first()
+      .click();
+    await expect(page.locator(".command-record").first()).toContainText(device);
+    await expect(page.locator(".command-events")).toContainText(
+      "Periodic or required native check",
+    );
+    await expect(
+      page.locator(".command-writes .write-history > li"),
+    ).toHaveCount(25);
+    await page.getByRole("button", { name: "Next", exact: true }).click();
+    await expect(page).toHaveURL(/offset=25/);
+    await expect(
+      page.locator(".command-writes .write-history > li"),
+    ).toHaveCount(1);
+    await expect(page.locator(".write-history summary")).toContainText(
+      "Cleanup confirmed; original write outcome unknown",
+    );
+    await expect(
+      page.locator(".write-history dd").filter({ hasText: "0, 25" }),
+    ).toBeVisible();
+    await expect(
+      page
+        .locator(".write-history dl > div")
+        .filter({ has: page.getByText("Readback verified", { exact: true }) }),
+    ).toContainText("Not recorded");
+    await page.locator(".language-switch select").selectOption("bg");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator(".write-history summary")).toContainText(
+      "Изключването е потвърдено; резултатът от първоначалната промяна е неизвестен",
+    );
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      ),
+    ).toBe(false);
+    await page.screenshot({
+      path: "test-results/command-details-mobile-bg.png",
+      fullPage: true,
+    });
+    await page
+      .getByRole("link", { name: "Към историята на промените", exact: true })
+      .click();
+    await expect(page).toHaveURL("/activity/writes");
+    await page.getByRole("button", { name: "Следващи", exact: true }).click();
+    await expect(page.locator(".write-history > li")).toHaveCount(2);
+    await expect(
+      page.getByRole("button", { name: "Следващи", exact: true }),
+    ).toBeDisabled();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      ),
+    ).toBe(false);
+  } finally {
+    try {
+      await pool.query(
+        "DELETE FROM inverter_write_intents WHERE id=ANY($1::uuid[])",
+        [writeIds],
+      );
+      await pool.query(
+        "DELETE FROM device_control_state WHERE tenant_id=$1 AND device=$2",
+        [account.tenant_id, device],
+      );
+      await pool.query("DELETE FROM command_executions WHERE id=$1", [jobId]);
+    } finally {
+      await pool.end();
+    }
+  }
 });

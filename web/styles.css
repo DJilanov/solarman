@@ -2861,3 +2861,64 @@ html[lang="bg"] .segmented button {
   margin-top: 6px;
   opacity: 0.8;
 }
+.activity-detail-link {
+  margin-top: 10px;
+  font-size: 10px;
+}
+.command-back {
+  display: inline-flex;
+  margin-bottom: 18px;
+}
+.command-result {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.command-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 18px 24px;
+  margin: 18px 0;
+  font-size: 12px;
+}
+.command-facts dt {
+  color: var(--muted);
+  margin-bottom: 7px;
+  font-size: 11px;
+}
+.command-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.command-events {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12px;
+}
+.command-events li + li {
+  margin-top: 16px;
+}
+.command-events span {
+  display: block;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.command-empty {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 20px;
+  line-height: 1.6;
+}
+.write-history dd {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.write-history .text-link {
+  margin: 16px 0 0 14px;
+  font-size: 11px;
+}
+.command-writes .pagination {
+  margin: 20px 0 0;
+  flex-wrap: wrap;
+}

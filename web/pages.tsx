@@ -1,7 +1,7 @@
 import { tr, locale } from "./i18n";
-import { formatNumber } from "./format";
+import { formatNumber, verificationValue } from "./format";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   Activity,
   ArrowDownLeft,
@@ -59,29 +59,7 @@ import type {
   SettingsData,
   ControllerStatus,
 } from "./types";
-
-type VerificationCheck = NonNullable<
-  ControllerStatus["control"]["verification"]
->["checks"][number];
-
-function verificationValue(
-  check: VerificationCheck,
-  value: number | null,
-): string {
-  if (value === null) return tr("Unavailable");
-  if (check.unit === "s") return tr("{{count}} seconds", { count: value });
-  if (check.label === "Operating mode")
-    return tr(value === 0 ? "SelfUse" : "Other operating mode");
-  if (check.label === "Run and backup flags")
-    return tr(
-      value === 9 ? "Running with backup enabled" : "Unexpected device flags",
-    );
-  if (check.unit === "W")
-    return Math.abs(value) >= 1000
-      ? `${formatNumber(value / 1000, 2, 0)} ${tr("kW")}`
-      : `${formatNumber(value, 0)} ${tr("W")}`;
-  return `${formatNumber(value, 0)}${check.unit}`;
-}
+import { WriteHistory } from "./write-history";
 
 export function Overview(): ReactNode {
   const {
@@ -563,11 +541,6 @@ function ControlRecovery({
     uncertain: "Write outcome unknown",
     "cleanup-required": "Cleanup pending",
   };
-  const operations: Record<"enable" | "disable" | "window", string> = {
-    enable: "Enable scheduled charging",
-    disable: "Disable scheduled charging",
-    window: "Update charging window",
-  };
   return (
     <Panel
       title={tr("Recovery and write history")}
@@ -591,58 +564,11 @@ function ControlRecovery({
         </div>
       </div>
       {recovery.writes.length ? (
-        <ol className="write-history">
-          {recovery.writes.map((write) => (
-            <li key={write.id}>
-              <details>
-                <summary>
-                  <strong>{tr(operations[write.operation])}</strong>
-                  <span>
-                    {tr(
-                      write.status === "verified"
-                        ? "Readback verified"
-                        : write.inFlight
-                          ? "Waiting for device confirmation"
-                          : write.reconciledAt
-                            ? "Cleanup confirmed; original write outcome unknown"
-                            : write.status === "acknowledged"
-                              ? "Acknowledged; readback unconfirmed"
-                              : "Write outcome unknown",
-                    )}
-                  </span>
-                </summary>
-                <dl>
-                  <div>
-                    <dt>{tr("Intent recorded")}</dt>
-                    <dd>{when(write.createdAt, timezone)}</dd>
-                  </div>
-                  <div>
-                    <dt>{tr("Device acknowledgment")}</dt>
-                    <dd>
-                      {write.acknowledgedAt
-                        ? when(write.acknowledgedAt, timezone)
-                        : tr("Not recorded")}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>{tr("Readback verified")}</dt>
-                    <dd>
-                      {write.verifiedAt
-                        ? when(write.verifiedAt, timezone)
-                        : tr("Not recorded")}
-                    </dd>
-                  </div>
-                  {write.reconciledAt && (
-                    <div>
-                      <dt>{tr("Cleanup confirmed")}</dt>
-                      <dd>{when(write.reconciledAt, timezone)}</dd>
-                    </div>
-                  )}
-                </dl>
-              </details>
-            </li>
-          ))}
-        </ol>
+        <WriteHistory
+          writes={recovery.writes}
+          timezone={timezone}
+          linkToCommand
+        />
       ) : (
         <p className="fine-print">
           {tr("No inverter writes have been recorded for this binding.")}
@@ -1107,16 +1033,21 @@ export function Controls(): ReactNode {
 
 export function ActivityPage(): ReactNode {
   const { session } = useWorkspace();
-  const [search, setSearch] = useState("");
-  const [query, setQuery] = useState("");
-  const [offset, setOffset] = useState(0);
+  const [params, setParams] = useSearchParams();
+  const query = (params.get("search") ?? "").slice(0, 100);
+  const offsetText = params.get("offset") ?? "0";
+  const offset = /^\d{1,6}$/.test(offsetText) ? Number(offsetText) : 0;
+  const [search, setSearch] = useState(query);
   useEffect(() => {
+    setSearch(query);
+  }, [query]);
+  useEffect(() => {
+    if (search === query) return;
     const timer = setTimeout(() => {
-      setQuery(search);
-      setOffset(0);
+      setParams({ search, offset: "0" }, { replace: true });
     }, 300);
     return () => clearTimeout(timer);
-  }, [search]);
+  }, [search, query, setParams]);
   const { data, loading, error } = useData<ActivityData>(
     `/activity?search=${encodeURIComponent(query)}&offset=${offset}`,
     5000,
@@ -1129,6 +1060,11 @@ export function ActivityPage(): ReactNode {
         description={tr(
           "Your commands, scheduled checks, and the result of each request.",
         )}
+        action={
+          <Link className="button secondary small" to="/activity/writes">
+            {tr("All inverter writes")}
+          </Link>
+        }
       />
       <div className="activity-toolbar">
         <div className="input-with-icon search-box">
@@ -1137,6 +1073,7 @@ export function ActivityPage(): ReactNode {
             aria-label={tr("Search activity")}
             placeholder={tr("Search commands, results, or actor…")}
             value={search}
+            maxLength={100}
             onChange={(event) => setSearch(event.target.value)}
           />
         </div>
@@ -1181,7 +1118,12 @@ export function ActivityPage(): ReactNode {
           <button
             className="button secondary small"
             disabled={!offset}
-            onClick={() => setOffset(Math.max(0, offset - 25))}
+            onClick={() =>
+              setParams({
+                search: query,
+                offset: String(Math.max(0, offset - 25)),
+              })
+            }
           >
             <ChevronLeft size={15} />
             {tr("Previous")}
@@ -1189,7 +1131,9 @@ export function ActivityPage(): ReactNode {
           <button
             className="button secondary small"
             disabled={!data?.hasMore}
-            onClick={() => setOffset(offset + 25)}
+            onClick={() =>
+              setParams({ search: query, offset: String(offset + 25) })
+            }
           >
             {tr("Next")}
             <ChevronRight size={15} />

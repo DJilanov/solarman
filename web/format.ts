@@ -1,4 +1,5 @@
 import { tr, locale } from "./i18n";
+import type { ControllerStatus } from "./types";
 
 export const COLORS = {
   solar: "#e9bf70",
@@ -33,12 +34,34 @@ export function formatNumber(
 export function when(
   value: string | number,
   timezone = "Europe/Sofia",
+  timeStyle: "short" | "medium" = "short",
 ): string {
   return new Intl.DateTimeFormat(locale(), {
     timeZone: timezone,
     dateStyle: "medium",
-    timeStyle: "short",
+    timeStyle,
   }).format(new Date(value));
+}
+
+export function verificationValue(
+  check: NonNullable<
+    ControllerStatus["control"]["verification"]
+  >["checks"][number],
+  value: number | null,
+): string {
+  if (value === null) return tr("Unavailable");
+  if (check.unit === "s") return tr("{{count}} seconds", { count: value });
+  if (check.label === "Operating mode")
+    return tr(value === 0 ? "SelfUse" : "Other operating mode");
+  if (check.label === "Run and backup flags")
+    return tr(
+      value === 9 ? "Running with backup enabled" : "Unexpected device flags",
+    );
+  if (check.unit === "W")
+    return Math.abs(value) >= 1000
+      ? `${formatNumber(value / 1000, 2, 0)} ${tr("kW")}`
+      : `${formatNumber(value, 0)} ${tr("W")}`;
+  return `${formatNumber(value, 0)}${check.unit}`;
 }
 export function age(value: string | null | undefined): string {
   if (!value) return tr("No readings yet");

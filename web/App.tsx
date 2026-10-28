@@ -4,6 +4,8 @@ import {
   useEffect,
   useRef,
   useState,
+  lazy,
+  Suspense,
   type FormEvent,
   type ReactNode,
 } from "react";
@@ -47,6 +49,13 @@ import {
   WorkspacesPage,
 } from "./pages";
 import type { Action, Command, OverviewData, Session } from "./types";
+
+const CommandDetailsPage = lazy(() => import("./command-details"));
+const WriteHistoryPage = lazy(() =>
+  import("./command-details").then((module) => ({
+    default: module.WriteHistoryPage,
+  })),
+);
 
 function Brand({ compact = false }: { compact?: boolean }): ReactNode {
   return (
@@ -438,8 +447,11 @@ function Dashboard({
       : []),
   ];
   const section =
-    navigation.find((item) => item.to === location.pathname)?.label ??
-    "Overview";
+    navigation.find(
+      (item) =>
+        item.to === location.pathname ||
+        (item.to !== "/" && location.pathname.startsWith(`${item.to}/`)),
+    )?.label ?? "Overview";
   return (
     <Context.Provider
       value={{
@@ -548,6 +560,22 @@ function Dashboard({
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/controls" element={<Controls />} />
               <Route path="/activity" element={<ActivityPage />} />
+              <Route
+                path="/activity/writes"
+                element={
+                  <Suspense fallback={<Loading />}>
+                    <WriteHistoryPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/activity/:id"
+                element={
+                  <Suspense fallback={<Loading />}>
+                    <CommandDetailsPage />
+                  </Suspense>
+                }
+              />
               <Route path="/settings" element={<SettingsPage />} />
               <Route
                 path="/workspaces"

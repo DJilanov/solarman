@@ -701,8 +701,8 @@ export class TenantRuntime {
     this.events = [];
     try {
       await this.q(
-        "INSERT INTO command_executions (tenant_id,id,account_id,actor,action,status) VALUES ($1,$2,$3,'Automation','evaluate','running')",
-        [id, this.account.id],
+        "INSERT INTO command_executions (tenant_id,id,account_id,device,actor,action,status) VALUES ($1,$2,$3,$4,'Automation','evaluate','running')",
+        [id, this.account.id, this.device],
       );
       await this.initialize();
       if (this.appKey && this.client)
@@ -859,7 +859,7 @@ export class TenantRuntime {
       : null;
     const result = await this.q(
       `INSERT INTO command_executions
-      (tenant_id,id,account_id,user_id,actor,action,idempotency_key,status) VALUES ($1,$2,$3,$4,$5,$6,$7,'queued')
+      (tenant_id,id,account_id,user_id,actor,action,idempotency_key,device,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued')
       ON CONFLICT (tenant_id,user_id,idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key RETURNING *`,
       [
         randomUUID(),
@@ -868,6 +868,7 @@ export class TenantRuntime {
         user.email,
         action,
         key,
+        this.device,
       ],
     );
     const job = result.rows[0];
