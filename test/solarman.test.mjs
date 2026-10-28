@@ -30,6 +30,11 @@ async function fixture(t, handleCommand) {
         );
         return;
       }
+      if (request.url === "/account/v1.0/balance?language=en") {
+        assert.equal(body.appId, "test-app");
+        response.end(JSON.stringify({ success: true, total: 1000 }));
+        return;
+      }
       assert.equal(request.url, "/device/v1.0/customControl?language=en");
       assert.equal(body.deviceSN, "TEST-INVERTER");
       assert.equal(request.headers.authorization, `bearer token-${tokens}`);
@@ -214,4 +219,37 @@ test("shared request pacing includes token creation as well as each command", as
   await client.command(command);
   await client.command(command);
   assert.equal(reservations, 3);
+});
+
+test("a denied routine reservation sends no HTTP request; recovery includes authentication", async (t) => {
+  const { client, tokenCount, requests } = await fixture(t);
+  const purposes = [];
+  client.onRequest = async (kind, purpose) => {
+    if (purpose !== "recovery") throw new Error("Routine allowance used");
+    purposes.push({ kind, purpose });
+  };
+  await assert.rejects(client.command(command), /Routine allowance used/);
+  assert.equal(tokenCount(), 0);
+  assert.equal(requests.length, 0);
+  assert.equal(await client.command(command, { purpose: "recovery" }), ack);
+  assert.deepEqual(purposes, [
+    { kind: "token", purpose: "recovery" },
+    { kind: "command", purpose: "recovery" },
+  ]);
+});
+
+test("the documented balance endpoint uses its distinct bounded probe allowance", async (t) => {
+  const { client } = await fixture(t);
+  const purposes = [];
+  client.onRequest = async (kind, purpose) => {
+    purposes.push({ kind, purpose });
+  };
+  assert.equal(
+    (await client.api("/account/v1.0/balance", { appId: "test-app" })).total,
+    1000,
+  );
+  assert.deepEqual(purposes, [
+    { kind: "token", purpose: "balance" },
+    { kind: "read", purpose: "balance" },
+  ]);
 });

@@ -1511,6 +1511,9 @@ form .notice {
   color: #8da3af;
   margin: 25px 0;
 }
+.coverage-track.budget-limited > i {
+  background: #eea7a7;
+}
 .usage-facts > span {
   display: flex;
   justify-content: space-between;

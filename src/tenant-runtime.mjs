@@ -6,6 +6,7 @@ import { decryptCredentials } from "./credentials.mjs";
 import { saveMeasurement } from "./database.mjs";
 import { WorkQueue } from "./work-queue.mjs";
 import { controlReadiness } from "./control-readiness.mjs";
+import { apiAppKey, ApiBudgetError } from "./api-budget.mjs";
 import {
   BLUESUN_MAPPING,
   TELEMETRY_MAX_AGE_MS,
@@ -40,6 +41,7 @@ export class TenantRuntime {
     this.clock = null;
     this.initialized = false;
     this.cleanupRequired = false;
+    this.appKey = null;
     this.writesEnabled = false;
     this.hostWritesAllowed = false;
     this.client = null;
@@ -82,14 +84,18 @@ export class TenantRuntime {
         config.writesEnabled &&
         this.ready &&
         account.profile === "bluesun-bse20kh3";
+      this.appKey = apiAppKey(config.appId);
       this.client = new SolarmanClient(config, {
         callbackPrefix: `/solarman/callback/${account.id}/`,
         beforeRequest: () => hub.reserveRequest(),
-        onRequest: async (kind) => {
-          await this.q(
-            "INSERT INTO api_requests (tenant_id,account_id,kind) VALUES ($1,$2,$3)",
-            [account.id, kind],
-          );
+        onRequest: async (kind, purpose) => {
+          await hub.budget.reserve({
+            appKey: this.appKey,
+            tenantId,
+            accountId: account.id,
+            kind,
+            purpose,
+          });
         },
       });
       const log = (event) => this.events.push(event);
@@ -135,6 +141,12 @@ export class TenantRuntime {
     this.verification = result.rows[0].verification;
     this.topupExpiresAt = result.rows[0].topup_expires_at;
     if (!this.initialized) {
+      if (this.appKey)
+        await this.hub.budget.register(
+          this.appKey,
+          this.tenantId,
+          this.account.id,
+        );
       this.profileVerified = this.verifiedDevice();
       this.ratedPowerChecked = this.verifiedDevice();
       this.cleanupRequired = this.controlEnabled;
@@ -234,7 +246,9 @@ export class TenantRuntime {
   }
 
   get pollMs() {
-    return this.usesControlCycle() ? this.controlPollMs : this.monitorPollMs;
+    return this.usesControlCycle()
+      ? this.controlPollMs
+      : this.hub.monitorPollMs(this);
   }
 
   /** @returns {Promise<void>} */
@@ -322,7 +336,7 @@ export class TenantRuntime {
       {
         source: "provider",
         observedAt: reading.collectedAt,
-        samplingSeconds: this.monitorPollMs / 1000,
+        samplingSeconds: this.pollMs / 1000,
       },
     );
     this.lastSuccessAt = reading.collectedAt.toISOString();
@@ -564,6 +578,8 @@ export class TenantRuntime {
         [id, this.account.id],
       );
       await this.initialize();
+      if (this.appKey && this.client)
+        await this.hub.budget.refreshBalance(this.appKey, this.client);
       if (
         this.manualTopup &&
         (!this.topupExpiresAt ||
@@ -592,10 +608,29 @@ export class TenantRuntime {
   }
 
   async fail(id, error, disable = true) {
+    const budgetLimited = error instanceof ApiBudgetError;
+    let pauseUnrecorded = false;
+    if (budgetLimited && (!this.paused || this.manualTopup)) {
+      this.paused = true;
+      this.manualTopup = false;
+      this.topupExpiresAt = null;
+      this.inhibitStarts = true;
+      this.enableEpoch++;
+      this.cleanupRequired = true;
+      try {
+        await this.q(
+          "UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
+        );
+      } catch {
+        pauseUnrecorded = true;
+      }
+    }
     this.profileVerified = false;
     this.lastError =
       error instanceof Error ? error.message : "Device request failed";
-    if (disable) {
+    if (pauseUnrecorded)
+      this.lastError += "; automation pause could not be recorded";
+    if (budgetLimited ? this.cleanupRequired : disable) {
       try {
         await this.clearScheduledPermission();
       } catch {
@@ -785,6 +820,7 @@ export class TenantRuntime {
           );
         } catch (error) {
           if (action === "topup") {
+            this.cleanupRequired = true;
             await this.q(
               "UPDATE controller_state SET manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
             );

@@ -110,7 +110,7 @@ export function boundedWindows(windows, maximumDuration) {
 
 export class BatteryController {
   /**
-   * @param {{ command: (command: string) => Promise<string> }} client
+   * @param {{ command: (command: string, options?: {purpose: 'routine' | 'recovery'}) => Promise<string> }} client
    * @param {{ writesEnabled: boolean, timezone: string, chargeWindowMinutes: number,
    *   log?: (event: object) => void, isStopping?: () => boolean, now?: () => Date }} options
    */
@@ -121,18 +121,21 @@ export class BatteryController {
     this.now = options.now ?? (() => new Date());
   }
 
-  /** @param {number} fn @param {number} address @param {number} count @returns {Promise<number[]>} */
-  async read(fn, address, count) {
+  /** @param {number} fn @param {number} address @param {number} count @param {'routine' | 'recovery'} [purpose] @returns {Promise<number[]>} */
+  async read(fn, address, count, purpose = "routine") {
     const command = readCommand(fn, address, count);
-    return decodeReply(command, await this.client.command(command));
+    return decodeReply(
+      command,
+      await this.client.command(command, { purpose }),
+    );
   }
 
-  /** @param {number} address @param {number[]} values @returns {Promise<void>} */
-  async writeVerified(address, values) {
+  /** @param {number} address @param {number[]} values @param {'routine' | 'recovery'} [purpose] @returns {Promise<void>} */
+  async writeVerified(address, values, purpose = "routine") {
     if (!this.options.writesEnabled) throw new Error("Writes are disabled");
     const command = writeCommand(address, values);
-    decodeReply(command, await this.client.command(command));
-    const actual = await this.read(3, address, values.length);
+    decodeReply(command, await this.client.command(command, { purpose }));
+    const actual = await this.read(3, address, values.length, purpose);
     if (actual.some((v, i) => v !== values[i]))
       throw new Error("Inverter write readback mismatch");
   }
@@ -205,7 +208,8 @@ export class BatteryController {
 
   /** @param {boolean} enabled @returns {Promise<void>} */
   async setAc(enabled) {
-    const flags = unsigned32(await this.read(3, 206, 2));
+    const purpose = enabled ? "routine" : "recovery";
+    const flags = unsigned32(await this.read(3, 206, 2, purpose));
     if (
       enabled &&
       ((flags & ~AC_BIT) !== EXPECTED_BASE_FLAGS || this.options.isStopping?.())
@@ -216,7 +220,7 @@ export class BatteryController {
     }
     const next = enabled ? (flags | AC_BIT) >>> 0 : (flags & ~AC_BIT) >>> 0;
     if (flags === next) return;
-    await this.writeVerified(206, flagRegisters(next));
+    await this.writeVerified(206, flagRegisters(next), purpose);
     this.log({ event: "ac_charge_changed", enabled });
   }
 

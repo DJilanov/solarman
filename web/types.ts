@@ -120,6 +120,19 @@ export interface SettingsData {
   timezone: string;
   apiUsage: { today: number; year: number };
   quota: number;
+  budget: {
+    limit: number;
+    reserve: number;
+    tracked: number;
+    remaining: number;
+    routineRemaining: number;
+    state: "available" | "recovery-only" | "exhausted";
+    workspaces: number;
+    projected: number;
+    providerRemaining: number | null;
+    providerCheckedAt: string | null;
+    balanceAttemptedAt: string | null;
+  } | null;
   profile: string;
   release: string;
   account: {

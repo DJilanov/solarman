@@ -49,7 +49,7 @@ export class SolarmanClient {
    * @param {string} config.baseUrl
    * @param {string} config.callbackOrigin
    * @param {number} config.commandTimeoutMs
-   * @param {{ minGapMs?: number, health?: () => object, onRequest?: (kind: string) => Promise<void>, callbackPrefix?: string, beforeRequest?: () => Promise<void> }} [options]
+   * @param {{ minGapMs?: number, health?: () => object, onRequest?: (kind: string, purpose: 'routine' | 'recovery' | 'balance') => Promise<void>, callbackPrefix?: string, beforeRequest?: () => Promise<void> }} [options]
    */
   constructor(config, options = {}) {
     this.config = config;
@@ -177,8 +177,14 @@ export class SolarmanClient {
     response.end("SUCCESS");
   }
 
-  /** @param {string} path @param {object} body @param {string | null} [token] @param {boolean} [requestReserved] @returns {Promise<Record<string, unknown>>} */
-  async post(path, body, token = null, requestReserved = false) {
+  /** @param {string} path @param {object} body @param {string | null} [token] @param {boolean} [requestReserved] @param {'routine' | 'recovery' | 'balance'} [purpose] @returns {Promise<Record<string, unknown>>} */
+  async post(
+    path,
+    body,
+    token = null,
+    requestReserved = false,
+    purpose = "routine",
+  ) {
     const url = new URL(path, this.config.baseUrl);
     url.searchParams.set("language", "en");
     if (path === "/account/v1.0/token")
@@ -190,6 +196,7 @@ export class SolarmanClient {
         : path === "/device/v1.0/customControl"
           ? "command"
           : "read",
+      purpose,
     );
     let response;
     try {
@@ -229,14 +236,20 @@ export class SolarmanClient {
     return result;
   }
 
-  /** @returns {Promise<string>} */
-  async accessToken() {
+  /** @param {'routine' | 'recovery' | 'balance'} [purpose] @returns {Promise<string>} */
+  async accessToken(purpose = "routine") {
     if (this.token && Date.now() < this.tokenExpiresAt) return this.token;
-    const result = await this.post("/account/v1.0/token", {
-      appSecret: this.config.appSecret,
-      email: this.config.email,
-      password: this.config.passwordSha256,
-    });
+    const result = await this.post(
+      "/account/v1.0/token",
+      {
+        appSecret: this.config.appSecret,
+        email: this.config.email,
+        password: this.config.passwordSha256,
+      },
+      null,
+      false,
+      purpose,
+    );
     const expires = Number(result.expires_in);
     if (
       typeof result.access_token !== "string" ||
@@ -251,14 +264,14 @@ export class SolarmanClient {
     return this.token;
   }
 
-  /** @param {string} command @returns {Promise<string>} */
-  command(command) {
+  /** @param {string} command @param {{purpose?: 'routine' | 'recovery'}} [options] @returns {Promise<string>} */
+  command(command, { purpose = "routine" } = {}) {
     if (!this.config.deviceSN)
       return Promise.reject(
         new Error("Choose an inverter before sending device commands"),
       );
     const normalized = parseFrame(command).toString("hex").toUpperCase();
-    const result = this.tail.then(() => this.send(normalized));
+    const result = this.tail.then(() => this.send(normalized, purpose));
     // A failed command must not prevent a subsequent attempt to disable AC charging.
     this.tail = result.then(
       () => undefined,
@@ -267,10 +280,10 @@ export class SolarmanClient {
     return result;
   }
 
-  /** @param {string} command @returns {Promise<string>} */
-  async send(command) {
+  /** @param {string} command @param {'routine' | 'recovery'} [purpose] @returns {Promise<string>} */
+  async send(command, purpose = "routine") {
     await delay(Math.max(0, this.minGapMs - (Date.now() - this.lastRequestAt)));
-    const token = await this.accessToken();
+    const token = await this.accessToken(purpose);
     await this.beforeRequest();
     const key = randomBytes(32).toString("hex");
     const sentAt = Date.now();
@@ -308,6 +321,7 @@ export class SolarmanClient {
         },
         token,
         true,
+        purpose,
       );
       const callback = await promise;
       if (callback instanceof Error) throw callback;
@@ -331,12 +345,20 @@ export class SolarmanClient {
         "/station/v1.0/list",
         "/station/v1.0/device",
         "/device/v1.0/currentData",
+        "/account/v1.0/balance",
       ].includes(path)
     ) {
       return Promise.reject(new Error("Unsupported provider read endpoint"));
     }
     const result = this.tail.then(async () => {
-      return this.post(path, body, await this.accessToken());
+      const purpose = path === "/account/v1.0/balance" ? "balance" : "routine";
+      return this.post(
+        path,
+        body,
+        await this.accessToken(purpose),
+        false,
+        purpose,
+      );
     });
     this.tail = result.then(
       () => undefined,

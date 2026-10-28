@@ -215,7 +215,7 @@ export function Overview(): ReactNode {
             <span>
               {tr(
                 "Checking for device uploads every {{count}} minutes. Refreshing this page uses stored data.",
-                { count: Math.round(controller.pollSeconds / 60) },
+                { count: controller.pollSeconds / 60 },
               )}
             </span>
           </div>
@@ -807,7 +807,7 @@ export function Controls(): ReactNode {
           <p className="button-helper">
             {controller.writesEnabled
               ? tr("Evaluation every {{count}} minutes.", {
-                  count: Math.round(controller.pollSeconds / 60),
+                  count: controller.pollSeconds / 60,
                 })
               : tr(
                   "The server’s read-only setting prevents physical writes even when evaluations resume.",
@@ -1407,45 +1407,136 @@ export function SettingsPage(): ReactNode {
         </Panel>
         <Panel
           title={tr("API usage")}
-          subtitle={tr("Requests made by this workspace")}
+          subtitle={tr("Budget shared by accounts using the same App ID")}
+          className="api-budget"
         >
-          <div className="usage-number">
-            {data.apiUsage.year.toLocaleString(locale())}
-            <span>{tr("calls this calendar year")}</span>
-          </div>
-          <div className="coverage-track">
-            <i
-              style={{
-                width: `${Math.min(100, (data.apiUsage.year / data.quota) * 100)}%`,
-              }}
-            />
-          </div>
-          <div className="usage-facts">
-            <span>
-              {tr("Last 24 hours")}{" "}
-              <strong>{data.apiUsage.today.toLocaleString(locale())}</strong>
-            </span>
-            <span>
-              {tr("Sampling interval")}{" "}
-              <strong>
-                {tr("{{count}} minutes", {
-                  count: Math.round(data.controller.pollSeconds / 60),
+          {data.budget ? (
+            <>
+              <p className="fine-print">
+                {tr("Connected workspaces sharing this budget: {{count}}", {
+                  count: data.budget.workspaces,
                 })}
-              </strong>
-            </span>
-            <span>
-              {tr("Projected regular usage")}{" "}
-              <strong>
-                {data.controller.annualProjectedCalls.toLocaleString(locale())}{" "}
-                {tr("/ year")}
-              </strong>
-            </span>
-          </div>
-          <p className="fine-print">
-            {tr(
-              "The reference personal API plan allows 200,000 calls/year. Shared platform access also has user and plant limits. These counts exclude requests made outside this service; hosted tenants require suitable provider licensing.",
-            )}
-          </p>
+              </p>
+              <div className="usage-number">
+                {formatNumber(data.budget.routineRemaining)}
+                <span>{tr("calls available for routine use")}</span>
+              </div>
+              <div
+                className={`coverage-track ${data.budget.state !== "available" ? "budget-limited" : ""}`}
+                role="meter"
+                aria-label={tr("API budget used")}
+                aria-valuemin={0}
+                aria-valuemax={data.budget.limit}
+                aria-valuenow={data.budget.limit - data.budget.remaining}
+              >
+                <i
+                  style={{
+                    width: `${Math.min(100, (1 - data.budget.remaining / data.budget.limit) * 100)}%`,
+                  }}
+                />
+              </div>
+              {data.budget.state !== "available" && (
+                <Notice tone="danger">
+                  {tr(
+                    data.budget.state === "exhausted"
+                      ? "The API request budget is exhausted"
+                      : "The remaining API budget is reserved for stopping and recovery",
+                  )}
+                </Notice>
+              )}
+              {data.budget.balanceAttemptedAt &&
+                Date.now() -
+                  new Date(data.budget.balanceAttemptedAt).getTime() >
+                  60_000 &&
+                (!data.budget.providerCheckedAt ||
+                  new Date(data.budget.balanceAttemptedAt) >
+                    new Date(data.budget.providerCheckedAt)) && (
+                  <Notice>
+                    {tr(
+                      "The last provider balance check failed. Local request limits still apply.",
+                    )}
+                  </Notice>
+                )}
+              <div className="usage-facts">
+                <span>
+                  {tr("This workspace · last 24 hours")}{" "}
+                  <strong>
+                    {data.apiUsage.today.toLocaleString(locale())}
+                  </strong>
+                </span>
+                <span>
+                  {tr("Tracked calls · last 365 days")}{" "}
+                  <strong>{formatNumber(data.budget.tracked)}</strong>
+                </span>
+                <span>
+                  {tr("Adjusted provider balance")}{" "}
+                  <strong>
+                    {data.budget.providerRemaining === null
+                      ? tr("Not checked yet")
+                      : formatNumber(data.budget.providerRemaining)}
+                  </strong>
+                </span>
+                <span>
+                  {tr("Provider balance checked")}{" "}
+                  <strong>
+                    {data.budget.providerCheckedAt
+                      ? age(data.budget.providerCheckedAt)
+                      : tr("Not checked yet")}
+                  </strong>
+                </span>
+                <span>
+                  {tr("Reserved for recovery")}{" "}
+                  <strong>{formatNumber(data.budget.reserve)}</strong>
+                </span>
+                <span>
+                  {tr("Local rolling request limit")}{" "}
+                  <strong>{formatNumber(data.budget.limit)}</strong>
+                </span>
+                <span>
+                  {tr("Sampling interval")}{" "}
+                  <strong>
+                    {tr("{{count}} minutes", {
+                      count: data.controller.pollSeconds / 60,
+                    })}
+                  </strong>
+                </span>
+                <span>
+                  {tr("This workspace · projected / year")}{" "}
+                  <strong>
+                    {data.controller.annualProjectedCalls.toLocaleString(
+                      locale(),
+                    )}{" "}
+                    {tr("/ year")}
+                  </strong>
+                </span>
+                <span>
+                  {tr("Shared App ID · projected / year")}{" "}
+                  <strong>{formatNumber(data.budget.projected)}</strong>
+                </span>
+              </div>
+              {data.budget.projected >
+                data.budget.limit - data.budget.reserve && (
+                <Notice tone="danger">
+                  {tr(
+                    "Projected usage exceeds the routine budget. Optimize control polling or configure a licensed allowance before continuous operation.",
+                  )}
+                </Notice>
+              )}
+              <p className="fine-print">
+                {tr(
+                  "The provider balance is checked at most once a day and reduced for subsequent app requests. Calls made elsewhere appear at the next check. A local rolling 365-day limit also applies; hosted use requires suitable provider licensing.",
+                )}
+              </p>
+            </>
+          ) : (
+            <EmptyState
+              icon={PlugZap}
+              title={tr("API budget unavailable")}
+              description={tr(
+                "Link an account with OpenAPI credentials to track its shared request budget.",
+              )}
+            />
+          )}
         </Panel>
       </div>
       {data.readings && (

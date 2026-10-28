@@ -12,6 +12,7 @@ import { localDay } from "../../src/analytics.mjs";
 import { TenantRuntime } from "../../src/tenant-runtime.mjs";
 import { decide } from "../../src/controller.mjs";
 import { providerPayload } from "../fixtures/provider.mjs";
+import { ApiBudget, ApiBudgetError, apiAppKey } from "../../src/api-budget.mjs";
 
 let pool;
 let hub;
@@ -66,7 +67,7 @@ before(async () => {
     "solarman_test",
   );
   await migrate(pool);
-  await pool.query("TRUNCATE tenants CASCADE");
+  await pool.query("TRUNCATE api_app_budgets,tenants CASCADE");
   const hash = await hashPassword(password);
   for (const name of ["alpha", "beta"]) {
     const tenant = randomUUID();
@@ -141,7 +142,7 @@ after(async () => {
       server.closeIdleConnections();
     });
   if (pool) {
-    await pool.query("TRUNCATE tenants CASCADE");
+    await pool.query("TRUNCATE api_app_budgets,tenants CASCADE");
     await pool.end();
   }
 });
@@ -370,6 +371,8 @@ async function controlFixture(writes = false) {
         WRITES_ENABLED: String(writes),
       },
       reserveRequest: async () => {},
+      budget: new ApiBudget(pool, {}),
+      monitorPollMs: (runtime) => runtime.monitorPollMs,
       runLimited: async (operation) => operation(),
     },
     ids.alpha.tenant,
@@ -393,6 +396,8 @@ async function controlFixture(writes = false) {
   };
   const calls = [];
   runtime.client.api = async (path, body) => {
+    if (path === "/account/v1.0/balance")
+      return { success: true, total: 200000 };
     assert.equal(path, "/device/v1.0/currentData");
     assert.equal(body.deviceSn, runtime.device);
     calls.push("provider-read");
@@ -821,6 +826,215 @@ test("diagnostic refresh cannot bypass a failed inverter clock check", async () 
       "failed",
     );
     assert.equal(runtime.controlEnabled, false);
+  } finally {
+    await runtime.close();
+  }
+});
+
+async function quotaFixture(limit = 100, reserve = 10) {
+  const appKey = apiAppKey(randomUUID());
+  const budget = new ApiBudget(pool, {
+    SOLARMAN_API_CALL_LIMIT: String(limit),
+    SOLARMAN_API_RECOVERY_RESERVE: String(reserve),
+  });
+  for (const owner of [ids.alpha, ids.beta])
+    await budget.register(appKey, owner.tenant, owner.account);
+  const request = (owner = ids.alpha, purpose = "routine", kind = "read") => ({
+    appKey,
+    tenantId: owner.tenant,
+    accountId: owner.account,
+    kind,
+    purpose,
+  });
+  return { appKey, budget, request };
+}
+
+test("tenants sharing an App ID cannot overspend concurrently or consume the recovery reserve", async () => {
+  const { appKey, budget, request } = await quotaFixture(10, 3);
+  const reservations = await Promise.allSettled(
+    Array.from({ length: 12 }, (_, i) =>
+      budget.reserve(request(i % 2 ? ids.alpha : ids.beta)),
+    ),
+  );
+  assert.equal(
+    reservations.filter((result) => result.status === "fulfilled").length,
+    7,
+  );
+  for (const result of reservations.filter(
+    (result) => result.status === "rejected",
+  ))
+    assert.ok(result.reason instanceof ApiBudgetError);
+  assert.equal((await budget.status(appKey)).state, "recovery-only");
+  const restored = new ApiBudget(pool, {
+    SOLARMAN_API_CALL_LIMIT: "10",
+    SOLARMAN_API_RECOVERY_RESERVE: "3",
+  });
+  assert.equal((await restored.status(appKey)).tracked, 7);
+  const recovery = await Promise.allSettled(
+    Array.from({ length: 5 }, () =>
+      restored.reserve(request(ids.beta, "recovery", "command")),
+    ),
+  );
+  assert.equal(
+    recovery.filter((result) => result.status === "fulfilled").length,
+    3,
+  );
+  assert.equal((await restored.status(appKey)).state, "exhausted");
+  assert.equal((await restored.status(appKey)).tracked, 10);
+  const separate = await quotaFixture(10, 3);
+  await separate.budget.reserve(separate.request());
+  assert.equal(
+    (await separate.budget.status(separate.appKey)).routineRemaining,
+    6,
+  );
+});
+
+test("provider balance synchronization counts concurrent requests and survives a service restart", async () => {
+  const { appKey, budget, request } = await quotaFixture();
+  await budget.reserve(request());
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let queries = 0;
+  const client = {
+    config: { appId: "fixture-balance" },
+    api: async (path, body) => {
+      queries++;
+      assert.equal(path, "/account/v1.0/balance");
+      assert.equal(body.appId, "fixture-balance");
+      await budget.reserve(request(ids.alpha, "balance"));
+      await gate;
+      return { total: 20 };
+    },
+  };
+  const first = budget.refreshBalance(appKey, client);
+  const second = budget.refreshBalance(appKey, client);
+  while (queries === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+  await budget.reserve(request(ids.beta));
+  release();
+  await Promise.all([first, second]);
+  const status = await budget.status(appKey);
+  assert.equal(queries, 1);
+  assert.equal(status.providerRemaining, 17);
+  assert.equal(status.routineRemaining, 7);
+  assert.equal(status.tracked, 3);
+  await budget.refreshBalance(appKey, client);
+  assert.equal(queries, 1);
+  await budget.reserve(request(ids.beta));
+  assert.equal(
+    (await new ApiBudget(pool, {}).status(appKey)).providerRemaining,
+    16,
+  );
+  assert.ok(status.providerCheckedAt);
+});
+
+test("balance probes can discover replenished provider capacity but have a two-call daily ceiling", async () => {
+  const { appKey, budget, request } = await quotaFixture();
+  await pool.query(
+    "UPDATE api_app_budgets SET provider_remaining=0 WHERE app_key=$1",
+    [appKey],
+  );
+  await assert.rejects(budget.reserve(request()), ApiBudgetError);
+  const client = {
+    config: { appId: "fixture-balance" },
+    api: async () => {
+      await budget.reserve(request(ids.alpha, "balance", "token"));
+      await budget.reserve(request(ids.alpha, "balance", "read"));
+      await assert.rejects(
+        budget.reserve(request(ids.beta, "balance")),
+        ApiBudgetError,
+      );
+      return { total: 50 };
+    },
+  };
+  await budget.refreshBalance(appKey, client);
+  assert.equal((await budget.status(appKey)).providerRemaining, 48);
+  await budget.reserve(request());
+  assert.equal((await budget.status(appKey)).providerRemaining, 47);
+  await assert.rejects(
+    budget.reserve(request(ids.alpha, "balance")),
+    ApiBudgetError,
+  );
+});
+
+test("old requests age out and failed balance checks never erase the last known balance", async () => {
+  const { appKey, budget, request } = await quotaFixture();
+  await budget.reserve(request());
+  await pool.query(
+    "UPDATE api_requests SET created_at=now()-interval '366 days' WHERE app_key=$1",
+    [appKey],
+  );
+  await pool.query(
+    "UPDATE api_app_budgets SET provider_remaining=12,provider_checked_at=now()-interval '2 days' WHERE app_key=$1",
+    [appKey],
+  );
+  await budget.refreshBalance(appKey, {
+    config: { appId: "fixture-balance" },
+    api: async () => {
+      throw new Error("Unavailable");
+    },
+  });
+  const status = await budget.status(appKey);
+  assert.equal(status.tracked, 0);
+  assert.equal(status.providerRemaining, 12);
+  assert.ok(status.balanceAttemptedAt > status.providerCheckedAt);
+  const text = JSON.stringify(status);
+  assert.equal(text.includes(appKey), false);
+  assert.equal(text.includes(ids.beta.account), false);
+});
+
+test("a quota failure pauses automation once and preserves the remaining recovery allowance", async () => {
+  const { runtime, user, calls } = await controlFixture(true);
+  try {
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    runtime.controller.tick = async () => {
+      throw new ApiBudgetError("recovery-only");
+    };
+    const result = await completeCommand(runtime, "resume", user);
+    assert.equal(result.status, "failed");
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.cleanupRequired, false);
+    assert.equal(calls.filter((call) => call === "disable").length, 1);
+    runtime.client.api = async () => {
+      throw new ApiBudgetError("recovery-only");
+    };
+    await runtime.evaluate();
+    assert.equal(calls.filter((call) => call === "disable").length, 1);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT paused FROM controller_state WHERE tenant_id=$1",
+          [runtime.tenantId],
+        )
+      ).rows[0].paused,
+      true,
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a diagnostic request that reaches the budget limit also cleans up active automation", async () => {
+  const { runtime, user, calls } = await controlFixture(true);
+  try {
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    assert.equal(
+      (await completeCommand(runtime, "resume", user)).status,
+      "succeeded",
+    );
+    runtime.inspector.snapshot = async () => {
+      throw new ApiBudgetError("recovery-only");
+    };
+    assert.equal(
+      (await completeCommand(runtime, "refresh", user)).status,
+      "failed",
+    );
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.cleanupRequired, false);
+    assert.equal(calls.filter((call) => call === "disable").length, 1);
   } finally {
     await runtime.close();
   }

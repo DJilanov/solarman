@@ -2,7 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 import pg from "pg";
-import type { OverviewData } from "../../web/types";
+import type { OverviewData, SettingsData } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
   const email = process.env.E2E_EMAIL;
@@ -627,6 +627,83 @@ test("read-only device verification explains locks and keeps Stop available afte
   ).toBe(false);
   await page.screenshot({
     path: "test-results/control-readiness-bulgarian-mobile.png",
+    fullPage: true,
+  });
+});
+
+test("shared API budgets explain remaining capacity and recovery limits in both languages", async ({
+  page,
+}) => {
+  await signIn(page);
+  const settings = (await (
+    await page.request.get("/api/settings")
+  ).json()) as SettingsData;
+  settings.budget = {
+    limit: 200000,
+    reserve: 2000,
+    tracked: 12000,
+    remaining: 160000,
+    routineRemaining: 158000,
+    state: "available",
+    workspaces: 2,
+    projected: 175200,
+    providerRemaining: 160000,
+    providerCheckedAt: new Date().toISOString(),
+    balanceAttemptedAt: new Date(Date.now() - 1000).toISOString(),
+  };
+  settings.controller.pollSeconds = 360;
+  settings.controller.annualProjectedCalls = 87600;
+  await page.route("**/api/settings", async (route) => {
+    await route.fulfill({ json: settings });
+  });
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  const panel = page.locator(".api-budget");
+  await expect(panel).toContainText(
+    "Connected workspaces sharing this budget: 2",
+  );
+  await expect(panel).toContainText("calls available for routine use");
+  await expect(panel).toContainText("Adjusted provider balance");
+  await expect(panel).toContainText("6 minutes");
+  await expect(
+    panel.getByRole("meter", { name: "API budget used" }),
+  ).toHaveAttribute("aria-valuenow", "40000");
+  await page.setViewportSize({ width: 320, height: 740 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(panel).toContainText("Запазени за възстановяване");
+  settings.budget.state = "recovery-only";
+  settings.budget.remaining = 2000;
+  settings.budget.routineRemaining = 0;
+  settings.budget.providerRemaining = 2000;
+  await page.reload();
+  await expect(panel).toContainText(
+    "Оставащият API бюджет е запазен за спиране и възстановяване",
+  );
+  settings.budget.state = "exhausted";
+  settings.budget.remaining = 0;
+  settings.budget.providerRemaining = 0;
+  settings.budget.balanceAttemptedAt = new Date(
+    Date.now() - 120000,
+  ).toISOString();
+  settings.budget.providerCheckedAt = new Date(
+    Date.now() - 2 * 86400000,
+  ).toISOString();
+  await page.reload();
+  await expect(panel).toContainText("Бюджетът за API заявки е изчерпан");
+  await expect(panel).toContainText(
+    "Последната проверка на остатъка при доставчика е неуспешна",
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+  await page.screenshot({
+    path: "test-results/api-budget-mobile-bg.png",
     fullPage: true,
   });
 });

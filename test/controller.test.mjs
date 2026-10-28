@@ -84,6 +84,24 @@ const options = {
   now: () => new Date("2026-10-27T10:00:00Z"),
 };
 
+test("clearing scheduled permission uses recovery capacity for the read, write and confirmation", async () => {
+  const inverter = new Inverter(30, 25);
+  const purposes = [];
+  const controller = new BatteryController(
+    {
+      command: async (hex, requestOptions) => {
+        purposes.push(requestOptions.purpose);
+        return inverter.command(hex);
+      },
+    },
+    options,
+  );
+  await controller.disable();
+  assert.deepEqual(purposes, ["recovery", "recovery", "recovery"]);
+  assert.equal(inverter.holding.get(207), 9);
+  assert.equal(inverter.writes.length, 1);
+});
+
 test("policy stops charging at 50% and above, allowing native battery use", () => {
   for (const soc of [50, 51, 89, 100]) {
     assert.deepEqual(decide({ ...base, soc, flags: 25 }), {

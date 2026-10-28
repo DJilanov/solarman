@@ -2,6 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { encryptCredentials, decryptCredentials } from "./credentials.mjs";
 import { TenantRuntime } from "./tenant-runtime.mjs";
+import { ApiBudget, monitoringInterval, YEAR_MS } from "./api-budget.mjs";
 
 export class AccountHub {
   constructor(pool, env, key) {
@@ -17,6 +18,54 @@ export class AccountHub {
     this.active = 0;
     this.reloads = new Map();
     this.accountUpdates = new Set();
+    this.budget = new ApiBudget(pool, env);
+  }
+
+  /** @param {TenantRuntime} runtime @returns {number} */
+  monitorPollMs(runtime) {
+    const group = [...this.runtimes.values()].filter(
+      (candidate) =>
+        candidate.appKey === runtime.appKey &&
+        candidate.ready &&
+        candidate.client &&
+        !candidate.stopping,
+    );
+    if (!group.includes(runtime)) group.push(runtime);
+    const active = group.filter((candidate) => candidate.usesControlCycle());
+    return monitoringInterval(
+      runtime.monitorPollMs,
+      group.length - active.length,
+      active.reduce(
+        (total, candidate) => total + (6 * YEAR_MS) / candidate.controlPollMs,
+        0,
+      ),
+      this.budget.policy,
+    );
+  }
+
+  /** @param {TenantRuntime} runtime @returns {Promise<object | null>} */
+  async budgetInfo(runtime) {
+    if (!runtime.appKey) return null;
+    const usage = await this.budget.status(runtime.appKey);
+    if (!usage) return null;
+    const projected = [...this.runtimes.values()]
+      .filter(
+        (candidate) =>
+          candidate.appKey === runtime.appKey &&
+          candidate.ready &&
+          candidate.client &&
+          !candidate.stopping,
+      )
+      .reduce(
+        (total, candidate) =>
+          total +
+          Math.round(
+            ((candidate.usesControlCycle() ? 6 : 1) * YEAR_MS) /
+              candidate.pollMs,
+          ),
+        0,
+      );
+    return { ...usage, projected };
   }
 
   async initialize() {

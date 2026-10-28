@@ -91,6 +91,9 @@ export function tr(
   const cleanupWarning = "; grid charging off could not be confirmed";
   if (message.endsWith(cleanupWarning))
     return `${tr(message.slice(0, -cleanupWarning.length))}; ${tr("Grid charging off could not be confirmed")}`;
+  const pauseWarning = "; automation pause could not be recorded";
+  if (message.endsWith(pauseWarning))
+    return `${tr(message.slice(0, -pauseWarning.length))}; ${tr("automation pause could not be recorded")}`;
   return message;
 }
 
