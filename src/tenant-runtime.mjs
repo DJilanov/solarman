@@ -6,8 +6,9 @@ import { decryptCredentials } from "./credentials.mjs";
 import { saveMeasurement } from "./database.mjs";
 import { WorkQueue } from "./work-queue.mjs";
 import { controlReadiness } from "./control-readiness.mjs";
-import { apiAppKey, ApiBudgetError } from "./api-budget.mjs";
+import { apiAppKey, ApiBudgetError, YEAR_MS } from "./api-budget.mjs";
 import { ControlJournal } from "./control-journal.mjs";
+import { Supervision } from "./supervision.mjs";
 import {
   BLUESUN_MAPPING,
   TELEMETRY_MAX_AGE_MS,
@@ -32,6 +33,8 @@ export class TenantRuntime {
     this.closePromise = null;
     this.stopping = false;
     this.timer = null;
+    this.nextPollAt = null;
+    this.pollCallback = null;
     this.events = [];
     this.lastSuccessAt = null;
     this.lastError = null;
@@ -44,6 +47,10 @@ export class TenantRuntime {
     this.inhibitStarts = false;
     this.controlPollMs = 900_000;
     this.monitorPollMs = 300_000;
+    this.supervision = new Supervision({
+      auditMs: 3600_000,
+      retryMs: this.controlPollMs,
+    });
     this.telemetry = null;
     this.clock = null;
     this.initialized = false;
@@ -85,6 +92,10 @@ export class TenantRuntime {
       );
       this.controlPollMs = config.pollMs;
       this.monitorPollMs = config.telemetryPollMs;
+      this.supervision = new Supervision({
+        auditMs: config.controlAuditMs,
+        retryMs: config.pollMs,
+      });
       this.hostWritesAllowed = config.writesEnabled;
       this.ready = Boolean(
         account.validated_at &&
@@ -176,6 +187,8 @@ export class TenantRuntime {
       this.cleanupRequired = this.journal.pending;
       this.initialized = true;
     }
+    if (this.paused && !this.manualTopup && this.journal.owned)
+      this.cleanupRequired = true;
     if (this.controller)
       this.controller.options.writesEnabled =
         this.writesEnabled && (this.controlEnabled || this.journal.owned);
@@ -205,8 +218,9 @@ export class TenantRuntime {
         (this.controlEnabled || (age >= 0 && age <= 1800_000)),
       settingsMatch: this.profileVerified,
       cleanupVerified: !this.cleanupRequired && !this.journal.pending,
-      clockVerified: Boolean(
-        this.clock?.passed &&
+      clockVerified: Boolean(this.clock?.passed),
+      clockFresh: Boolean(
+        this.clock &&
           Date.now() - new Date(this.clock.collectedAt).getTime() <=
             TELEMETRY_MAX_AGE_MS,
       ),
@@ -234,7 +248,7 @@ export class TenantRuntime {
             ? "error"
             : this.paused && !this.manualTopup
               ? "paused"
-              : readiness.canStart
+              : this.usesControlCycle()
                 ? "active"
                 : "read-only",
       paused: this.paused,
@@ -245,9 +259,15 @@ export class TenantRuntime {
       error: this.lastError || this.profileError,
       setupError: this.setupError,
       pollSeconds: this.pollMs / 1000,
-      annualProjectedCalls: Math.round(
-        ((this.usesControlCycle() ? 6 : 1) * 365 * 86400_000) / this.pollMs,
-      ),
+      annualProjectedCalls: this.projectedCalls(),
+      supervision: {
+        ...this.supervision.status(),
+        mode: this.usesControlCycle()
+          ? this.usesScheduledCycle()
+            ? "scheduled"
+            : "native"
+          : "monitoring",
+      },
       profile: this.account?.profile ?? "monitor-only",
       deviceSelected: Boolean(this.device),
       timezone: this.timezone,
@@ -270,15 +290,38 @@ export class TenantRuntime {
     );
   }
 
+  /** @returns {boolean} */
+  usesScheduledCycle() {
+    return this.usesControlCycle() && this.journal.owned;
+  }
+
+  /** @returns {number} */
+  fixedAnnualCalls() {
+    if (!this.usesControlCycle()) return 0;
+    return this.usesScheduledCycle()
+      ? (6 * YEAR_MS) / this.controlPollMs
+      : (5 * YEAR_MS) / this.supervision.options.auditMs;
+  }
+
+  /** @returns {number} */
+  projectedCalls() {
+    return Math.round(
+      this.fixedAnnualCalls() +
+        (this.usesScheduledCycle() ? 0 : YEAR_MS / this.pollMs),
+    );
+  }
+
   get pollMs() {
-    return this.usesControlCycle()
+    return this.usesScheduledCycle()
       ? this.controlPollMs
       : this.hub.monitorPollMs(this);
   }
 
   /** @returns {Promise<boolean>} */
   async clearScheduledPermission() {
-    await this.journal.requestCleanup();
+    await this.journal.requestCleanup({
+      pause: this.paused && !this.manualTopup,
+    });
     this.cleanupRequired = this.journal.pending;
     if (!this.writesEnabled || (!this.controlEnabled && !this.journal.owned))
       return false;
@@ -349,9 +392,9 @@ export class TenantRuntime {
     return mapped;
   }
 
-  /** @returns {Promise<object>} */
-  async collectProvider() {
-    const reading = await this.readProvider();
+  /** @param {import('./telemetry.mjs').ProviderReading | null} [reading] @param {{charge: boolean, reason: string} | null} [decision] @returns {Promise<object>} */
+  async collectProvider(reading = null, decision = null) {
+    reading ??= await this.readProvider();
     if (this.account.profile === "monitor-only") {
       this.lastSuccessAt = reading.collectedAt.toISOString();
       this.lastError =
@@ -362,6 +405,7 @@ export class TenantRuntime {
       return { decision: { charge: false, reason: "monitor_only" } };
     }
     const mapped = this.mapProvider(reading);
+    this.supervision.observe(mapped.snapshot, reading.collectedAt);
     const inserted = await saveMeasurement(
       this.pool,
       this.tenantId,
@@ -379,7 +423,7 @@ export class TenantRuntime {
     await this.finishTopup(mapped.snapshot.soc);
     return {
       snapshot: mapped.snapshot,
-      decision: {
+      decision: decision ?? {
         charge: false,
         reason: inserted ? "telemetry_updated" : "telemetry_unchanged",
       },
@@ -506,24 +550,46 @@ export class TenantRuntime {
       clock: this.clock,
     };
     this.lastError = null;
+    this.supervision.checked(null);
     return verification;
   }
 
   start() {
-    if (!this.ready || !this.client) return;
+    if (!this.ready || !this.client || this.pollCallback) return;
     const loop = async () => {
+      this.timer = null;
+      this.nextPollAt = null;
       if (this.stopping || this.hub.stopping) return;
       await this.queue(() => this.evaluate()).catch(() => {});
-      if (!this.stopping && !this.hub.stopping)
-        this.timer = setTimeout(loop, this.pollMs);
+      if (!this.stopping && !this.hub.stopping) this.schedulePoll();
     };
+    this.pollCallback = loop;
     void loop();
   }
 
-  async collect(inspectOnly = false) {
+  /** @returns {void} */
+  schedulePoll() {
+    const delay = this.pollMs;
+    this.nextPollAt = Date.now() + delay;
+    this.timer = setTimeout(() => {
+      void this.pollCallback();
+    }, delay);
+  }
+
+  /** @returns {void} */
+  reschedulePolling() {
+    if (!this.timer || !this.pollCallback || this.stopping || this.hub.stopping)
+      return;
+    if (this.nextPollAt !== null && Date.now() + this.pollMs >= this.nextPollAt)
+      return;
+    clearTimeout(this.timer);
+    this.schedulePoll();
+  }
+
+  async collect(inspectOnly = false, forceControl = false) {
     if (!this.client || !this.ready)
       throw new Error("Connect your account and choose an inverter first");
-    this.events = [];
+    if (!this.executionId) this.events = [];
     if (!inspectOnly && (this.cleanupRequired || this.journal.pending))
       await this.clearScheduledPermission();
     if (
@@ -532,9 +598,28 @@ export class TenantRuntime {
     )
       return this.collectProvider();
     if (!inspectOnly) {
-      const mapped = this.mapProvider(await this.readProvider());
+      const reading = await this.readProvider();
+      const mapped = this.mapProvider(reading);
       if (!mapped.clock.passed)
         throw new Error("The inverter clock must match the workspace timezone");
+      this.supervision.observe(mapped.snapshot, reading.collectedAt);
+      const plan = this.supervision.plan(mapped.snapshot, {
+        owned: this.journal.owned,
+        verified: this.profileVerified,
+        force: forceControl,
+      });
+      if (!plan.native)
+        return this.collectProvider(reading, {
+          charge: false,
+          reason: plan.reason,
+        });
+      this.events.push({ event: "native_policy_check", reason: plan.reason });
+    } else if (
+      !this.clock?.passed ||
+      Date.now() - new Date(this.clock.collectedAt).getTime() >
+        TELEMETRY_MAX_AGE_MS
+    ) {
+      this.mapProvider(await this.readProvider());
     }
     const canWrite =
       this.writesEnabled && this.controlEnabled && this.verifiedDevice();
@@ -576,6 +661,7 @@ export class TenantRuntime {
     }
     if (await this.journal.confirmOff(result.snapshot.flags))
       this.cleanupRequired = false;
+    this.supervision.checked(result.decision.reason);
     if (
       !inspectOnly &&
       this.paused &&
@@ -612,6 +698,7 @@ export class TenantRuntime {
     if (this.stopping || this.hub.stopping) return;
     const id = randomUUID();
     this.executionId = id;
+    this.events = [];
     try {
       await this.q(
         "INSERT INTO command_executions (tenant_id,id,account_id,actor,action,status) VALUES ($1,$2,$3,'Automation','evaluate','running')",
@@ -639,7 +726,11 @@ export class TenantRuntime {
         [
           id,
           reasonLabel(result.decision.reason),
-          { decision: result.decision, events: this.events },
+          {
+            decision: result.decision,
+            supervision: this.supervision.status(),
+            events: this.events,
+          },
         ],
       );
     } catch (error) {
@@ -652,7 +743,11 @@ export class TenantRuntime {
   async fail(id, error, disable = true) {
     const budgetLimited = error instanceof ApiBudgetError;
     let pauseUnrecorded = false;
-    if (budgetLimited && (!this.paused || this.manualTopup)) {
+    const controlFailed = disable && this.writesEnabled && this.controlEnabled;
+    if (
+      (budgetLimited || controlFailed) &&
+      (!this.paused || this.manualTopup)
+    ) {
       this.paused = true;
       this.manualTopup = false;
       this.topupExpiresAt = null;
@@ -660,7 +755,7 @@ export class TenantRuntime {
       this.enableEpoch++;
       this.cleanupRequired = true;
       try {
-        await this.journal.requestCleanup({ pause: true });
+        await this.journal.requestCleanup({ pause: true, cancelStarts: true });
       } catch {
         pauseUnrecorded = true;
       }
@@ -668,15 +763,17 @@ export class TenantRuntime {
     this.profileVerified = false;
     this.lastError =
       error instanceof Error ? error.message : "Device request failed";
-    if (pauseUnrecorded)
-      this.lastError += "; automation pause could not be recorded";
+    if (controlFailed) this.profileError = this.lastError;
     if (budgetLimited ? this.cleanupRequired : disable) {
       try {
         await this.clearScheduledPermission();
+        pauseUnrecorded = false;
       } catch {
         this.lastError += "; grid charging off could not be confirmed";
       }
     }
+    if (pauseUnrecorded)
+      this.lastError += "; automation pause could not be recorded";
     try {
       await this.q(
         "UPDATE command_executions SET status='failed',message=$3,detail=$4,completed_at=now() WHERE tenant_id=$1 AND id=$2",
@@ -685,6 +782,33 @@ export class TenantRuntime {
     } catch {
       console.error(JSON.stringify({ event: "command_audit_failed" }));
     }
+  }
+
+  /** @param {'enable_controls' | 'resume' | 'topup'} action @param {string} epoch @returns {Promise<boolean>} */
+  async applyStartIntent(action, epoch) {
+    // A delayed update must not overwrite a stop committed after this request was accepted.
+    const result = await this.q(
+      `UPDATE controller_state SET
+      control_enabled=CASE WHEN $2='enable_controls' THEN true ELSE control_enabled END,
+      paused=CASE WHEN $2='enable_controls' THEN true WHEN $2='resume' THEN false ELSE paused END,
+      manual_topup=($2='topup'),
+      topup_expires_at=CASE WHEN $2='topup' THEN now()+interval '6 hours' ELSE null END,
+      updated_at=now()
+      WHERE tenant_id=$1 AND control_epoch=$3 AND ($2='enable_controls' OR control_enabled)
+      RETURNING tenant_id`,
+      [action, epoch],
+    );
+    if (!result.rowCount) return false;
+    await this.initialize();
+    return true;
+  }
+
+  /** @param {string} jobId @returns {Promise<void>} */
+  async cancelStart(jobId) {
+    await this.q(
+      "UPDATE command_executions SET status='interrupted',message='Control request cancelled; workspace state changed',completed_at=now() WHERE tenant_id=$1 AND id=$2",
+      [jobId],
+    );
   }
 
   async submit(action, user, key) {
@@ -726,6 +850,13 @@ export class TenantRuntime {
       );
     if (this.scheduled.size >= 5 && !["stop", "pause"].includes(action))
       throw new Error("Wait for a pending command to finish");
+    const controlEpoch = ["enable_controls", "resume", "topup"].includes(action)
+      ? (
+          await this.q(
+            "SELECT control_epoch::text AS epoch FROM controller_state WHERE tenant_id=$1",
+          )
+        ).rows[0].epoch
+      : null;
     const result = await this.q(
       `INSERT INTO command_executions
       (tenant_id,id,account_id,user_id,actor,action,idempotency_key,status) VALUES ($1,$2,$3,$4,$5,$6,$7,'queued')
@@ -745,12 +876,19 @@ export class TenantRuntime {
         "The request identifier was already used for another action",
       );
     if (job.status !== "queued" || this.scheduled.has(job.id)) return job;
+    if (this.stopping || this.hub.stopping) {
+      const interrupted = await this.q(
+        "UPDATE command_executions SET status='interrupted',message='Controller is stopping',completed_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING *",
+        [job.id],
+      );
+      return interrupted.rows[0];
+    }
     this.scheduled.add(job.id);
     if (["stop", "pause"].includes(action)) {
       this.inhibitStarts = true;
       this.enableEpoch++;
       try {
-        await this.journal.requestCleanup({ pause: true });
+        await this.journal.requestCleanup({ pause: true, cancelStarts: true });
       } catch (error) {
         this.scheduled.delete(job.id);
         await this.fail(job.id, error, false);
@@ -803,10 +941,13 @@ export class TenantRuntime {
               throw new Error(
                 "Fresh device verification and administrator permission are required",
               );
-            await this.q(
-              "UPDATE controller_state SET control_enabled=true,paused=true,manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
-            );
-            await this.initialize();
+            if (
+              !(await this.applyStartIntent(action, controlEpoch)) ||
+              enableEpoch !== this.enableEpoch
+            ) {
+              await this.cancelStart(job.id);
+              return;
+            }
             message =
               "Control enabled for this workspace; automation remains paused";
           } else if (["stop", "pause"].includes(action)) {
@@ -826,27 +967,20 @@ export class TenantRuntime {
                 throw new Error(
                   "Hardware writes require an enabled, verified Bluesun profile",
                 );
+              if (
+                !(await this.applyStartIntent(action, controlEpoch)) ||
+                enableEpoch !== this.enableEpoch
+              ) {
+                await this.cancelStart(job.id);
+                return;
+              }
               this.inhibitStarts = false;
             }
-            if (action === "resume") {
-              await this.q(
-                "UPDATE controller_state SET paused=false,manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
-              );
-              this.paused = false;
-              this.manualTopup = false;
-              this.topupExpiresAt = null;
-            }
-            if (action === "topup") {
-              await this.q(
-                "UPDATE controller_state SET manual_topup=true,topup_expires_at=now()+interval '6 hours',updated_at=now() WHERE tenant_id=$1",
-              );
-              this.manualTopup = true;
-              this.topupExpiresAt = new Date(
-                Date.now() + 6 * 3600_000,
-              ).toISOString();
-            }
             if (this.client && this.ready) {
-              const result = await this.collect(action === "refresh");
+              const result = await this.collect(
+                action === "refresh",
+                ["topup", "resume"].includes(action),
+              );
               message = reasonLabel(result.decision.reason);
             } else
               message =
@@ -872,6 +1006,7 @@ export class TenantRuntime {
         } finally {
           this.executionId = null;
           this.scheduled.delete(job.id);
+          this.reschedulePolling();
         }
       },
       action === "stop" || action === "pause" ? 10 : 5,
@@ -918,6 +1053,9 @@ export function reasonLabel(reason) {
         "Battery is below 50%; grid top-up is eligible when hardware writes are enabled",
       solar_can_charge:
         "Solar surplus can charge the battery without a grid top-up",
+      native_charging:
+        "The battery is already charging near the 2 kW target; no new scheduled top-up is requested",
+      topup_waiting: "Waiting for the next guarded grid top-up assessment",
       grid_not_available: "Grid voltage is unavailable; the top-up is waiting",
       battery_not_ready: "Battery is not ready for a grid top-up",
       monitor_only: "Read-only device readings updated",

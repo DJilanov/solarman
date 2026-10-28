@@ -6,11 +6,12 @@ export const CONTROL_REASONS = {
   workspace: "Control has not been enabled for this workspace",
   settings: "Refresh readings to confirm the current control settings",
   clock: "The inverter clock must match the workspace timezone",
+  clock_refresh: "Refresh readings to confirm the current inverter clock",
   cleanup: "Scheduled charging has not been confirmed off",
   stopping: "The controller is stopping",
 };
 
-/** @param {{ connected: boolean, supported: boolean, serverAllowed: boolean, workspaceEnabled: boolean, verified: boolean, settingsMatch: boolean, clockVerified: boolean, cleanupVerified: boolean, stopping: boolean }} facts @returns {{ reasons: {code: string, message: string}[], canVerify: boolean, canEnable: boolean, canStart: boolean, canStop: boolean }} */
+/** @param {{ connected: boolean, supported: boolean, serverAllowed: boolean, workspaceEnabled: boolean, verified: boolean, settingsMatch: boolean, clockVerified: boolean, clockFresh: boolean, cleanupVerified: boolean, stopping: boolean }} facts @returns {{ reasons: {code: string, message: string}[], canVerify: boolean, canEnable: boolean, canStart: boolean, canStop: boolean }} */
 export function controlReadiness(facts) {
   const codes = [];
   if (!facts.connected) codes.push("connection");
@@ -19,7 +20,8 @@ export function controlReadiness(facts) {
   if (!facts.verified) codes.push("verification");
   if (!facts.workspaceEnabled) codes.push("workspace");
   if (!facts.settingsMatch) codes.push("settings");
-  if (!facts.clockVerified) codes.push("clock");
+  if (!facts.clockFresh) codes.push("clock_refresh");
+  else if (!facts.clockVerified) codes.push("clock");
   if (!facts.cleanupVerified) codes.push("cleanup");
   if (facts.stopping) codes.push("stopping");
   const available = facts.connected && facts.supported && !facts.stopping;
@@ -32,6 +34,7 @@ export function controlReadiness(facts) {
       facts.verified &&
       facts.settingsMatch &&
       facts.clockVerified &&
+      facts.clockFresh &&
       facts.cleanupVerified,
     canStart: codes.length === 0,
     // Stopping must remain available when settings verification has failed.

@@ -337,3 +337,20 @@ test("readback mismatch records uncertainty while keeping the original failure",
   await assert.rejects(controller.setAc(true), /readback mismatch/);
   assert.deepEqual(stages, ["prepared", "acknowledged", "uncertain"]);
 });
+
+test("native charging near the target does not introduce a timed AC window", async () => {
+  assert.equal(
+    decide({ ...base, batteryW: -1945, gridW: 3200 }).reason,
+    "native_charging",
+  );
+  assert.equal(
+    decide({ ...base, flags: 25, batteryW: -1945, gridW: 3200 }).charge,
+    true,
+  );
+  const inverter = new Inverter(40, 9);
+  inverter.input.set(2007, 65535);
+  inverter.input.set(2008, 65536 - 1945);
+  const controller = new BatteryController(inverter, options);
+  assert.equal((await controller.tick()).decision.reason, "native_charging");
+  assert.deepEqual(inverter.writes, []);
+});

@@ -2,7 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { encryptCredentials, decryptCredentials } from "./credentials.mjs";
 import { TenantRuntime } from "./tenant-runtime.mjs";
-import { ApiBudget, monitoringInterval, YEAR_MS } from "./api-budget.mjs";
+import { ApiBudget, monitoringInterval } from "./api-budget.mjs";
 
 export class AccountHub {
   constructor(pool, env, key) {
@@ -31,12 +31,14 @@ export class AccountHub {
         !candidate.stopping,
     );
     if (!group.includes(runtime)) group.push(runtime);
-    const active = group.filter((candidate) => candidate.usesControlCycle());
+    const scheduled = group.filter((candidate) =>
+      candidate.usesScheduledCycle(),
+    );
     return monitoringInterval(
       runtime.monitorPollMs,
-      group.length - active.length,
-      active.reduce(
-        (total, candidate) => total + (6 * YEAR_MS) / candidate.controlPollMs,
+      group.length - scheduled.length,
+      group.reduce(
+        (total, candidate) => total + candidate.fixedAnnualCalls(),
         0,
       ),
       this.budget.policy,
@@ -56,15 +58,7 @@ export class AccountHub {
           candidate.client &&
           !candidate.stopping,
       )
-      .reduce(
-        (total, candidate) =>
-          total +
-          Math.round(
-            ((candidate.usesControlCycle() ? 6 : 1) * YEAR_MS) /
-              candidate.pollMs,
-          ),
-        0,
-      );
+      .reduce((total, candidate) => total + candidate.projectedCalls(), 0);
     return { ...usage, projected };
   }
 
@@ -199,7 +193,7 @@ export class AccountHub {
   async prepareAccountUpdate(runtime) {
     runtime.inhibitStarts = true;
     runtime.enableEpoch++;
-    await runtime.journal.requestCleanup({ pause: true });
+    await runtime.journal.requestCleanup({ pause: true, cancelStarts: true });
     runtime.paused = true;
     runtime.manualTopup = false;
     runtime.topupExpiresAt = null;

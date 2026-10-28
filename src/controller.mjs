@@ -41,6 +41,8 @@ export function decide(snapshot) {
   // Avoid switching repeatedly when solar surplus fluctuates around the AC target.
   if (solarSurplusW >= (enabled ? 2000 : 1800))
     return result(false, "solar_can_charge");
+  if (!enabled && snapshot.batteryW <= -1800)
+    return result(false, "native_charging");
   return result(true, "below_reserve");
 }
 

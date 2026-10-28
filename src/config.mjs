@@ -86,6 +86,7 @@ export function loadConfig(env, { deviceRequired = true } = {}) {
     writesEnabled: writes === "true",
     pollMs: pollSeconds * 1000,
     telemetryPollMs: integer("TELEMETRY_POLL_SECONDS", 300, 300, 1800) * 1000,
+    controlAuditMs: integer("CONTROL_AUDIT_SECONDS", 3600, 900, 21600) * 1000,
     commandTimeoutMs: integer("COMMAND_TIMEOUT_SECONDS", 30, 10, 60) * 1000,
     timezone,
     chargeWindowMinutes,

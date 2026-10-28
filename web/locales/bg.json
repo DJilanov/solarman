@@ -621,5 +621,18 @@
   "This inverter write is not supported by the control journal": "Тази промяна по инвертора не се поддържа от журнала за управление",
   "The inverter write journal does not match this operation": "Журналът на промените по инвертора не съответства на тази операция",
   "Waiting for device confirmation": "Изчаква се потвърждение от устройството",
-  "Waiting for device acknowledgment and readback before confirming the change.": "Изчаква се потвърждение от устройството и обратно прочитане, преди промяната да бъде потвърдена."
+  "Waiting for device acknowledgment and readback before confirming the change.": "Изчаква се потвърждение от устройството и обратно прочитане, преди промяната да бъде потвърдена.",
+  "Control strategy": "Стратегия за управление",
+  "Native policy supervision": "Наблюдение на политиката на инвертора",
+  "Guarded scheduled top-up": "Планирано дозареждане с проверки",
+  "Monitoring existing inverter policy": "Наблюдение на текущата политика на инвертора",
+  "Last native policy check": "Последна проверка на настройките в инвертора",
+  "Waiting for the next guarded grid top-up assessment": "Изчаква се следващата проверка за дозареждане от мрежата",
+  "The grid is supplying the home above the reserve with little or no battery support. Check inverter settings and BMS limits.": "Домът се захранва от мрежата над резерва с малка или никаква помощ от батерията. Проверете настройките на инвертора и ограниченията на BMS.",
+  "Solar surplus is available, but the battery is not charging. Check inverter settings and BMS limits.": "Има излишък от соларна енергия, но батерията не се зарежда. Проверете настройките на инвертора и ограниченията на BMS.",
+  "The battery is already charging near the 2 kW target; no new scheduled top-up is requested": "Батерията вече се зарежда близо до целта от 2 kW; не се заявява ново планирано дозареждане",
+  "Full native checks every {{count}} minutes during supervision, and before enabling scheduled charging. Existing native charging is preserved when it already meets the target.": "Пълни проверки на инвертора на всеки {{count}} минути при активно управление и преди включване на планирано зареждане. Собственото зареждане на инвертора се запазва, когато вече изпълнява целта.",
+  "Refresh readings to confirm the current inverter clock": "Обновете данните, за да потвърдите текущия часовник на инвертора",
+  "Observed {{time}}": "Наблюдавано {{time}}",
+  "Control request cancelled; workspace state changed": "Заявката за управление е отменена; състоянието на пространството е променено"
 }

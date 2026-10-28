@@ -803,3 +803,59 @@ test("uncertain writes remain distinct from confirmed cleanup in English and Bul
     fullPage: true,
   });
 });
+
+test("native supervision and observed charging problems remain clear on mobile in both languages", async ({
+  page,
+}) => {
+  await signIn(page);
+  const overview = (await (
+    await page.request.get("/api/overview")
+  ).json()) as OverviewData;
+  const warning =
+    "The grid is supplying the home above the reserve with little or no battery support. Check inverter settings and BMS limits.";
+  overview.controller.supervision = {
+    mode: "monitoring",
+    auditSeconds: 3600,
+    lastNativeAt: new Date().toISOString(),
+    nextAuditAt: new Date(Date.now() + 3600000).toISOString(),
+    issue: {
+      code: "battery_not_supporting_home",
+      message: warning,
+      observedAt: new Date().toISOString(),
+    },
+  };
+  await page.route("**/api/overview", (route) =>
+    route.fulfill({ json: overview }),
+  );
+  await page.goto("/controls");
+  await expect(
+    page.getByText("Monitoring existing inverter policy", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(warning, {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/Full native checks every 60 minutes/),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(
+    page.getByText("Наблюдение на текущата политика на инвертора", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/Домът се захранва от мрежата над резерва/),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+  await page.getByRole("link", { name: "Преглед", exact: true }).click();
+  await expect(
+    page.getByText(/Домът се захранва от мрежата над резерва/),
+  ).toBeVisible();
+});

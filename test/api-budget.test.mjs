@@ -71,6 +71,8 @@ test("monitoring allocation groups by App ID while separate apps retain their ow
     monitorPollMs: 300000,
     controlPollMs: 900000,
     usesControlCycle: () => false,
+    usesScheduledCycle: () => false,
+    fixedAnnualCalls: () => 0,
   });
   const first = runtime(apiAppKey("shared"));
   const second = runtime(apiAppKey("shared"));
@@ -81,4 +83,23 @@ test("monitoring allocation groups by App ID while separate apps retain their ow
   assert.equal(hub.monitorPollMs(first), 360000);
   assert.equal(hub.monitorPollMs(second), 360000);
   assert.equal(hub.monitorPollMs(independent), 300000);
+});
+
+test("shared cadence accounts for periodic native policy reads as well as telemetry", async () => {
+  const { AccountHub } = await import("../src/account-hub.mjs");
+  const hub = new AccountHub({}, {}, Buffer.alloc(32));
+  const first = {
+    appKey: apiAppKey("shared"),
+    ready: true,
+    client: {},
+    stopping: false,
+    monitorPollMs: 300000,
+    usesScheduledCycle: () => false,
+    fixedAnnualCalls: () => 43800,
+  };
+  const second = { ...first };
+  hub.runtimes.set("one", first);
+  assert.equal(hub.monitorPollMs(first), 300000);
+  hub.runtimes.set("two", second);
+  assert.equal(hub.monitorPollMs(first), 630000);
 });

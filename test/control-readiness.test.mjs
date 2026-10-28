@@ -15,6 +15,7 @@ const ready = {
   verified: true,
   settingsMatch: true,
   clockVerified: true,
+  clockFresh: true,
   cleanupVerified: true,
   stopping: false,
 };
@@ -27,6 +28,7 @@ test("each control requirement independently blocks starts without blocking a st
     "verified",
     "settingsMatch",
     "clockVerified",
+    "clockFresh",
     "cleanupVerified",
   ]) {
     const status = controlReadiness({ ...ready, [key]: false });

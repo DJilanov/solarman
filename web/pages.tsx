@@ -137,6 +137,19 @@ export function Overview(): ReactNode {
       />
       {error && <Notice tone="danger">{error}</Notice>}
       <SetupNotice controller={controller} />
+      {controller.supervision.issue && (
+        <Notice tone="danger">
+          <span>{tr(controller.supervision.issue.message)}</span>
+          <small className="observation-time">
+            {tr("Observed {{time}}", {
+              time: when(
+                controller.supervision.issue.observedAt,
+                session.tenant.timezone,
+              ),
+            })}
+          </small>
+        </Notice>
+      )}
       {latest && stale && (
         <Notice>
           {tr("These are the last available readings from")}{" "}
@@ -671,6 +684,19 @@ export function Controls(): ReactNode {
         subtitle={tr("Verify the device without changing inverter settings")}
         action={<ShieldCheck size={22} />}
       >
+        {controller.supervision.issue && (
+          <Notice tone="danger">
+            <span>{tr(controller.supervision.issue.message)}</span>
+            <small className="observation-time">
+              {tr("Observed {{time}}", {
+                time: when(
+                  controller.supervision.issue.observedAt,
+                  controller.timezone,
+                ),
+              })}
+            </small>
+          </Notice>
+        )}
         {controller.control.recovery.inFlight && (
           <Notice>
             {tr(
@@ -905,6 +931,32 @@ export function Controls(): ReactNode {
           <p className="control-description">
             {tr(
               "Automatic checks use this workspace’s linked account and selected inverter. No other tenant’s account or commands are used.",
+            )}
+          </p>
+          <div className="diagnostic-values supervision-facts">
+            <div>
+              <span>{tr("Control strategy")}</span>
+              <strong>
+                {tr(
+                  controller.supervision.mode === "native"
+                    ? "Native policy supervision"
+                    : controller.supervision.mode === "scheduled"
+                      ? "Guarded scheduled top-up"
+                      : "Monitoring existing inverter policy",
+                )}
+              </strong>
+            </div>
+            {controller.supervision.lastNativeAt && (
+              <div>
+                <span>{tr("Last native policy check")}</span>
+                <strong>{age(controller.supervision.lastNativeAt)}</strong>
+              </div>
+            )}
+          </div>
+          <p className="fine-print">
+            {tr(
+              "Full native checks every {{count}} minutes during supervision, and before enabling scheduled charging. Existing native charging is preserved when it already meets the target.",
+              { count: controller.supervision.auditSeconds / 60 },
             )}
           </p>
           <button

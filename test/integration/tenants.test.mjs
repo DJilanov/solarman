@@ -730,31 +730,25 @@ test("paused monitoring retries an unconfirmed stop before fetching new uploads"
 });
 
 test("shutdown during command acceptance leaves a terminal audit record", async () => {
-  const { runtime, user } = await controlFixture();
-  const originalQuery = runtime.q.bind(runtime);
-  try {
-    runtime.q = async (sql, values = []) => {
-      const result = await originalQuery(sql, values);
-      if (sql.includes("INSERT INTO command_executions"))
-        runtime.stopping = true;
-      return result;
-    };
-    const job = await runtime.submit("refresh", user, randomUUID());
-    let status = "queued";
-    for (let attempt = 0; attempt < 20 && status === "queued"; attempt++) {
-      status = (
-        await originalQuery(
-          "SELECT status FROM command_executions WHERE tenant_id=$1 AND id=$2",
-          [job.id],
-        )
-      ).rows[0].status;
-      if (status === "queued")
-        await new Promise((resolve) => setTimeout(resolve, 10));
+  for (const action of ["refresh", "stop"]) {
+    const { runtime, user } = await controlFixture();
+    const originalQuery = runtime.q.bind(runtime);
+    try {
+      runtime.q = async (sql, values = []) => {
+        const result = await originalQuery(sql, values);
+        if (sql.includes("INSERT INTO command_executions"))
+          runtime.stopping = true;
+        return result;
+      };
+      runtime.journal.requestCleanup = async () => {
+        assert.fail("A closed runtime must not change control ownership");
+      };
+      const job = await runtime.submit(action, user, randomUUID());
+      assert.equal(job.status, "interrupted");
+      assert.equal(runtime.scheduled.has(job.id), false);
+    } finally {
+      await runtime.close();
     }
-    assert.equal(status, "failed");
-    assert.equal(runtime.scheduled.has(job.id), false);
-  } finally {
-    await runtime.close();
   }
 });
 
@@ -1336,6 +1330,348 @@ test("a queued hardware action records its job and intent before dispatch, then 
     assert.equal(runtime.status().control.recovery.inFlight, false);
     assert.equal(hardwareFlags, 25);
     runtime.controller.disable = async () => 9;
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("steady supervision uses one telemetry request between periodic native audits", async () => {
+  const { runtime, user, snapshot, calls } = await controlFixture(true);
+  try {
+    snapshot.pvW = 500;
+    snapshot.loadW = 800;
+    snapshot.gridW = 2250;
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    await completeCommand(runtime, "resume", user);
+    assert.equal(calls.filter((value) => value === "tick").length, 1);
+    assert.equal(runtime.status().supervision.mode, "native");
+    assert.equal(runtime.status().annualProjectedCalls, 148920);
+    assert.equal(runtime.pollMs, 300000);
+    const before = calls.filter((value) => value === "provider-read").length;
+    const result = await runtime.collect();
+    assert.equal(result.decision.reason, "native_charging");
+    assert.equal(
+      calls.filter((value) => value === "provider-read").length,
+      before + 1,
+    );
+    assert.equal(calls.filter((value) => value === "tick").length, 1);
+    assert.equal(runtime.telemetry.source, "provider");
+    runtime.supervision.lastNativeAt -= 3600000;
+    await runtime.collect();
+    assert.equal(calls.filter((value) => value === "tick").length, 2);
+    assert.equal(runtime.telemetry.source, "register");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("explicit top-up requests force fresh native checks even when cached telemetry meets the target", async () => {
+  const { runtime, user, calls } = await armedFixture();
+  try {
+    const before = calls.filter((value) => value === "tick").length;
+    await completeCommand(runtime, "topup", user);
+    assert.equal(calls.filter((value) => value === "tick").length, before + 1);
+    assert.equal(runtime.manualTopup, true);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("two distinct deviation uploads trigger one early audit without repeatedly polling unchanged data", async () => {
+  const { runtime, user, snapshot, calls } = await controlFixture(true);
+  try {
+    snapshot.soc = 80;
+    snapshot.pvW = 200;
+    snapshot.loadW = 1800;
+    snapshot.gridW = 100;
+    snapshot.batteryW = 1500;
+    let collectedAt = Math.floor((Date.now() - 300000) / 1000) * 1000;
+    runtime.client.api = async (path) =>
+      path === "/account/v1.0/balance"
+        ? { total: 200000 }
+        : providerPayload({
+            device: runtime.device,
+            collectedAt,
+            values: {
+              PVTP: String(snapshot.pvW),
+              EP: String(snapshot.loadW),
+              PG_Pt1: String(snapshot.gridW),
+              B_P1: String(snapshot.batteryW),
+              B_left_cap1: String(snapshot.soc),
+            },
+          });
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    await completeCommand(runtime, "resume", user);
+    snapshot.batteryW = 0;
+    snapshot.gridW = 1600;
+    collectedAt += 60000;
+    await runtime.collect();
+    assert.equal(runtime.supervision.issue, null);
+    collectedAt += 60000;
+    await runtime.collect();
+    assert.equal(runtime.supervision.issue.code, "battery_not_supporting_home");
+    assert.equal(calls.filter((value) => value === "tick").length, 2);
+    await runtime.collect();
+    assert.equal(calls.filter((value) => value === "tick").length, 2);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a failed native policy audit pauses automation instead of repeatedly trying to enable it", async () => {
+  const { runtime, calls } = await armedFixture();
+  try {
+    runtime.supervision.lastNativeAt -= 3600000;
+    runtime.controller.tick = async () => {
+      throw new Error("Inverter settings changed");
+    };
+    await runtime.evaluate();
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.inhibitStarts, true);
+    assert.equal(runtime.status().control.canStart, false);
+    const before = calls.filter((value) => value === "disable").length;
+    await runtime.evaluate();
+    assert.equal(calls.filter((value) => value === "disable").length, before);
+    assert.equal(runtime.status().error, "Inverter settings changed");
+    await runtime.collect(true);
+    assert.equal(runtime.status().error, null);
+    assert.equal(runtime.paused, true);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT paused FROM controller_state WHERE tenant_id=$1",
+          [runtime.tenantId],
+        )
+      ).rows[0].paused,
+      true,
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("supervision caches are rebuilt with native checks after restart", async () => {
+  const { runtime, snapshot } = await armedFixture();
+  let restarted;
+  try {
+    const account = (
+      await pool.query("SELECT * FROM solarman_accounts WHERE tenant_id=$1", [
+        runtime.tenantId,
+      ])
+    ).rows[0];
+    restarted = new TenantRuntime(runtime.hub, runtime.tenantId, account);
+    await restarted.initialize();
+    assert.equal(restarted.supervision.lastNativeAt, null);
+    let checks = 0;
+    restarted.client.api = async () =>
+      providerPayload({ device: restarted.device });
+    restarted.controller.tick = async () => {
+      checks++;
+      return { snapshot: { ...snapshot }, decision: decide(snapshot) };
+    };
+    restarted.controller.disable = async () => 9;
+    await restarted.collect();
+    assert.equal(checks, 1);
+    assert.ok(restarted.supervision.lastNativeAt);
+  } finally {
+    await restarted?.close();
+    await runtime.close();
+  }
+});
+
+test("stale cached clock evidence blocks new starts without misreporting active supervision as read-only", async () => {
+  const { runtime, user } = await armedFixture();
+  try {
+    runtime.clock.collectedAt = new Date(Date.now() - 601000).toISOString();
+    assert.equal(runtime.status().mode, "active");
+    assert.equal(runtime.status().control.canStart, false);
+    assert.ok(
+      runtime
+        .status()
+        .control.reasons.some((reason) => reason.code === "clock_refresh"),
+    );
+    await completeCommand(runtime, "refresh", user);
+    assert.equal(runtime.status().control.canStart, true);
+    assert.equal(runtime.status().mode, "active");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("cleanup retries persisting the pause after a transient journal failure", async () => {
+  const { runtime } = await armedFixture();
+  try {
+    runtime.supervision.lastNativeAt -= 3600000;
+    runtime.controller.tick = async () => {
+      throw new Error("Inverter settings changed");
+    };
+    const original = runtime.journal.requestCleanup.bind(runtime.journal);
+    let attempts = 0;
+    runtime.journal.requestCleanup = async (options = {}) => {
+      if (options.pause && attempts++ === 0)
+        throw new Error("Temporary database failure");
+      await original(options);
+    };
+    await runtime.evaluate();
+    assert.ok(attempts >= 2);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT paused FROM controller_state WHERE tenant_id=$1",
+          [runtime.tenantId],
+        )
+      ).rows[0].paused,
+      true,
+    );
+    assert.equal(runtime.status().error, "Inverter settings changed");
+    assert.equal(runtime.journal.pending, false);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a delayed start update cannot overwrite a stop committed after the job began", async () => {
+  const { runtime, user, calls } = await controlFixture(true);
+  let restarted;
+  let release;
+  try {
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    const initial = (
+      await pool.query(
+        "SELECT control_epoch::text AS epoch FROM controller_state WHERE tenant_id=$1",
+        [runtime.tenantId],
+      )
+    ).rows[0].epoch;
+    let began;
+    const started = new Promise((resolve) => {
+      began = resolve;
+    });
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const original = runtime.applyStartIntent.bind(runtime);
+    runtime.applyStartIntent = async (action, epoch) => {
+      if (action === "resume") {
+        began();
+        await gate;
+      }
+      return original(action, epoch);
+    };
+    const resume = await runtime.submit("resume", user, randomUUID());
+    await started;
+    const stop = await runtime.submit("stop", user, randomUUID());
+    const committed = (
+      await pool.query(
+        "SELECT paused,control_epoch::text AS epoch FROM controller_state WHERE tenant_id=$1",
+        [runtime.tenantId],
+      )
+    ).rows[0];
+    assert.equal(committed.paused, true);
+    assert.ok(BigInt(committed.epoch) > BigInt(initial));
+    release();
+    await runtime.work.idle();
+    const jobs = (
+      await pool.query(
+        "SELECT id,status FROM command_executions WHERE tenant_id=$1 AND id=ANY($2::uuid[])",
+        [runtime.tenantId, [resume.id, stop.id]],
+      )
+    ).rows;
+    assert.equal(
+      jobs.find((job) => job.id === resume.id).status,
+      "interrupted",
+    );
+    assert.equal(jobs.find((job) => job.id === stop.id).status, "succeeded");
+    assert.equal(calls.includes("tick"), false);
+    const account = (
+      await pool.query("SELECT * FROM solarman_accounts WHERE tenant_id=$1", [
+        runtime.tenantId,
+      ])
+    ).rows[0];
+    restarted = new TenantRuntime(runtime.hub, runtime.tenantId, account);
+    await restarted.initialize();
+    assert.equal(await restarted.applyStartIntent("resume", initial), false);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT paused FROM controller_state WHERE tenant_id=$1",
+          [runtime.tenantId],
+        )
+      ).rows[0].paused,
+      true,
+    );
+  } finally {
+    release?.();
+    await restarted?.close();
+    await runtime.close();
+  }
+});
+
+test("an old binding cannot borrow current activation to create cleanup ownership", async () => {
+  const { runtime } = await armedFixture();
+  const original = (
+    await pool.query(
+      "SELECT device_sn,discovered_devices FROM solarman_accounts WHERE tenant_id=$1",
+      [runtime.tenantId],
+    )
+  ).rows[0];
+  try {
+    await runtime.journal.confirmOff(9);
+    await pool.query(
+      "UPDATE solarman_accounts SET device_sn='replacement-inverter',discovered_devices=$2 WHERE tenant_id=$1",
+      [
+        runtime.tenantId,
+        JSON.stringify([{ deviceSn: "replacement-inverter" }]),
+      ],
+    );
+    await runtime.journal.requestCleanup({ pause: true, cancelStarts: true });
+    assert.equal(runtime.journal.owned, false);
+    assert.equal(runtime.journal.pending, false);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM device_control_state WHERE tenant_id=$1 AND state<>'clear'",
+          [runtime.tenantId],
+        )
+      ).rows[0].count,
+      0,
+    );
+  } finally {
+    await pool.query(
+      "UPDATE solarman_accounts SET device_sn=$2,discovered_devices=$3 WHERE tenant_id=$1",
+      [
+        runtime.tenantId,
+        original.device_sn,
+        JSON.stringify(original.discovered_devices),
+      ],
+    );
+    await runtime.close();
+  }
+});
+
+test("a persisted pause reconciles owned permission before returning to monitoring", async () => {
+  const { runtime, calls } = await armedFixture();
+  try {
+    const id = await runtime.journal.prepare(
+      2509,
+      [0x1000, 0x1019, 0, 0, 0, 0, 0, 0],
+      null,
+    );
+    await runtime.journal.acknowledge(id);
+    await runtime.journal.verify(id);
+    assert.equal(runtime.journal.state.state, "owned");
+    await pool.query(
+      "UPDATE controller_state SET paused=true,manual_topup=false WHERE tenant_id=$1",
+      [runtime.tenantId],
+    );
+    await runtime.initialize();
+    assert.equal(runtime.cleanupRequired, true);
+    await runtime.collect();
+    assert.equal(runtime.journal.owned, false);
+    assert.equal(runtime.cleanupRequired, false);
+    assert.equal(calls.filter((call) => call === "disable").length, 1);
   } finally {
     await runtime.close();
   }

@@ -216,21 +216,24 @@ export class ControlJournal {
     await this.load();
   }
 
-  /** @param {{pause?: boolean}} [options] @returns {Promise<void>} */
-  async requestCleanup({ pause = false } = {}) {
+  /** @param {{pause?: boolean, cancelStarts?: boolean}} [options] @returns {Promise<void>} */
+  async requestCleanup({ pause = false, cancelStarts = false } = {}) {
     const connection = await this.pool.connect();
     try {
       await connection.query("BEGIN");
       const control = (
         await connection.query(
-          "SELECT control_enabled FROM controller_state WHERE tenant_id=$1 FOR UPDATE",
+          `SELECT c.control_enabled,a.id AS account_id,a.device_sn
+          FROM controller_state c LEFT JOIN solarman_accounts a ON a.tenant_id=c.tenant_id
+          WHERE c.tenant_id=$1 FOR UPDATE OF c`,
           [this.context.tenantId],
         )
       ).rows[0];
       if (pause)
         await connection.query(
-          "UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
-          [this.context.tenantId],
+          `UPDATE controller_state SET control_epoch=control_epoch+CASE WHEN $2 OR NOT paused OR manual_topup THEN 1 ELSE 0 END,
+          paused=true,manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1`,
+          [this.context.tenantId, cancelStarts],
         );
       if (this.context.accountId && this.context.device) {
         const lease = (
@@ -239,7 +242,13 @@ export class ControlJournal {
             this.binding,
           )
         ).rows[0];
-        if (control?.control_enabled || (lease && lease.state !== "clear"))
+        const currentBinding =
+          control?.account_id === this.context.accountId &&
+          control?.device_sn === this.context.device;
+        if (
+          (currentBinding && control.control_enabled) ||
+          (lease && lease.state !== "clear")
+        )
           await connection.query(
             `INSERT INTO device_control_state (tenant_id,account_id,device,state) VALUES ($1,$2,$3,'cleanup-required')
             ON CONFLICT (tenant_id,account_id,device) DO UPDATE SET state='cleanup-required',updated_at=now()`,

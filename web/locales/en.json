@@ -621,5 +621,18 @@
   "This inverter write is not supported by the control journal": "This inverter write is not supported by the control journal",
   "The inverter write journal does not match this operation": "The inverter write journal does not match this operation",
   "Waiting for device confirmation": "Waiting for device confirmation",
-  "Waiting for device acknowledgment and readback before confirming the change.": "Waiting for device acknowledgment and readback before confirming the change."
+  "Waiting for device acknowledgment and readback before confirming the change.": "Waiting for device acknowledgment and readback before confirming the change.",
+  "Control strategy": "Control strategy",
+  "Native policy supervision": "Native policy supervision",
+  "Guarded scheduled top-up": "Guarded scheduled top-up",
+  "Monitoring existing inverter policy": "Monitoring existing inverter policy",
+  "Last native policy check": "Last native policy check",
+  "Waiting for the next guarded grid top-up assessment": "Waiting for the next guarded grid top-up assessment",
+  "The grid is supplying the home above the reserve with little or no battery support. Check inverter settings and BMS limits.": "The grid is supplying the home above the reserve with little or no battery support. Check inverter settings and BMS limits.",
+  "Solar surplus is available, but the battery is not charging. Check inverter settings and BMS limits.": "Solar surplus is available, but the battery is not charging. Check inverter settings and BMS limits.",
+  "The battery is already charging near the 2 kW target; no new scheduled top-up is requested": "The battery is already charging near the 2 kW target; no new scheduled top-up is requested",
+  "Full native checks every {{count}} minutes during supervision, and before enabling scheduled charging. Existing native charging is preserved when it already meets the target.": "Full native checks every {{count}} minutes during supervision, and before enabling scheduled charging. Existing native charging is preserved when it already meets the target.",
+  "Refresh readings to confirm the current inverter clock": "Refresh readings to confirm the current inverter clock",
+  "Observed {{time}}": "Observed {{time}}",
+  "Control request cancelled; workspace state changed": "Control request cancelled; workspace state changed"
 }

@@ -2856,3 +2856,8 @@ html[lang="bg"] .segmented button {
 .write-history dd {
   margin: 0;
 }
+.observation-time {
+  display: block;
+  margin-top: 6px;
+  opacity: 0.8;
+}

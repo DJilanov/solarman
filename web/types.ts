@@ -65,6 +65,13 @@ export interface ControllerStatus {
   setupError: string | null;
   pollSeconds: number;
   annualProjectedCalls: number;
+  supervision: {
+    mode: "monitoring" | "native" | "scheduled";
+    auditSeconds: number;
+    lastNativeAt: string | null;
+    nextAuditAt: string | null;
+    issue: { code: string; message: string; observedAt: string } | null;
+  };
   policy: {
     reserveSoc: number;
     solarTargetSoc: number;
