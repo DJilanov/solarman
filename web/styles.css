@@ -2714,6 +2714,10 @@ html[lang="bg"] .segmented button {
 .readiness-panel {
   margin-bottom: 24px;
 }
+.controls-stop {
+  white-space: normal;
+  text-align: center;
+}
 .readiness-status {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2770,6 +2774,9 @@ html[lang="bg"] .segmented button {
   padding: 12px 0;
   color: var(--battery);
 }
+.readiness-details.attention summary {
+  color: var(--solar);
+}
 .readiness-details summary span {
   color: var(--muted);
   font-size: 12px;
@@ -2782,14 +2789,90 @@ html[lang="bg"] .segmented button {
   gap: 12px;
 }
 .readiness-reasons {
-  color: #a9b9c3;
-  line-height: 1.7;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  color: var(--muted);
+  line-height: 1.6;
   font-size: 13px;
-  padding-left: 20px;
+  padding: 0;
+  margin: 20px 0;
+  list-style: none;
+}
+.readiness-reasons li {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.readiness-reasons strong {
+  display: block;
+  color: #edf2f4;
+  font-weight: 500;
+}
+.readiness-reasons p {
+  margin: 8px 0 0;
+}
+.readiness-reasons .text-link {
+  margin-top: 10px;
+}
+.blocker-owner {
+  display: block;
+  color: var(--solar);
+  font-size: 11px;
+  margin-top: 5px;
+}
+.verification-evidence {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.verification-evidence-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.verification-evidence-card .evidence-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+.verification-evidence-card > strong {
+  color: var(--solar);
+  font-size: 15px;
+}
+.verification-evidence-card.verified > strong {
+  color: var(--battery);
+}
+.verification-evidence-card p,
+.verification-evidence-card small,
+.verification-evidence-card time {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0;
+}
+.verification-evidence-card .evidence-explanation {
+  color: #edf2f4;
+}
+.toast .text-link {
+  display: block;
+  margin-top: 8px;
 }
 @media (max-width: 700px) {
   .readiness-status {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .verification-evidence,
+  .readiness-reasons {
+    grid-template-columns: minmax(0, 1fr);
   }
   .readiness-checks {
     grid-template-columns: minmax(0, 1fr);

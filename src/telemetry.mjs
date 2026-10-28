@@ -1,5 +1,6 @@
 export const BLUESUN_MAPPING = "bluesun-bse20kh3/2.02";
 export const TELEMETRY_MAX_AGE_MS = 600_000;
+export const INVERTER_CLOCK_MAX_SKEW_SECONDS = 120;
 
 /** @typedef {{key: string, value: string, name: string, unit: string}} ProviderPoint */
 /** @typedef {{collectedAt: Date, deviceState: number, points: ProviderPoint[]}} ProviderReading */
@@ -104,7 +105,11 @@ export function checkInverterClock(reading, timezone) {
     Number(parts.second),
   );
   const skewSeconds = Math.abs(reported - local) / 1000;
-  return { passed: skewSeconds <= 120, skewSeconds, reportedTime: time };
+  return {
+    passed: skewSeconds <= INVERTER_CLOCK_MAX_SKEW_SECONDS,
+    skewSeconds,
+    reportedTime: time,
+  };
 }
 
 /** @param {unknown} value @returns {string | null} */

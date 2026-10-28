@@ -1,5 +1,5 @@
 import { tr, locale } from "./i18n";
-import { formatNumber, verificationValue } from "./format";
+import { formatNumber } from "./format";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
@@ -60,6 +60,7 @@ import type {
   ControllerStatus,
 } from "./types";
 import { WriteHistory } from "./write-history";
+import { ControlReadinessPanel } from "./control-readiness";
 import { IncidentSummary } from "./incident-summary";
 import { BackupNotice } from "./backup-health";
 import { CapacityNotice, CapacityDetails } from "./api-capacity";
@@ -617,196 +618,27 @@ export function Controls(): ReactNode {
         description={tr(
           "Clear actions with device acknowledgments and readback verification.",
         )}
+        action={
+          <button
+            className="button secondary controls-stop"
+            aria-label={tr("Stop scheduled top-ups now")}
+            disabled={submitting || !controller.control.canStop}
+            onClick={() => {
+              void command("stop");
+            }}
+          >
+            <Pause size={16} /> {tr("Stop scheduled top-ups")}
+          </button>
+        }
       />
       <SetupNotice controller={controller} />
       <CapacityNotice capacity={controller.capacity} />
-      <Panel
-        className="readiness-panel"
-        title={tr("Control readiness")}
-        subtitle={tr("Verify the device without changing inverter settings")}
-        action={<ShieldCheck size={22} />}
-      >
-        {controller.supervision.issue && (
-          <Notice tone="danger">
-            <span>{tr(controller.supervision.issue.message)}</span>
-            <small className="observation-time">
-              {tr("Observed {{time}}", {
-                time: when(
-                  controller.supervision.issue.observedAt,
-                  controller.timezone,
-                ),
-              })}
-            </small>
-          </Notice>
-        )}
-        {controller.control.recovery.inFlight && (
-          <Notice>
-            {tr(
-              "Waiting for device acknowledgment and readback before confirming the change.",
-            )}
-          </Notice>
-        )}
-        {controller.control.recovery.pending &&
-          !controller.control.recovery.inFlight && (
-            <Notice tone="danger">
-              {tr(
-                "An earlier inverter change needs recovery. Confirm scheduled charging is off before starting again. Updated credentials can recover the same inverter after connection discovery.",
-              )}
-            </Notice>
-          )}
-        <div className="readiness-status">
-          <span>
-            {tr("Supported profile")}{" "}
-            <strong>
-              {controller.profile === "bluesun-bse20kh3"
-                ? "Bluesun BSE20KH3"
-                : tr("Monitoring only")}
-            </strong>
-          </span>
-          <span>
-            {tr("Administrator permission")}{" "}
-            <strong>
-              {tr(controller.control.serverAllowed ? "Enabled" : "Disabled")}
-            </strong>
-          </span>
-          <span>
-            {tr("Workspace control")}{" "}
-            <strong>
-              {tr(controller.control.workspaceEnabled ? "Enabled" : "Disabled")}
-            </strong>
-          </span>
-          <span>
-            {tr("Device verification")}{" "}
-            <strong>
-              {controller.control.verification
-                ? age(controller.control.verification.checkedAt)
-                : tr("Not checked yet")}
-            </strong>
-          </span>
-        </div>
-        {controller.control.firmware && (
-          <p className="fine-print">
-            {tr(
-              "Observed firmware: protocol {{protocol}}, DSP {{dsp}}, HMI {{hmi}}",
-              {
-                protocol:
-                  controller.control.firmware.protocol ?? tr("Unavailable"),
-                dsp: controller.control.firmware.dsp ?? tr("Unavailable"),
-                hmi: controller.control.firmware.hmi ?? tr("Unavailable"),
-              },
-            )}{" "}
-            {tr("Observed {{time}}", {
-              time: when(
-                controller.control.firmware.collectedAt,
-                controller.timezone,
-              ),
-            })}
-          </p>
-        )}
-        {controller.control.verification && (
-          <details
-            className="readiness-details"
-            open={controller.control.verification.passed ? undefined : true}
-          >
-            <summary>
-              <strong>
-                {tr("{{passed}} of {{total}} checks verified", {
-                  passed: controller.control.verification.checks.filter(
-                    (check) => check.passed,
-                  ).length,
-                  total: controller.control.verification.checks.length,
-                })}
-              </strong>
-              <span>{tr("View verification details")}</span>
-            </summary>
-            <div className="readiness-checks" role="list">
-              {controller.control.verification.checks.map((check) => (
-                <div
-                  className={
-                    check.passed
-                      ? "readiness-check passed"
-                      : "readiness-check attention"
-                  }
-                  role="listitem"
-                  key={check.label}
-                >
-                  {check.passed ? (
-                    <Check size={17} aria-hidden="true" />
-                  ) : (
-                    <ShieldCheck size={17} aria-hidden="true" />
-                  )}
-                  <span>{tr(check.label)}</span>
-                  <strong>{verificationValue(check, check.actual)}</strong>
-                  <small>
-                    {tr(
-                      check.comparison === "at_most"
-                        ? "Maximum {{value}}"
-                        : "Expected {{value}}",
-                      {
-                        value: verificationValue(check, check.expected),
-                      },
-                    )}
-                  </small>
-                  <span className="sr-only">
-                    {tr(check.passed ? "Verified" : "Needs attention")}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
-        <div className="readiness-actions">
-          <button
-            className="button secondary"
-            disabled={
-              busy ||
-              !controller.control.canVerify ||
-              !controller.paused ||
-              controller.manualTopup
-            }
-            onClick={() => {
-              void command("verify");
-            }}
-          >
-            <ShieldCheck size={17} /> {tr("Verify device settings")}
-          </button>
-          {!controller.control.workspaceEnabled && (
-            <button
-              className="button primary"
-              disabled={busy || !controller.control.canEnable}
-              onClick={() => {
-                void command("enable_controls");
-              }}
-            >
-              <LockKeyhole size={17} /> {tr("Enable workspace control")}
-            </button>
-          )}
-          {controller.control.workspaceEnabled && (
-            <button
-              className="button secondary"
-              disabled={submitting || !controller.control.canStop}
-              onClick={() => {
-                void command("disable_controls");
-              }}
-            >
-              <LockKeyhole size={17} />
-              {tr("Disable workspace control")}
-            </button>
-          )}
-        </div>
-        {controller.control.reasons.length > 0 && (
-          <ul className="readiness-reasons">
-            {controller.control.reasons.map((reason) => (
-              <li key={reason.code}>{tr(reason.message)}</li>
-            ))}
-          </ul>
-        )}
-        <p className="fine-print">
-          {tr(
-            "Verification checks the inverter rating, charge settings and clock. Physical charging behavior and the separate solar power limit require additional verification.",
-          )}
-        </p>
-      </Panel>
+      <ControlReadinessPanel
+        controller={controller}
+        busy={busy}
+        submitting={submitting}
+        command={command}
+      />
       <div className="controls-grid">
         <Panel
           title={tr("Grid top-up")}

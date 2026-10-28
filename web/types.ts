@@ -193,6 +193,19 @@ export interface ControllerStatus {
     canEnable: boolean;
     canStart: boolean;
     canStop: boolean;
+    verificationStatus: {
+      state: "missing" | "failed" | "outdated" | "expired" | "verified";
+      checkedAt: string | null;
+      expiresAt: string | null;
+    };
+    clock: {
+      passed: boolean;
+      skewSeconds: number | null;
+      reportedTime: string | null;
+      collectedAt: string;
+      fresh: boolean;
+      maximumSkewSeconds: number;
+    } | null;
     reasons: { code: string; message: string }[];
     recovery: {
       state: "none" | "clear" | "owned" | "uncertain" | "cleanup-required";

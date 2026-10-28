@@ -9,6 +9,7 @@ import {
   controlReadiness,
   supportedControlFirmware,
   matchingControlFirmware,
+  verificationStatus,
 } from "./control-readiness.mjs";
 import { apiAppKey, ApiBudgetError, YEAR_MS } from "./api-budget.mjs";
 import { ApiCapacityError } from "./api-capacity.mjs";
@@ -18,6 +19,7 @@ import { DeviceHealth } from "./operations.mjs";
 import {
   BLUESUN_MAPPING,
   TELEMETRY_MAX_AGE_MS,
+  INVERTER_CLOCK_MAX_SKEW_SECONDS,
   parseProviderReading,
   normalizeBluesun,
   providerFirmware,
@@ -282,19 +284,36 @@ export class TenantRuntime {
     return admission.admitted;
   }
 
-  /** @returns {ReturnType<typeof controlReadiness>} */
-  readiness() {
-    const age =
-      Date.now() - new Date(this.verification?.checkedAt ?? "").getTime();
+  /** @param {number} [now] @returns {import('./control-readiness.mjs').VerificationStatus} */
+  verificationStatus(now = Date.now()) {
+    return verificationStatus(this.verification, {
+      current: this.verifiedDevice(),
+      activated: this.controlEnabled,
+      now,
+    });
+  }
+
+  /** @param {number} [now] @returns {{passed:boolean,skewSeconds:number|null,reportedTime:string|null,collectedAt:string,fresh:boolean,maximumSkewSeconds:number}|null} */
+  clockEvidence(now = Date.now()) {
+    if (!this.clock) return null;
+    const age = now - new Date(this.clock.collectedAt).getTime();
+    return {
+      ...this.clock,
+      fresh: age >= -30_000 && age <= TELEMETRY_MAX_AGE_MS,
+      maximumSkewSeconds: INVERTER_CLOCK_MAX_SKEW_SECONDS,
+    };
+  }
+
+  /** @param {number} [now] @returns {ReturnType<typeof controlReadiness>} */
+  readiness(now = Date.now()) {
+    const clock = this.clockEvidence(now);
     return controlReadiness({
       tenantActive: this.lifecycle === "active",
       connected: Boolean(this.client && this.ready),
       supported: this.account?.profile === "bluesun-bse20kh3",
       serverAllowed: this.hostWritesAllowed,
       workspaceEnabled: this.controlEnabled,
-      verified:
-        this.verifiedDevice() &&
-        (this.controlEnabled || (age >= 0 && age <= 1800_000)),
+      verified: this.verificationStatus(now).state === "verified",
       firmwareVerified: matchingControlFirmware(
         this.verification?.firmware,
         this.firmware,
@@ -302,18 +321,15 @@ export class TenantRuntime {
       capacityAvailable: Boolean(this.capacity()?.controlAvailable),
       settingsMatch: this.profileVerified,
       cleanupVerified: !this.cleanupRequired && !this.journal.pending,
-      clockVerified: Boolean(this.clock?.passed),
-      clockFresh: Boolean(
-        this.clock &&
-          Date.now() - new Date(this.clock.collectedAt).getTime() <=
-            TELEMETRY_MAX_AGE_MS,
-      ),
+      clockVerified: Boolean(clock?.passed),
+      clockFresh: Boolean(clock?.fresh),
       stopping: this.stopping || this.hub.stopping,
     });
   }
 
   status() {
-    const readiness = this.readiness();
+    const now = Date.now();
+    const readiness = this.readiness(now);
     return {
       lifecycle: this.lifecycle,
       apiConfigured: Boolean(this.client),
@@ -327,6 +343,8 @@ export class TenantRuntime {
         serverAllowed: this.hostWritesAllowed,
         workspaceEnabled: this.controlEnabled,
         verification: this.verification,
+        verificationStatus: this.verificationStatus(now),
+        clock: this.clockEvidence(now),
         firmware: this.firmware,
         recovery: this.journal.status(this.executionId),
         ...readiness,

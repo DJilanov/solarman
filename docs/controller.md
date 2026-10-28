@@ -59,6 +59,8 @@ Controls displays the five latest write records with intent, acknowledgment, rea
 
 ## Commissioning
 
+Controls separates the saved device verification from the current clock evidence. A failed saved clock check can coexist with a newer passing observation; only an explicit successful full verification renews the report for activation. The UI shows the report state and activation deadline, actual clock comparison timestamps and tolerance, firmware identity, responsible actor and next action for every blocker. The clock timestamp remains the device upload time on repeated cached responses. Future clock evidence beyond the provider's 30-second allowance, invalid timestamps and expired evidence cannot satisfy the current-clock gate. Activated workspaces continue through native supervision without requiring reactivation every 30 minutes. Command notification failures preserve an unconfirmed outcome and link to the known command, or to Activity history when acceptance itself was not confirmed.
+
 1. Obtain App ID / App Secret and custom-command permission, with a licence appropriate for hosted users.
 2. Verify the public HTTPS callback reaches the correct linked account. Callbacks correlate the random command URL, device, original request, timestamps, optional order ID and Modbus CRC/function/count.
 3. Test account discovery and bind the actual inverter to the correct workspace and timezone.

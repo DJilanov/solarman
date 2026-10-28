@@ -31,6 +31,14 @@ async function signIn(page: Page): Promise<void> {
   ).toBeVisible();
 }
 
+function inverterClockTime(at: string, differenceSeconds: number): string {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Europe/Sofia",
+    dateStyle: "short",
+    timeStyle: "medium",
+  }).format(Date.parse(at) + differenceSeconds * 1000);
+}
+
 test("account security renews the current browser and revokes other browsers with real cookies in Bulgarian", async ({
   page,
   browser,
@@ -704,6 +712,12 @@ test("read-only device verification explains locks and keeps Stop available afte
       canStart: false,
       canStop: true,
       verification: null,
+      verificationStatus: {
+        state: "missing",
+        checkedAt: null,
+        expiresAt: null,
+      },
+      clock: null,
       reasons: [
         {
           code: "server",
@@ -720,6 +734,11 @@ test("read-only device verification explains locks and keeps Stop available afte
   await page.route("**/api/commands", (route) => {
     lastAction = (route.request().postDataJSON() as { action: string }).action;
     if (lastAction === "verify") {
+      overview.controller.control.verificationStatus = {
+        state: "verified",
+        checkedAt: now,
+        expiresAt: new Date(Date.now() + 1800_000).toISOString(),
+      };
       overview.controller.control.verification = {
         checkedAt: now,
         passed: true,
@@ -816,6 +835,7 @@ test("read-only device verification explains locks and keeps Stop available afte
       },
     }),
   );
+  await page.reload();
   await page.getByRole("link", { name: "Controls", exact: true }).click();
   await expect(
     page.getByText("The administrator has disabled changes to the inverter", {
@@ -895,6 +915,339 @@ test("read-only device verification explains locks and keeps Stop available afte
     path: "test-results/control-readiness-bulgarian-mobile.png",
     fullPage: true,
   });
+});
+
+test("readiness distinguishes failed device checks from a newer passing clock and retains unconfirmed command outcomes", async ({
+  page,
+}) => {
+  await signIn(page);
+  const overview = (await (
+    await page.request.get("/api/overview")
+  ).json()) as OverviewData;
+  const now = new Date().toISOString();
+  const old = new Date(Date.now() - 3600_000).toISOString();
+  Object.assign(overview.controller, {
+    apiConfigured: true,
+    deviceSelected: true,
+    profile: "bluesun-bse20kh3",
+    paused: true,
+    manualTopup: false,
+    mode: "error",
+    setupError: null,
+    error: "Device settings need attention",
+  });
+  Object.assign(overview.controller.control, {
+    serverAllowed: false,
+    workspaceEnabled: false,
+    canVerify: true,
+    canEnable: false,
+    canStart: false,
+    canStop: true,
+    verificationStatus: { state: "failed", checkedAt: old, expiresAt: null },
+    verification: {
+      checkedAt: old,
+      passed: false,
+      checks: [
+        {
+          label: "Inverter rating",
+          actual: 20000,
+          expected: 20000,
+          unit: "W",
+          passed: true,
+        },
+        {
+          label: "Inverter clock difference",
+          actual: 252,
+          expected: 120,
+          unit: "s",
+          comparison: "at_most",
+          passed: false,
+        },
+      ],
+    },
+    clock: {
+      passed: true,
+      skewSeconds: 59,
+      reportedTime: inverterClockTime(now, 59),
+      collectedAt: now,
+      fresh: true,
+      maximumSkewSeconds: 120,
+    },
+    reasons: [
+      {
+        code: "server",
+        message: "The administrator has disabled changes to the inverter",
+      },
+      {
+        code: "verification",
+        message: "Verify the inverter settings before enabling control",
+      },
+      {
+        code: "settings",
+        message: "Refresh readings to confirm the current control settings",
+      },
+      {
+        code: "workspace",
+        message: "Control has not been enabled for this workspace",
+      },
+    ],
+  });
+  const actions: string[] = [];
+  const id = randomUUID();
+  await page.route("**/api/overview", (route) =>
+    route.fulfill({ json: overview }),
+  );
+  await page.route("**/api/commands", (route) => {
+    const action = (route.request().postDataJSON() as { action: string })
+      .action;
+    actions.push(action);
+    return action === "verify"
+      ? route.abort("failed")
+      : route.fulfill({ status: 202, json: { id, status: "queued", action } });
+  });
+  await page.route(`**/api/commands/${id}`, (route) =>
+    route.fulfill({
+      status: 503,
+      json: { error: "fixture status temporarily unavailable" },
+    }),
+  );
+  await page.reload();
+  await page.getByRole("link", { name: "Controls", exact: true }).click();
+  const saved = page.getByRole("region", {
+    name: "Saved device verification",
+    exact: true,
+  });
+  const clock = page.getByRole("region", {
+    name: "Latest inverter clock check",
+    exact: true,
+  });
+  await expect(saved).toContainText("Device checks failed");
+  await expect(clock).toContainText("Within clock tolerance");
+  await expect(clock).toContainText("Clock difference: 59 s (maximum 120 s)");
+  await expect(clock).toContainText(
+    "does not replace a failed or expired device verification",
+  );
+  await expect(page.locator(".readiness-check.attention")).toContainText(
+    "252 seconds",
+  );
+  await expect(
+    page.getByRole("list", { name: "Requirements before starting" }),
+  ).toContainText("Handled by Server operator");
+  await expect(
+    page.getByRole("button", { name: "Enable workspace control", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Stop scheduled top-ups", exact: true }),
+  ).toBeEnabled();
+  await page
+    .locator(".readiness-panel")
+    .screenshot({ path: "test-results/readiness-evidence-desktop-en.png" });
+  await page
+    .getByRole("button", { name: "Refresh diagnostics", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", {
+      name: "Stop scheduled top-ups now",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  await expect(page.locator(".toast")).toContainText(
+    "The request was accepted, but its final result is unconfirmed.",
+  );
+  await expect(
+    page.getByRole("link", { name: "Review command result", exact: true }),
+  ).toHaveAttribute("href", `/activity/${id}`);
+  await page
+    .getByRole("button", { name: "Verify device settings", exact: true })
+    .click();
+  await expect(page.locator(".toast")).toContainText(
+    "The request outcome is unconfirmed.",
+  );
+  await expect(
+    page.getByRole("link", { name: "Review command result", exact: true }),
+  ).toHaveAttribute("href", "/activity");
+  expect(actions).toEqual(["refresh", "verify"]);
+  await expect(saved).toContainText("Device checks failed");
+  await page.locator(".language-switch select").selectOption("bg");
+  await page.setViewportSize({ width: 320, height: 740 });
+  await expect(
+    page.getByRole("region", {
+      name: "Запазена проверка на инвертора",
+      exact: true,
+    }),
+  ).toContainText("Има неуспешни проверки");
+  await expect(
+    page.getByRole("region", {
+      name: "Последна проверка на часа",
+      exact: true,
+    }),
+  ).toContainText("Разлика в часа: 59 сек.");
+  await expect(page.locator(".toast")).toContainText(
+    "Резултатът от заявката не е потвърден",
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.locator(".toast").getByRole("button").click();
+  await page.setViewportSize({ width: 320, height: 1100 });
+  await page
+    .locator(".verification-evidence")
+    .screenshot({ path: "test-results/readiness-evidence-mobile-bg.png" });
+});
+
+test("expired verification and cached clock evidence need an explicit fresh check without automatically activating control", async ({
+  page,
+}) => {
+  await signIn(page);
+  const overview = (await (
+    await page.request.get("/api/overview")
+  ).json()) as OverviewData;
+  const old = new Date(Date.now() - 3600_000).toISOString();
+  Object.assign(overview.controller, {
+    apiConfigured: true,
+    deviceSelected: true,
+    profile: "bluesun-bse20kh3",
+    paused: true,
+    manualTopup: false,
+    mode: "paused",
+    setupError: null,
+    error: null,
+  });
+  Object.assign(overview.controller.control, {
+    serverAllowed: false,
+    workspaceEnabled: false,
+    canVerify: true,
+    canEnable: false,
+    canStart: false,
+    canStop: true,
+    verificationStatus: {
+      state: "expired",
+      checkedAt: old,
+      expiresAt: new Date(Date.now() - 1800_000).toISOString(),
+    },
+    verification: {
+      checkedAt: old,
+      passed: true,
+      checks: [
+        {
+          label: "Inverter clock difference",
+          actual: 55,
+          expected: 120,
+          unit: "s",
+          comparison: "at_most",
+          passed: true,
+        },
+      ],
+    },
+    clock: {
+      passed: true,
+      skewSeconds: 55,
+      reportedTime: inverterClockTime(old, 55),
+      collectedAt: old,
+      fresh: false,
+      maximumSkewSeconds: 120,
+    },
+    reasons: [
+      {
+        code: "server",
+        message: "The administrator has disabled changes to the inverter",
+      },
+      {
+        code: "verification",
+        message: "Verify the inverter settings before enabling control",
+      },
+      {
+        code: "clock_refresh",
+        message: "Refresh readings to confirm the current inverter clock",
+      },
+      {
+        code: "workspace",
+        message: "Control has not been enabled for this workspace",
+      },
+    ],
+  });
+  const actions: string[] = [];
+  const id = randomUUID();
+  await page.route("**/api/overview", (route) =>
+    route.fulfill({ json: overview }),
+  );
+  await page.route("**/api/commands", (route) => {
+    const action = (route.request().postDataJSON() as { action: string })
+      .action;
+    actions.push(action);
+    if (action === "verify") {
+      const now = new Date().toISOString();
+      overview.controller.control.verificationStatus = {
+        state: "verified",
+        checkedAt: now,
+        expiresAt: new Date(Date.now() + 1800_000).toISOString(),
+      };
+      const report = overview.controller.control.verification!;
+      report.checkedAt = now;
+      overview.controller.control.clock!.collectedAt = now;
+      overview.controller.control.clock!.reportedTime = inverterClockTime(
+        now,
+        55,
+      );
+      overview.controller.control.clock!.fresh = true;
+      overview.controller.control.reasons =
+        overview.controller.control.reasons.filter((reason) =>
+          ["server", "workspace"].includes(reason.code),
+        );
+    }
+    return route.fulfill({
+      status: 202,
+      json: { id, status: "queued", action },
+    });
+  });
+  await page.route(`**/api/commands/${id}`, (route) =>
+    route.fulfill({
+      json: {
+        id,
+        status: "succeeded",
+        action: actions.at(-1),
+        message: "Device settings verified",
+      },
+    }),
+  );
+  await page.reload();
+  await page.getByRole("link", { name: "Controls", exact: true }).click();
+  const saved = page.getByRole("region", {
+    name: "Saved device verification",
+    exact: true,
+  });
+  const clock = page.getByRole("region", {
+    name: "Latest inverter clock check",
+    exact: true,
+  });
+  await expect(saved).toContainText("Verification expired");
+  await expect(saved).toContainText("30-minute activation window");
+  await expect(clock).toContainText("Clock evidence expired");
+  await page
+    .getByRole("button", { name: "Refresh diagnostics", exact: true })
+    .click();
+  await expect(page.locator(".toast")).toHaveClass(/success/);
+  await expect(saved).toContainText("Verification expired");
+  await expect(clock).toContainText("Clock evidence expired");
+  await page
+    .getByRole("button", { name: "Verify device settings", exact: true })
+    .click();
+  await expect(saved).toContainText("Device checks passed");
+  await expect(clock).toContainText("Within clock tolerance");
+  await expect(
+    page.getByRole("button", { name: "Enable workspace control", exact: true }),
+  ).toBeDisabled();
+  expect(actions).toEqual(["refresh", "verify"]);
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(saved).toHaveCount(0);
+  await expect(
+    page.getByRole("region", {
+      name: "Запазена проверка на инвертора",
+      exact: true,
+    }),
+  ).toContainText("Валидна за активиране до:");
 });
 
 test("shared API budgets explain remaining capacity and recovery limits in both languages", async ({

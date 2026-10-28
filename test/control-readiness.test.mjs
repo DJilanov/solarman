@@ -7,6 +7,7 @@ import {
   supportedControlFirmware,
   matchingControlFirmware,
   CONTROL_FIRMWARE,
+  verificationStatus,
 } from "../src/control-readiness.mjs";
 import { WorkQueue } from "../src/work-queue.mjs";
 
@@ -24,6 +25,66 @@ const ready = {
   cleanupVerified: true,
   stopping: false,
 };
+
+test("verification status distinguishes failure, binding, expiry and continuing activation", () => {
+  const now = Date.parse("2026-10-28T18:00:00.000Z");
+  const options = { current: true, activated: false, now };
+  const report = {
+    passed: true,
+    checkedAt: new Date(now - 60_000).toISOString(),
+  };
+  assert.deepEqual(verificationStatus(null, options), {
+    state: "missing",
+    checkedAt: null,
+    expiresAt: null,
+  });
+  assert.deepEqual(verificationStatus(report, options), {
+    state: "verified",
+    checkedAt: report.checkedAt,
+    expiresAt: "2026-10-28T18:29:00.000Z",
+  });
+  assert.equal(
+    verificationStatus({ ...report, passed: false }, options).state,
+    "failed",
+  );
+  assert.equal(
+    verificationStatus(report, { ...options, current: false }).state,
+    "outdated",
+  );
+  const atBoundary = {
+    ...report,
+    checkedAt: new Date(now - 1800_000).toISOString(),
+  };
+  assert.equal(verificationStatus(atBoundary, options).state, "verified");
+  const old = { ...report, checkedAt: new Date(now - 1800_001).toISOString() };
+  assert.equal(verificationStatus(old, options).state, "expired");
+  assert.deepEqual(verificationStatus(old, { ...options, activated: true }), {
+    state: "verified",
+    checkedAt: old.checkedAt,
+    expiresAt: null,
+  });
+  assert.equal(
+    verificationStatus(
+      { ...old, passed: false },
+      { ...options, activated: true },
+    ).state,
+    "failed",
+  );
+});
+
+test("malformed and future verification timestamps never authorize activation", () => {
+  const now = Date.parse("2026-10-28T18:00:00.000Z");
+  for (const activated of [false, true]) {
+    for (const checkedAt of ["invalid", "", new Date(now + 1).toISOString()]) {
+      const status = verificationStatus(
+        { passed: true, checkedAt },
+        { current: true, activated, now },
+      );
+      assert.equal(status.state, "outdated");
+      assert.equal(status.expiresAt, null);
+    }
+  }
+});
 
 test("each control requirement independently blocks starts without blocking a stop", () => {
   assert.equal(controlReadiness(ready).canStart, true);

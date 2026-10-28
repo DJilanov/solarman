@@ -48,6 +48,30 @@ export function matchingControlFirmware(saved, observed) {
   );
 }
 
+/** @typedef {{state:'missing'|'failed'|'outdated'|'expired'|'verified',checkedAt:string|null,expiresAt:string|null}} VerificationStatus */
+
+/** @param {{passed:boolean,checkedAt:string}|null} report @param {{current:boolean,activated:boolean,now?:number}} options @returns {VerificationStatus} */
+export function verificationStatus(
+  report,
+  { current, activated, now = Date.now() },
+) {
+  if (!report) return { state: "missing", checkedAt: null, expiresAt: null };
+  const at =
+    typeof report.checkedAt === "string" ? Date.parse(report.checkedAt) : NaN;
+  const checkedAt = Number.isFinite(at) ? new Date(at).toISOString() : null;
+  if (!report.passed) return { state: "failed", checkedAt, expiresAt: null };
+  if (!current || !checkedAt || at > now)
+    return { state: "outdated", checkedAt, expiresAt: null };
+  // An activated workspace uses continuing native audits instead of reactivation every 30 minutes.
+  if (activated) return { state: "verified", checkedAt, expiresAt: null };
+  const expiresAt = new Date(at + 1800_000).toISOString();
+  return {
+    state: now - at <= 1800_000 ? "verified" : "expired",
+    checkedAt,
+    expiresAt,
+  };
+}
+
 /** @param {{ tenantActive?: boolean, connected: boolean, supported: boolean, serverAllowed: boolean, workspaceEnabled: boolean, verified: boolean, firmwareVerified: boolean, capacityAvailable: boolean, settingsMatch: boolean, clockVerified: boolean, clockFresh: boolean, cleanupVerified: boolean, stopping: boolean }} facts @returns {{ reasons: {code: string, message: string}[], canVerify: boolean, canEnable: boolean, canStart: boolean, canStop: boolean }} */
 export function controlReadiness(facts) {
   const codes = [];

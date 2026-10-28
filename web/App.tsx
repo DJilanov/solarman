@@ -37,7 +37,7 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { ApiError, request, useData } from "./api";
+import { ApiError, isUnconfirmedResponse, request, useData } from "./api";
 import { Context } from "./context";
 import { usePrivateAccess } from "./private-access";
 import { WorkspaceLifecycleNotice } from "./tenant-lifecycle";
@@ -406,6 +406,7 @@ function Dashboard({
   const [toast, setToast] = useState<{
     message: string;
     tone: "info" | "danger" | "success";
+    commandPath?: string;
   } | null>(null);
   const generation = useRef(0);
   const location = useLocation();
@@ -425,6 +426,7 @@ function Dashboard({
     setBusy(true);
     setSubmitting(true);
     setToast({ message: "Sending your request…", tone: "info" });
+    let commandId: string | null = null;
     try {
       let job = await request<Command>("/commands", {
         method: "POST",
@@ -436,6 +438,7 @@ function Dashboard({
         body: JSON.stringify({ action }),
       });
       if (current !== generation.current) return;
+      commandId = job.id;
       setSubmitting(false);
       setToast({
         message:
@@ -465,16 +468,27 @@ function Dashboard({
             : ["failed", "interrupted"].includes(job.status)
               ? "danger"
               : "info",
+        commandPath: `/activity/${job.id}`,
       });
     } catch (cause) {
-      if (current === generation.current)
+      if (current === generation.current) {
+        const unconfirmed = commandId !== null || isUnconfirmedResponse(cause);
         setToast({
-          message:
-            cause instanceof Error
+          message: unconfirmed
+            ? commandId
+              ? "The request was accepted, but its final result is unconfirmed. Review Activity and current device readings before retrying."
+              : "The request outcome is unconfirmed. Review Activity and current device readings before retrying."
+            : cause instanceof Error
               ? cause.message
               : "Unable to complete this action",
-          tone: "danger",
+          tone: unconfirmed ? "info" : "danger",
+          ...(unconfirmed
+            ? {
+                commandPath: commandId ? `/activity/${commandId}` : "/activity",
+              }
+            : {}),
         });
+      }
     } finally {
       if (current === generation.current) {
         setBusy(false);
@@ -703,7 +717,14 @@ function Dashboard({
           ) : (
             <Activity size={18} />
           )}
-          <span>{tr(toast.message)}</span>
+          <span>
+            {tr(toast.message)}
+            {toast.commandPath && (
+              <Link className="text-link" to={toast.commandPath}>
+                {tr("Review command result")}
+              </Link>
+            )}
+          </span>
           <button
             aria-label={tr("Dismiss notification")}
             onClick={() => setToast(null)}

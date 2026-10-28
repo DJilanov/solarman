@@ -41,6 +41,7 @@ test("every literal translation used by the interface exists in both catalogues"
     "access-admin.tsx",
     "tenant-lifecycle.tsx",
     "workspace-data.tsx",
+    "control-readiness.tsx",
   ]) {
     const source = readFileSync(
       new URL(`../web/${file}`, import.meta.url),

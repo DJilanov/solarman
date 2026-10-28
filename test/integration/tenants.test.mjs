@@ -580,11 +580,101 @@ test("stale device verification cannot arm a workspace", async () => {
       Date.now() - 31 * 60_000,
     ).toISOString();
     assert.equal(runtime.status().control.canEnable, false);
+    assert.equal(runtime.status().control.verificationStatus.state, "expired");
     assert.equal(
       (await completeCommand(runtime, "enable_controls", user)).status,
       "failed",
     );
     assert.equal(runtime.controlEnabled, false);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a newer passing clock observation retains the failed saved report until explicit verification", async () => {
+  const { runtime, user, calls } = await controlFixture(true);
+  const normalApi = runtime.client.api;
+  try {
+    runtime.client.api = async () =>
+      providerPayload({
+        device: runtime.device,
+        collectedAt: Date.now() - 300_000,
+        values: { SYSTIM1: "2000-01-01 00:00:00" },
+      });
+    const report = await runtime.verifyDevice();
+    assert.equal(report.passed, false);
+    const failed = runtime.status().control;
+    assert.equal(failed.verificationStatus.state, "failed");
+    assert.equal(failed.clock.passed, false);
+    assert.equal(failed.clock.maximumSkewSeconds, 120);
+    runtime.client.api = normalApi;
+    await runtime.collectProvider();
+    const updated = runtime.status().control;
+    assert.equal(updated.clock.passed, true);
+    assert.equal(updated.clock.fresh, true);
+    assert.equal(updated.verificationStatus.state, "failed");
+    assert.equal(updated.verificationStatus.checkedAt, report.checkedAt);
+    assert.equal(updated.canEnable, false);
+    assert.equal(updated.canStart, false);
+    assert.equal(runtime.controlEnabled, false);
+    assert.equal(calls.includes("tick"), false);
+    const previous = hub.runtimes.get(runtime.tenantId);
+    hub.runtimes.set(runtime.tenantId, runtime);
+    try {
+      const response = await fetchApi("/overview", { auth: alpha });
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.equal(body.controller.control.verificationStatus.state, "failed");
+      assert.equal(
+        body.controller.control.verificationStatus.checkedAt,
+        report.checkedAt,
+      );
+      assert.equal(body.controller.control.clock.passed, true);
+      assert.equal(body.controller.control.canEnable, false);
+    } finally {
+      if (previous) hub.runtimes.set(runtime.tenantId, previous);
+      else hub.runtimes.delete(runtime.tenantId);
+    }
+    await completeCommand(runtime, "verify", user);
+    assert.equal(runtime.status().control.verificationStatus.state, "verified");
+    assert.equal(runtime.status().control.canEnable, true);
+    assert.equal(runtime.status().control.workspaceEnabled, false);
+    assert.equal(runtime.status().control.canStart, false);
+    assert.equal(runtime.paused, true);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("clock evidence retains its device timestamp and stale cached uploads block activation", async () => {
+  const { runtime, user } = await controlFixture(true);
+  try {
+    await completeCommand(runtime, "verify", user);
+    const collectedAt = Date.now() - 570_000;
+    const payload = providerPayload({ device: runtime.device, collectedAt });
+    runtime.client.api = async () => payload;
+    await runtime.collectProvider();
+    const before = runtime.status().control.clock;
+    assert.equal(before.fresh, true);
+    assert.equal(
+      before.collectedAt,
+      new Date(payload.collectionTime * 1000).toISOString(),
+    );
+    await runtime.collectProvider();
+    assert.equal(
+      runtime.status().control.clock.collectedAt,
+      before.collectedAt,
+    );
+    runtime.clock.collectedAt = new Date(Date.now() - 601_000).toISOString();
+    const stale = runtime.status().control;
+    assert.equal(stale.clock.fresh, false);
+    assert.equal(stale.verificationStatus.state, "verified");
+    assert.equal(stale.canEnable, false);
+    assert.ok(stale.reasons.some((reason) => reason.code === "clock_refresh"));
+    runtime.clock.collectedAt = "invalid";
+    assert.equal(runtime.status().control.clock.fresh, false);
+    runtime.clock.collectedAt = new Date(Date.now() + 31_000).toISOString();
+    assert.equal(runtime.status().control.clock.fresh, false);
   } finally {
     await runtime.close();
   }
