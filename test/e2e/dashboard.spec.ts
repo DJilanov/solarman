@@ -2,6 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 import pg from "pg";
+import type { OverviewData } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
   const email = process.env.E2E_EMAIL;
@@ -422,4 +423,181 @@ test("language switching works when browser storage is unavailable", async ({
   } finally {
     await context.close();
   }
+});
+
+test("read-only device verification explains locks and keeps Stop available after an error", async ({
+  page,
+}) => {
+  await signIn(page);
+  const response = await page.request.get("/api/overview");
+  const overview = (await response.json()) as OverviewData;
+  const now = new Date().toISOString();
+  Object.assign(overview.controller, {
+    apiConfigured: true,
+    deviceSelected: true,
+    profile: "bluesun-bse20kh3",
+    mode: "paused",
+    paused: true,
+    error: null,
+    setupError: null,
+    control: {
+      serverAllowed: false,
+      workspaceEnabled: false,
+      canVerify: true,
+      canEnable: false,
+      canStart: false,
+      canStop: true,
+      verification: null,
+      reasons: [
+        {
+          code: "server",
+          message: "The administrator has disabled changes to the inverter",
+        },
+      ],
+    },
+  });
+  await page.route("**/api/overview", (route) =>
+    route.fulfill({ json: overview }),
+  );
+  const jobId = "8be21d37-e2cf-4d74-b5b6-659b5e552c81";
+  let lastAction = "";
+  await page.route("**/api/commands", (route) => {
+    lastAction = (route.request().postDataJSON() as { action: string }).action;
+    if (lastAction === "verify") {
+      overview.controller.control.verification = {
+        checkedAt: now,
+        passed: true,
+        checks: [
+          {
+            label: "Inverter rating",
+            actual: 20000,
+            expected: 20000,
+            unit: "W",
+            passed: true,
+          },
+          {
+            label: "Operating mode",
+            actual: 0,
+            expected: 0,
+            unit: "",
+            passed: true,
+          },
+          {
+            label: "Run and backup flags",
+            actual: 9,
+            expected: 9,
+            unit: "",
+            passed: true,
+          },
+          {
+            label: "AC charging setting",
+            actual: 2000,
+            expected: 2000,
+            unit: "W",
+            passed: true,
+          },
+          {
+            label: "Grid charging SOC target",
+            actual: 50,
+            expected: 50,
+            unit: "%",
+            passed: true,
+          },
+          {
+            label: "Overall SOC maximum",
+            actual: 100,
+            expected: 100,
+            unit: "%",
+            passed: true,
+          },
+          {
+            label: "On-grid battery reserve",
+            actual: 50,
+            expected: 50,
+            unit: "%",
+            passed: true,
+          },
+        ],
+      };
+    }
+    return route.fulfill({
+      status: 202,
+      json: { id: jobId, status: "queued", action: lastAction },
+    });
+  });
+  await page.route(`**/api/commands/${jobId}`, (route) =>
+    route.fulfill({
+      json: {
+        id: jobId,
+        status: "succeeded",
+        action: lastAction,
+        message:
+          lastAction === "verify"
+            ? "Device settings verified"
+            : "Automation paused; hardware writes are unavailable in the current setup",
+      },
+    }),
+  );
+  await page.getByRole("link", { name: "Controls", exact: true }).click();
+  await expect(
+    page.getByText("The administrator has disabled changes to the inverter", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Enable workspace control", exact: true }),
+  ).toBeDisabled();
+  await page
+    .getByRole("button", { name: "Verify device settings", exact: true })
+    .click();
+  await expect(page.locator(".readiness-details summary")).toContainText(
+    "7 of 7 checks verified",
+  );
+  await page.locator(".readiness-details summary").click();
+  await expect(page.locator(".readiness-check")).toHaveCount(7);
+  await expect(page.locator(".readiness-check").first()).toContainText("20 kW");
+  expect(lastAction).toBe("verify");
+  overview.controller.error = "Device settings need attention";
+  overview.controller.control.canStart = false;
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Stop scheduled top-up", exact: true })
+    .click();
+  await expect.poll(() => lastAction).toBe("stop");
+  await expect(page.locator(".toast")).toContainText(
+    "Automation paused; hardware writes are unavailable",
+  );
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(
+    page.getByRole("heading", { name: "Готовност за управление", exact: true }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.locator(".readiness-details summary").click();
+  expect(
+    await page.locator(".readiness-check").evaluateAll((cards) =>
+      cards.every((card) => {
+        const label = card
+          .querySelector("span:not(.sr-only)")
+          ?.getBoundingClientRect();
+        const value = card.querySelector("strong")?.getBoundingClientRect();
+        return (
+          label &&
+          value &&
+          (label.right <= value.left + 1 ||
+            value.right <= label.left + 1 ||
+            label.bottom <= value.top + 1 ||
+            value.bottom <= label.top + 1)
+        );
+      }),
+    ),
+  ).toBe(true);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+  await page.screenshot({
+    path: "test-results/control-readiness-bulgarian-mobile.png",
+    fullPage: true,
+  });
 });

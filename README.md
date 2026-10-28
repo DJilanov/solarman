@@ -34,7 +34,11 @@ Translations live in `web/locales/en.json` and `web/locales/bg.json`, with i18ne
 
 The supported Bluesun policy retains the existing **100% overall solar SOC target**, **50% on-grid reserve**, and **2 kW AC charging setting with a 50% target**. Below 50%, grid top-up is eligible when solar surplus is insufficient. At or above 50%, timed AC permission is removed so native SelfUse can supply the home. The controller verifies configuration and changes only the AC flag and short charging windows.
 
-**Writes are disabled by default.** The requested **5 kW solar charging power cap remains unverified and is not written**. Real OpenAPI access, combined register reads, the rated-power register and the full physical charging sequence still require commissioning. Daily charge windows are not an expiring watchdog and can repeat after an outage until AC permission is cleared. See [controller details and recovery](docs/controller.md).
+**Writes are disabled by default.** The requested **5 kW solar charging power cap remains unverified and is not written**. Rated-power verification, the inverter clock and the full physical charging sequence require commissioning. Daily charge windows are not an expiring watchdog and can repeat after an outage until AC permission is cleared. See [controller details and recovery](docs/controller.md).
+
+Live OpenAPI discovery, correlated callbacks and native measurements have now been verified on the installation. **Controls → Verify device settings** performs a read-only check of the rated-power register and seven policy requirements, and stores the results for that workspace. Administrator permission, device verification and workspace activation appear separately. Enabling workspace control requires a successful verification within 30 minutes and host permission; it leaves automation paused. Linking credentials or selecting an inverter clears that workspace's activation and verification.
+
+Stop/Pause persists the pause immediately, prevents queued starts from enabling charging, and takes priority after an active operation. It clears scheduled AC permission only when hardware writes are permitted; the inverter's native reserve charging may continue. A one-time top-up waits through temporary solar surplus or grid loss and ends at 50%, cancellation or a six-hour application expiry. That expiry is not a physical inverter watchdog during an API outage.
 
 ## Local setup
 

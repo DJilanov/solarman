@@ -181,8 +181,11 @@ export function SetupNotice({
     return (
       <Notice>
         {tr(
-          "Monitoring is available. Hardware commands are disabled until this workspace has a supported profile and writes are enabled.",
-        )}
+          "Monitoring is active. Control readiness is shown in System controls.",
+        )}{" "}
+        <Link to="/controls">
+          {tr("Review control readiness")} <ArrowRight size={13} />
+        </Link>
       </Notice>
     );
   return null;
@@ -457,6 +460,8 @@ export function ActivityList({
   const labels: Record<string, string> = {
     evaluate: "Reserve evaluation",
     refresh: "Refresh diagnostics",
+    verify: "Verify device settings",
+    enable_controls: "Enable workspace control",
     topup: "Top up to 50%",
     stop: "Stop grid charging",
     pause: "Pause automation",

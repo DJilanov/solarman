@@ -9,6 +9,8 @@ import { encryptCredentials } from "../../src/credentials.mjs";
 import { AccountHub } from "../../src/account-hub.mjs";
 import { createApp } from "../../src/http-app.mjs";
 import { localDay } from "../../src/analytics.mjs";
+import { TenantRuntime } from "../../src/tenant-runtime.mjs";
+import { decide } from "../../src/controller.mjs";
 
 let pool;
 let hub;
@@ -343,4 +345,349 @@ test("session identifiers are hashed in PostgreSQL and logout revokes them", asy
     200,
   );
   assert.equal((await fetchApi("/overview", { auth: fresh })).status, 401);
+});
+
+async function controlFixture(writes = false) {
+  await pool.query(
+    "UPDATE controller_state SET paused=true,manual_topup=false,control_enabled=false,verification=null,topup_expires_at=null WHERE tenant_id=$1",
+    [ids.alpha.tenant],
+  );
+  const row = (
+    await pool.query("SELECT * FROM solarman_accounts WHERE tenant_id=$1", [
+      ids.alpha.tenant,
+    ])
+  ).rows[0];
+  const runtime = new TenantRuntime(
+    {
+      pool,
+      key,
+      stopping: false,
+      env: {
+        SOLARMAN_APP_ID: "fixture-app",
+        SOLARMAN_APP_SECRET: "fixture-secret",
+        CALLBACK_PUBLIC_URL: "https://fixture.example.test",
+        WRITES_ENABLED: String(writes),
+      },
+      reserveRequest: async () => {},
+      runLimited: async (operation) => operation(),
+    },
+    ids.alpha.tenant,
+    { ...row, profile: "bluesun-bse20kh3" },
+  );
+  await runtime.initialize();
+  const snapshot = {
+    flags: 9,
+    mode: 0,
+    acPowerRaw: 100,
+    acTargetRaw: 500,
+    windows: [0, 5947, 0, 0, 0, 0, 0, 0],
+    batteryState: 6,
+    soc: 30,
+    batteryW: -1942,
+    temperatureC: 16,
+    pvW: 3500,
+    loadW: 1000,
+    gridW: 0,
+    gridVoltages: [230, 230, 230],
+  };
+  const calls = [];
+  runtime.inspector = {
+    read: async (fn, address, count) => {
+      assert.deepEqual([fn, address, count], [4, 7, 2]);
+      calls.push("rated-read");
+      return [0, 20000];
+    },
+    snapshot: async () => structuredClone(snapshot),
+    settings: async () => ({ maximumSoc: 100, reserveSoc: 50 }),
+  };
+  runtime.controller.disable = async () => {
+    calls.push("disable");
+  };
+  runtime.controller.tick = async () => {
+    calls.push("tick");
+    return { snapshot: structuredClone(snapshot), decision: decide(snapshot) };
+  };
+  return {
+    runtime,
+    snapshot,
+    calls,
+    user: {
+      tenant_id: ids.alpha.tenant,
+      id: ids.alpha.user,
+      email: "alpha@example.test",
+    },
+  };
+}
+
+async function completeCommand(runtime, action, user) {
+  const job = await runtime.submit(action, user, randomUUID());
+  await runtime.work.idle();
+  return (
+    await pool.query(
+      "SELECT * FROM command_executions WHERE tenant_id=$1 AND id=$2",
+      [runtime.tenantId, job.id],
+    )
+  ).rows[0];
+}
+
+test("read-only verification persists checked values but cannot enable control without host permission", async () => {
+  const { runtime, calls, user } = await controlFixture();
+  try {
+    assert.equal(
+      (await completeCommand(runtime, "verify", user)).status,
+      "succeeded",
+    );
+    assert.equal(runtime.status().control.verification.passed, true);
+    assert.equal(runtime.status().control.verification.checks.length, 7);
+    assert.equal(runtime.status().control.canEnable, false);
+    assert.equal(
+      (await completeCommand(runtime, "enable_controls", user)).status,
+      "failed",
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT control_enabled FROM controller_state WHERE tenant_id=$1",
+          [ids.alpha.tenant],
+        )
+      ).rows[0].control_enabled,
+      false,
+    );
+    assert.deepEqual(calls, ["rated-read"]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("enabling one verified workspace leaves it paused and does not enable another tenant", async () => {
+  const { runtime, user } = await controlFixture(true);
+  try {
+    await completeCommand(runtime, "verify", user);
+    const job = await completeCommand(runtime, "enable_controls", user);
+    assert.equal(job.status, "succeeded");
+    assert.equal(runtime.controlEnabled, true);
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.status().writesEnabled, true);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT control_enabled FROM controller_state WHERE tenant_id=$1",
+          [ids.beta.tenant],
+        )
+      ).rows[0].control_enabled,
+      false,
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("stale device verification cannot arm a workspace", async () => {
+  const { runtime, user } = await controlFixture(true);
+  try {
+    await completeCommand(runtime, "verify", user);
+    runtime.verification.checkedAt = new Date(
+      Date.now() - 31 * 60_000,
+    ).toISOString();
+    assert.equal(runtime.status().control.canEnable, false);
+    assert.equal(
+      (await completeCommand(runtime, "enable_controls", user)).status,
+      "failed",
+    );
+    assert.equal(runtime.controlEnabled, false);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("stop persists immediately, jumps the queue and cancels an older pending top-up", async () => {
+  const { runtime, user, calls } = await controlFixture(true);
+  let release;
+  try {
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const running = runtime.queue(async () => {
+      await gate;
+    });
+    const topup = await runtime.submit("topup", user, randomUUID());
+    const stop = await runtime.submit("stop", user, randomUUID());
+    assert.equal(runtime.controller.options.isStopping(), true);
+    const intent = (
+      await pool.query(
+        "SELECT paused,manual_topup FROM controller_state WHERE tenant_id=$1",
+        [ids.alpha.tenant],
+      )
+    ).rows[0];
+    assert.deepEqual(intent, { paused: true, manual_topup: false });
+    release();
+    await running;
+    await runtime.work.idle();
+    const jobs = (
+      await pool.query(
+        "SELECT id,status FROM command_executions WHERE tenant_id=$1 AND id=ANY($2::uuid[])",
+        [ids.alpha.tenant, [topup.id, stop.id]],
+      )
+    ).rows;
+    assert.equal(jobs.find((j) => j.id === topup.id).status, "interrupted");
+    assert.equal(jobs.find((j) => j.id === stop.id).status, "succeeded");
+    assert.equal(calls.includes("tick"), false);
+  } finally {
+    release?.();
+    await runtime.close();
+  }
+});
+
+test("solar surplus waits within a one-time top-up and reaching 50% completes it", async () => {
+  const { runtime, user, snapshot } = await controlFixture(true);
+  try {
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    assert.equal(
+      (await completeCommand(runtime, "topup", user)).status,
+      "succeeded",
+    );
+    assert.equal(runtime.manualTopup, true);
+    await runtime.initialize();
+    assert.equal(runtime.manualTopup, true);
+    assert.ok(runtime.topupExpiresAt);
+    snapshot.pvW = 0;
+    snapshot.gridVoltages = [0, 0, 0];
+    await runtime.evaluate();
+    assert.equal(runtime.manualTopup, true);
+    snapshot.gridVoltages = [230, 230, 230];
+    snapshot.soc = 50;
+    await runtime.evaluate();
+    assert.equal(runtime.manualTopup, false);
+    assert.equal(runtime.topupExpiresAt, null);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a slow top-up submission cannot escape a newer stop request", async () => {
+  const { runtime, user, calls } = await controlFixture(true);
+  let release;
+  try {
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    let inserted;
+    const started = new Promise((resolve) => {
+      inserted = resolve;
+    });
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const originalQuery = runtime.q.bind(runtime);
+    runtime.q = async (sql, values = []) => {
+      const result = await originalQuery(sql, values);
+      if (
+        sql.includes("INSERT INTO command_executions") &&
+        values[4] === "topup"
+      ) {
+        inserted();
+        await gate;
+      }
+      return result;
+    };
+    const pending = runtime.submit("topup", user, randomUUID());
+    await started;
+    await completeCommand(runtime, "stop", user);
+    release();
+    const job = await pending;
+    await runtime.work.idle();
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT status FROM command_executions WHERE tenant_id=$1 AND id=$2",
+          [runtime.tenantId, job.id],
+        )
+      ).rows[0].status,
+      "interrupted",
+    );
+    assert.equal(calls.includes("tick"), false);
+  } finally {
+    release?.();
+    await runtime.close();
+  }
+});
+
+test("simultaneous retries of a stop dispatch cleanup exactly once", async () => {
+  const { runtime, user, calls } = await controlFixture(true);
+  try {
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    const originalQuery = runtime.q.bind(runtime);
+    let release;
+    let selected = 0;
+    const barrier = new Promise((resolve) => {
+      release = resolve;
+    });
+    runtime.q = async (sql, values = []) => {
+      const result = await originalQuery(sql, values);
+      if (sql.startsWith("SELECT * FROM command_executions")) {
+        selected++;
+        if (selected === 2) release();
+        await barrier;
+      }
+      return result;
+    };
+    const idempotency = randomUUID();
+    const jobs = await Promise.all([
+      runtime.submit("stop", user, idempotency),
+      runtime.submit("stop", user, idempotency),
+    ]);
+    assert.equal(jobs[0].id, jobs[1].id);
+    await runtime.work.idle();
+    assert.equal(calls.filter((call) => call === "disable").length, 1);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("an expired top-up cannot silently restart after the service resumes", async () => {
+  const { runtime, calls } = await controlFixture(true);
+  try {
+    await pool.query(
+      "UPDATE controller_state SET manual_topup=true,topup_expires_at=now()-interval '1 minute' WHERE tenant_id=$1",
+      [ids.alpha.tenant],
+    );
+    await runtime.evaluate();
+    assert.equal(runtime.manualTopup, false);
+    assert.equal(calls.includes("tick"), false);
+    assert.equal(calls.includes("disable"), true);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("shutdown during command acceptance leaves a terminal audit record", async () => {
+  const { runtime, user } = await controlFixture();
+  const originalQuery = runtime.q.bind(runtime);
+  try {
+    runtime.q = async (sql, values = []) => {
+      const result = await originalQuery(sql, values);
+      if (sql.includes("INSERT INTO command_executions"))
+        runtime.stopping = true;
+      return result;
+    };
+    const job = await runtime.submit("refresh", user, randomUUID());
+    let status = "queued";
+    for (let attempt = 0; attempt < 20 && status === "queued"; attempt++) {
+      status = (
+        await originalQuery(
+          "SELECT status FROM command_executions WHERE tenant_id=$1 AND id=$2",
+          [job.id],
+        )
+      ).rows[0].status;
+      if (status === "queued")
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(status, "failed");
+    assert.equal(runtime.scheduled.has(job.id), false);
+  } finally {
+    await runtime.close();
+  }
 });

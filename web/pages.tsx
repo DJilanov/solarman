@@ -53,7 +53,30 @@ import {
   StatusBadge,
   when,
 } from "./components";
-import type { ActivityData, Analytics, SettingsData } from "./types";
+import type {
+  ActivityData,
+  Analytics,
+  SettingsData,
+  ControllerStatus,
+} from "./types";
+
+type VerificationCheck = NonNullable<
+  ControllerStatus["control"]["verification"]
+>["checks"][number];
+
+function verificationValue(check: VerificationCheck, value: number): string {
+  if (check.label === "Operating mode")
+    return tr(value === 0 ? "SelfUse" : "Other operating mode");
+  if (check.label === "Run and backup flags")
+    return tr(
+      value === 9 ? "Running with backup enabled" : "Unexpected device flags",
+    );
+  if (check.unit === "W")
+    return Math.abs(value) >= 1000
+      ? `${formatNumber(value / 1000, 2, 0)} ${tr("kW")}`
+      : `${formatNumber(value, 0)} ${tr("W")}`;
+  return `${formatNumber(value, 0)}${check.unit}`;
+}
 
 export function Overview(): ReactNode {
   const {
@@ -512,6 +535,129 @@ export function Controls(): ReactNode {
         )}
       />
       <SetupNotice controller={controller} />
+      <Panel
+        className="readiness-panel"
+        title={tr("Control readiness")}
+        subtitle={tr("Verify the device without changing inverter settings")}
+        action={<ShieldCheck size={22} />}
+      >
+        <div className="readiness-status">
+          <span>
+            {tr("Supported profile")}{" "}
+            <strong>
+              {controller.profile === "bluesun-bse20kh3"
+                ? "Bluesun BSE20KH3"
+                : tr("Monitoring only")}
+            </strong>
+          </span>
+          <span>
+            {tr("Administrator permission")}{" "}
+            <strong>
+              {tr(controller.control.serverAllowed ? "Enabled" : "Disabled")}
+            </strong>
+          </span>
+          <span>
+            {tr("Workspace control")}{" "}
+            <strong>
+              {tr(controller.control.workspaceEnabled ? "Enabled" : "Disabled")}
+            </strong>
+          </span>
+          <span>
+            {tr("Device verification")}{" "}
+            <strong>
+              {controller.control.verification
+                ? age(controller.control.verification.checkedAt)
+                : tr("Not checked yet")}
+            </strong>
+          </span>
+        </div>
+        {controller.control.verification && (
+          <details
+            className="readiness-details"
+            open={controller.control.verification.passed ? undefined : true}
+          >
+            <summary>
+              <strong>
+                {tr("{{passed}} of {{total}} checks verified", {
+                  passed: controller.control.verification.checks.filter(
+                    (check) => check.passed,
+                  ).length,
+                  total: controller.control.verification.checks.length,
+                })}
+              </strong>
+              <span>{tr("View verification details")}</span>
+            </summary>
+            <div className="readiness-checks" role="list">
+              {controller.control.verification.checks.map((check) => (
+                <div
+                  className={
+                    check.passed
+                      ? "readiness-check passed"
+                      : "readiness-check attention"
+                  }
+                  role="listitem"
+                  key={check.label}
+                >
+                  {check.passed ? (
+                    <Check size={17} aria-hidden="true" />
+                  ) : (
+                    <ShieldCheck size={17} aria-hidden="true" />
+                  )}
+                  <span>{tr(check.label)}</span>
+                  <strong>{verificationValue(check, check.actual)}</strong>
+                  <small>
+                    {tr("Expected {{value}}", {
+                      value: verificationValue(check, check.expected),
+                    })}
+                  </small>
+                  <span className="sr-only">
+                    {tr(check.passed ? "Verified" : "Needs attention")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+        <div className="readiness-actions">
+          <button
+            className="button secondary"
+            disabled={
+              busy ||
+              !controller.control.canVerify ||
+              !controller.paused ||
+              controller.manualTopup
+            }
+            onClick={() => {
+              void command("verify");
+            }}
+          >
+            <ShieldCheck size={17} /> {tr("Verify device settings")}
+          </button>
+          {!controller.control.workspaceEnabled && (
+            <button
+              className="button primary"
+              disabled={busy || !controller.control.canEnable}
+              onClick={() => {
+                void command("enable_controls");
+              }}
+            >
+              <LockKeyhole size={17} /> {tr("Enable workspace control")}
+            </button>
+          )}
+        </div>
+        {controller.control.reasons.length > 0 && (
+          <ul className="readiness-reasons">
+            {controller.control.reasons.map((reason) => (
+              <li key={reason.code}>{tr(reason.message)}</li>
+            ))}
+          </ul>
+        )}
+        <p className="fine-print">
+          {tr(
+            "Verification reads the inverter rating and charge settings. It does not test physical charging, the inverter clock or the separate solar power limit.",
+          )}
+        </p>
+      </Panel>
       <div className="controls-grid">
         <Panel
           title={tr("Grid top-up")}
@@ -582,7 +728,7 @@ export function Controls(): ReactNode {
           </p>
           <button
             className="button secondary full"
-            disabled={submitting || !controller.writesEnabled}
+            disabled={submitting || !controller.control.canStop}
             onClick={() => {
               void command("stop");
             }}
@@ -614,7 +760,10 @@ export function Controls(): ReactNode {
           <button
             className="button secondary full"
             disabled={
-              busy || !controller.apiConfigured || !controller.deviceSelected
+              submitting ||
+              (controller.paused
+                ? busy || !controller.control.canStart
+                : !controller.control.canStop)
             }
             onClick={() => {
               void command(controller.paused ? "resume" : "pause");
@@ -687,8 +836,26 @@ export function Controls(): ReactNode {
           </p>
         </Panel>
       </div>
+      {controller.manualTopup && (
+        <Notice>
+          {tr(
+            "One-time top-up is active until 50%, cancellation or expiry. Temporary solar surplus or grid loss pauses the request.",
+          )}
+          {controller.topupExpiresAt && (
+            <>
+              {" "}
+              {tr("Expires {{time}}", {
+                time: when(controller.topupExpiresAt, controller.timezone),
+              })}
+            </>
+          )}
+        </Notice>
+      )}
       {controller.profile === "bluesun-bse20kh3" && (
         <Notice>
+          {tr(
+            "Manual request expiry limits this application's intent. Inverter schedules repeat daily and may remain enabled while the API is unreachable.",
+          )}{" "}
           {tr(
             "The separate 5 kW solar power cap is not configured or verified. Existing inverter and battery limits continue to apply.",
           )}

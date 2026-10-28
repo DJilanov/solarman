@@ -6,9 +6,30 @@ export interface Session {
 export interface ControllerStatus {
   apiConfigured: boolean;
   writesEnabled: boolean;
+  control: {
+    serverAllowed: boolean;
+    workspaceEnabled: boolean;
+    canVerify: boolean;
+    canEnable: boolean;
+    canStart: boolean;
+    canStop: boolean;
+    reasons: { code: string; message: string }[];
+    verification: {
+      checkedAt: string;
+      passed: boolean;
+      checks: {
+        label: string;
+        actual: number;
+        expected: number;
+        unit: string;
+        passed: boolean;
+      }[];
+    } | null;
+  };
   mode: "setup" | "stopping" | "error" | "paused" | "active" | "read-only";
   paused: boolean;
   manualTopup: boolean;
+  topupExpiresAt: string | null;
   lastSuccessAt: string | null;
   error: string | null;
   setupError: string | null;
@@ -111,4 +132,11 @@ export interface ActivityData {
   hasMore: boolean;
   offset: number;
 }
-export type Action = "refresh" | "topup" | "stop" | "pause" | "resume";
+export type Action =
+  | "refresh"
+  | "verify"
+  | "enable_controls"
+  | "topup"
+  | "stop"
+  | "pause"
+  | "resume";

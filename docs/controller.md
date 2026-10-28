@@ -33,10 +33,12 @@ On errors and graceful shutdown, live mode attempts to remove timed AC permissio
 2. Verify the public HTTPS callback reaches the correct linked account. Callbacks correlate the random command URL, device, original request, timestamps, optional order ID and Modbus CRC/function/count.
 3. Test account discovery and bind the actual inverter to the correct workspace and timezone.
 4. Keep `WRITES_ENABLED=false`; use Refresh readings and confirm signs, values and the combined register ranges on the actual firmware.
-5. Before enabling writes, verify the input 7–8 rated-power value is 20,000 W and the required holding settings match. That guard has not yet been tested on the real API/device.
-6. Enable host writes, restart only the dashboard, then resume that workspace. Confirm a below-50% top-up, native stopping at 50%, AC permission removal, house supply from battery above 50%, and solar charging above 50%.
+5. In Controls, run **Verify device settings** while automation is paused. This reads input 7–8 and the existing diagnostics, checks 20,000 W rating and six policy settings, and persists the result. This operation never enables writes. A failed verification invalidates the previous report before device requests begin.
+6. Complete physical behavior and clock commissioning. Enable host writes, restart only the dashboard, then use **Enable workspace control** after a successful verification within 30 minutes. This does not resume automation or enable any other workspace. Confirm a below-50% top-up, native stopping at 50%, AC permission removal, house supply from battery above 50%, and solar charging above 50% before unattended operation.
 
-No automated physical-device commissioning has been completed. Tests use recorded replies and simulated inverter/API behavior.
+Real OpenAPI discovery, HTTPS callbacks and the ordinary combined diagnostic register reads have been verified. Physical write commissioning, inverter clock verification and the separate solar charging limit remain outstanding. Recorded production measurements show battery charging while timed AC permission is off: this flag is not proof that every native grid charging mechanism has stopped.
+
+Workspace control is stored separately from the host permission in `controller_state.control_enabled`; new workspaces default to disabled. Device verification is bound to the selected serial number and profile. Credential updates and inverter selection revoke the old verification and activation. Stop/Pause records its intent before waiting for device work, cancels older queued starts and allows cleanup even after a settings verification error. The six-hour expiry of a manual request bounds application intent, not the daily schedule stored inside an unreachable inverter.
 
 ## Manual recovery
 

@@ -219,7 +219,7 @@ export class AccountHub {
       ],
     );
     await this.pool.query(
-      "UPDATE controller_state SET paused=true,manual_topup=false,updated_at=now() WHERE tenant_id=$1",
+      "UPDATE controller_state SET paused=true,manual_topup=false,control_enabled=false,verification=null,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
       [tenantId],
     );
     if (cleanupUnconfirmed)
@@ -360,7 +360,7 @@ export class AccountHub {
       throw error;
     }
     await this.pool.query(
-      "UPDATE controller_state SET paused=true,manual_topup=false,updated_at=now() WHERE tenant_id=$1",
+      "UPDATE controller_state SET paused=true,manual_topup=false,control_enabled=false,verification=null,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
       [tenantId],
     );
     return this.reload(tenantId);

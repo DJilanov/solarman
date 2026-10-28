@@ -1,5 +1,9 @@
 # Solarman dashboard implementation plan
 
+Current status (2026-10-28): the deployed dashboard has working authenticated OpenAPI discovery, native device callbacks, stored live measurements, charts, exports and English/Bulgarian translations. The follow-up control release adds read-only device verification, individual workspace activation, immediate persisted stop intent, priority cancellation of queued starts and expiry for manual top-up intent. The original scope below remains the acceptance baseline.
+
+Remaining delivery work: verify native charging behavior at the 50% boundary and above it; verify the inverter clock and the separate 5 kW solar charging limit; complete physical control commissioning; introduce verified single-request telemetry with preserved source timestamps and quota budgeting; finish uncertain-write reconciliation, credential maintenance, operational monitoring and tested backup restoration. The host write permission remains off until commissioning supports activation. Do not treat application job expiry as an expiring physical inverter schedule.
+
 Build a private control panel at **https://solarman.jilanov.com** for the Bluesun BSE20KH3. It must explain where household power comes from, show battery behavior over time, and make the tested commands understandable. The application will run under PM2 on the existing server and store its own data in PostgreSQL.
 
 ## Tenant ownership

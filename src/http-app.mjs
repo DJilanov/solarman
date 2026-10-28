@@ -568,7 +568,15 @@ export function createApp({ pool, hub, config }) {
         const key = request.headers["idempotency-key"];
         if (
           typeof body.action !== "string" ||
-          !["refresh", "topup", "stop", "pause", "resume"].includes(body.action)
+          ![
+            "refresh",
+            "verify",
+            "enable_controls",
+            "topup",
+            "stop",
+            "pause",
+            "resume",
+          ].includes(body.action)
         )
           throw new HttpError(400, "Unknown command");
         if (
