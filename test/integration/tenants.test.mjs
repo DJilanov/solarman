@@ -8096,3 +8096,38 @@ test("notification authentication incidents distinguish an explicit provider rej
     await f.dispose();
   }
 });
+
+test("public health echoes only a fresh bounded probe and retains its existing response contract", async () => {
+  const initial = await fetch(origin + "/healthz"),
+    before = await initial.json();
+  assert.ok([200, 503].includes(initial.status));
+  assert.equal(Object.hasOwn(before, "probe"), false);
+  const probes = [
+    randomBytes(16).toString("hex"),
+    randomBytes(16).toString("hex"),
+  ];
+  for (const probe of probes) {
+    const response = await fetch(origin + "/healthz?probe=" + probe);
+    assert.ok([200, 503].includes(response.status));
+    assert.match(response.headers.get("cache-control"), /no-store/);
+    const body = await response.json();
+    assert.equal(body.probe, probe);
+    assert.equal(body.release, process.env.RELEASE_SHA ?? "development");
+    assert.deepEqual(Object.keys(body).sort(), [
+      "monitoring",
+      "notifications",
+      "probe",
+      "release",
+      "status",
+    ]);
+  }
+  for (const query of [
+    "probe=invalid",
+    "probe=" + "a".repeat(33),
+    "probe=" + probes[0] + "&probe=" + probes[1],
+  ]) {
+    const response = await fetch(origin + "/healthz?" + query);
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "Invalid health probe" });
+  }
+});

@@ -230,6 +230,13 @@ export function createApp({ pool, hub, config }) {
         return;
       }
       if (pathname === "/healthz" && request.method === "GET") {
+        const probe = url.searchParams.get("probe");
+        if (
+          probe !== null &&
+          (!/^[a-f0-9]{32}$/.test(probe) ||
+            url.searchParams.getAll("probe").length !== 1)
+        )
+          throw new HttpError(400, "Invalid health probe");
         await pool.query("SELECT 1");
         const monitoring = hub.operations.status().state;
         const notifications = hub.notifications?.status().state ?? "starting";
@@ -239,6 +246,7 @@ export function createApp({ pool, hub, config }) {
           release: process.env.RELEASE_SHA ?? "development",
           monitoring,
           notifications,
+          ...(probe === null ? {} : { probe }),
         });
         return;
       }

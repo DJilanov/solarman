@@ -84,6 +84,8 @@ Retention preserves the latest reading and provider parameters for the selected 
 
 ## External notifications
 
+An [independent outage watchdog](docs/watchdog.md) can run on a separate Linux host, using fresh health challenges, durable attempts and its own verified recipient. It does not depend on the application database. The separate host and real delivery acceptance remain to be configured.
+
 Settings → Notifications stores each workspace's encrypted Telegram bot token and numeric destination. Confirm a test and explicitly enable delivery. Delivery attempts, retries and uncertain outcomes remain visible; changing the destination or restoring a backup disables delivery. See [notification setup and operational limits](docs/notifications.md).
 
 ## Account security

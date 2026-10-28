@@ -54,6 +54,10 @@ Persistent stale-data detection allows the effective device poll interval plus e
 
 `/healthz` checks the database and scheduler shutdown state and reports operational-monitor and notification-worker heartbeats. Operational monitoring delayed by more than three minutes, or delivery work delayed by more than one minute, returns HTTP 503 with a generic status and no tenant details. Device conditions live in the authenticated health page and do not turn process health into evidence of physical commissioning. Fault records remain available across process restarts. Tenant-configured Telegram delivery and its remaining real-destination/outside-host acceptance are described in [notifications](notifications.md). Encrypted offsite backup, separate root-owned scheduling tools, administrator recovery health and the verified isolated restore are described in [backup and recovery](backups.md).
 
+## Independent outage monitor
+
+An optional 32-character lowercase hexadecimal `probe` on `/healthz` is echoed in its no-store response. Invalid or repeated probes return 400. The [independent watchdog](watchdog.md) uses a fresh challenge so cached responses cannot count as current health. Its installer targets a separate host; the main PM2 deployment does not start it.
+
 ## Rollback
 
 Read `/home/mitko/solarman/previous` and confirm the desired release and schema compatibility before switching. Delete only the `solarman` PM2 process, then set `RELEASE_SHA` to the desired commit and run `pm2 start <release>/ecosystem.config.cjs --only solarman --update-env`. Verify health and the actual process working directory and frontend, update the `current` symlink, then run `pm2 save`. Do not restart other applications.

@@ -33,4 +33,4 @@ Workspace closure disables the channel, cancels pending work and drains in-fligh
 
 ## Remaining operational acceptance
 
-No production recipient has been selected or messaged. The owner must choose a bot/chat, confirm the test and enable it before real delivery can be accepted. An independent reachability and `/healthz` checker must also run outside the application host and prove outage/recovery delivery. The application cannot report its own stopped process or unreachable host through this worker. Keep this dependency open until a separate monitoring location and destination are configured and tested.
+No production recipient has been selected or messaged. The owner must choose a bot/chat, confirm the test and enable it before real delivery can be accepted. The [independent watchdog](watchdog.md) implements reachability and fresh `/healthz` checks without depending on this app's database. It still needs a separate monitoring host and a selected destination with proven outage/recovery delivery. The application cannot report its own stopped process or unreachable host through its in-app worker.

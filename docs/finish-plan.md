@@ -12,7 +12,7 @@ The quoted Bulgarian monitoring-only notice is an unused translation entry. The 
 | Activation | Host writes and workspace control are off. Automation is paused; manual top-up is off. Device-bound commissioning is also required. | Commissioning software is deployed; physical acceptance and the independent source-limit contract remain open. |
 | Physical changes | Zero application inverter-write intents and zero unresolved bindings; scheduled permission is confirmed off. | Attended write/recovery tests have not been performed. |
 | Policy observations | A real, device-bound run had ten accepted samples and no collector failure at 21:14 UTC on October 28, surviving the commissioning deployments. | Above-50% solar charging/discharging, the reserve transition and a full day/night cycle remain unproven. |
-| Alerts | Durable in-app incidents and tenant-configured Telegram delivery are deployed, including explicit verification, outbox/retry history and EN/BG settings. | Select a real destination and prove delivery; independent host-outage detection remains open. |
+| Alerts | Durable in-app incidents and tenant-configured Telegram delivery are deployed. The independent watchdog implementation adds fresh health challenges, TCP context, durable retries and restore quarantine. | Select a real destination, provide an accessible separate monitoring host and prove outage/recovery delivery. |
 | Hosted tenants | Isolation, private invitations, account security/recovery, suspension, export, retention and closure/erasure are implemented. Production has migrations 001–021. | Complete a disposable-tenant rehearsal including commissioning and notifications. |
 | Recovery | Notification release passed both schema-020 upgrade and fresh schema-021 restores, with zero device or delivery calls. Backup healthy; erasure-receipt service verified. | Maintain recurring recovery drills and perform an actual operator handover. |
 
@@ -33,6 +33,14 @@ The notification increment adds an encrypted Telegram destination per tenant, pa
 This implements the delivery software, not real-destination acceptance or independent outage detection. No production bot/chat has been configured and no real external message has been sent.
 
 Release `52127f0` passed an isolated upgrade of schema-020 backup `71b33aa1-e668-4673-8056-09d85e886e89` in restore run `8e7fb8df-78cb-4a73-b416-a879782ab935` (22:12 UTC, October 28). Fresh schema-021 backup `58ec89f8-a002-48b0-9e02-6260e5b63291` passed restore run `6b0800bf-a328-4d54-841e-31e5259f1491` (22:13 UTC). Both verified notification/commissioning quarantine, authentication, export, lifecycle and erasure fences, with zero device or delivery calls. Independent PostgreSQL inspection found no remaining drill databases or roles.
+
+## Independent watchdog implementation
+
+The watchdog has a separate filesystem journal and a Linux systemd timer, without app/database/provider credentials. Fresh random challenges reject cached health successes; direct TCP checks add context without declaring a host dead. Three consecutive failures open an incident and two fresh successes recover it. Messages keep durable attempt history, bounded retries and one event reference. File locks serialize invocations; termination drains transport; restores require quarantine and a fresh disabled/tested/enabled sequence. See [watchdog.md](watchdog.md) for installation and operator commands.
+
+Available keys currently authenticate only to the application host; the other configured SSH host rejected authentication. An asynchronous request for a separate always-on SSH target is pending. No independent service or real recipient has been installed, and no real message has been sent. Local proxy/socket fixtures and injected timeouts prove software behavior; real outside-host outage/recovery acceptance remains open.
+
+Verification passed: type/syntax checks, production build, 161 local unit tests with three Linux-only skips, all 24 focused watchdog tests on Linux, all 164 PostgreSQL integration tests and all 36 browser tests. The installer passed Bash syntax validation; its generated service/timer passed `systemd-analyze verify` in a temporary directory without installing either unit. Source and build artifacts passed a scan against configured local secret values. No database migration or inverter setting is changed by this increment.
 
 ## Required home behavior
 
