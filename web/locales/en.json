@@ -1060,5 +1060,6 @@
   "The request outcome is unconfirmed. Review Activity and current device readings before retrying.": "The request outcome is unconfirmed. Review Activity and current device readings before retrying.",
   "Review command result": "Review command result",
   "Stop scheduled top-ups now": "Stop scheduled top-ups now",
-  "Run Verify device settings. A newer telemetry upload does not renew this report.": "Run Verify device settings. A newer telemetry upload does not renew this report."
+  "Run Verify device settings. A newer telemetry upload does not renew this report.": "Run Verify device settings. A newer telemetry upload does not renew this report.",
+  "No current verification": "No current verification"
 }

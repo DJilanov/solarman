@@ -1095,6 +1095,23 @@ test("readiness distinguishes failed device checks from a newer passing clock an
   await page
     .locator(".verification-evidence")
     .screenshot({ path: "test-results/readiness-evidence-mobile-bg.png" });
+  overview.controller.control.verification = null;
+  overview.controller.control.verificationStatus = {
+    state: "missing",
+    checkedAt: null,
+    expiresAt: null,
+  };
+  overview.controller.error = "Device command failed (code 530)";
+  await page.reload();
+  await expect(
+    page.getByRole("region", {
+      name: "Запазена проверка на инвертора",
+      exact: true,
+    }),
+  ).toContainText("Няма актуална проверка");
+  await expect(
+    page.getByRole("button", { name: "Разреши управлението", exact: true }),
+  ).toBeDisabled();
 });
 
 test("expired verification and cached clock evidence need an explicit fresh check without automatically activating control", async ({

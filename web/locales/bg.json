@@ -1060,5 +1060,6 @@
   "The request outcome is unconfirmed. Review Activity and current device readings before retrying.": "Резултатът от заявката не е потвърден. Прегледай „Активност“ и текущите данни от инвертора, преди да опиташ отново.",
   "Review command result": "Прегледай резултата от командата",
   "Stop scheduled top-ups now": "Спри дозареждането по график сега",
-  "Run Verify device settings. A newer telemetry upload does not renew this report.": "Използвай „Провери настройките“. По-новите телеметрични данни не подновяват тази проверка."
+  "Run Verify device settings. A newer telemetry upload does not renew this report.": "Използвай „Провери настройките“. По-новите телеметрични данни не подновяват тази проверка.",
+  "No current verification": "Няма актуална проверка"
 }

@@ -26,7 +26,7 @@ function verificationLabel(
     case "outdated":
       return tr("Verify the current inverter again");
     case "missing":
-      return tr("Not checked yet");
+      return tr("No current verification");
   }
 }
 
