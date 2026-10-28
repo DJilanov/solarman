@@ -14,6 +14,13 @@ import {
 import { summarize, localDay, dayStart, addDays } from "./analytics.mjs";
 import { historyEvidence, writeHistory } from "./command-history.mjs";
 import { readBackupStatus } from "./backup-status.mjs";
+import {
+  AccountSecurity,
+  SecurityError,
+  createBrowserSession,
+  recordSecurityEvent,
+  browserDescription,
+} from "./account-security.mjs";
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -75,6 +82,8 @@ function measurement(row) {
 /** @param {{ pool: import('pg').Pool, hub: object, config: object }} options @returns {function} */
 export function createApp({ pool, hub, config }) {
   const limiter = new LoginLimiter();
+  const securityLimiter = new LoginLimiter();
+  const security = new AccountSecurity(pool);
   const cookieName = config.secure
     ? "__Host-solarman_session"
     : "solarman_session";
@@ -98,11 +107,13 @@ export function createApp({ pool, hub, config }) {
     return (
       (
         await pool.query(
-          `SELECT s.token_hash,s.csrf_token,u.id,u.email,u.tenant_id,u.platform_admin,t.name AS tenant_name,a.timezone FROM sessions s
+          `WITH touched AS (UPDATE sessions SET last_seen_at=now(),user_agent=CASE WHEN user_agent='' THEN $2 ELSE user_agent END WHERE token_hash=$1 AND expires_at>now()
+          AND (last_seen_at IS NULL OR last_seen_at<now()-interval '5 minutes'))
+          SELECT s.token_hash,s.csrf_token,s.id AS session_id,u.id,u.email,u.tenant_id,u.platform_admin,t.name AS tenant_name,a.timezone FROM sessions s
       JOIN users u ON u.id=s.user_id JOIN tenants t ON t.id=u.tenant_id
       LEFT JOIN solarman_accounts a ON a.tenant_id=u.tenant_id
       WHERE s.token_hash=$1 AND s.expires_at>now()`,
-          [tokenHash(token)],
+          [tokenHash(token), browserDescription(request.headers["user-agent"])],
         )
       ).rows[0] ?? null
     );
@@ -275,14 +286,11 @@ export function createApp({ pool, hub, config }) {
         ).rows[0];
         if (!(await verifyPassword(body.password, user?.password_hash ?? null)))
           throw new HttpError(401, "Email or password is incorrect");
-        limiter.clear(key);
-        const token = randomToken();
-        const csrfToken = randomToken();
-        await pool.query("DELETE FROM sessions WHERE expires_at<now()");
-        await pool.query(
-          "INSERT INTO sessions (token_hash,user_id,csrf_token,expires_at) VALUES ($1,$2,$3,now()+interval '7 days')",
-          [tokenHash(token), user.id, csrfToken],
+        const { token, csrfToken } = await security.login(
+          user,
+          request.headers["user-agent"],
         );
+        limiter.clear(key);
         response.setHeader("set-cookie", cookie(token));
         json(response, 200, sessionData(user, csrfToken));
         return;
@@ -357,11 +365,18 @@ export function createApp({ pool, hub, config }) {
             "UPDATE invitations SET used_at=now() WHERE token_hash=$1",
             [tokenHash(body.token)],
           );
-          sessionToken = randomToken();
-          csrfToken = randomToken();
-          await client.query(
-            "INSERT INTO sessions (token_hash,user_id,csrf_token,expires_at) VALUES ($1,$2,$3,now()+interval '7 days')",
-            [tokenHash(sessionToken), id, csrfToken],
+          const browserSession = await createBrowserSession(
+            client,
+            id,
+            request.headers["user-agent"],
+          );
+          sessionToken = browserSession.token;
+          csrfToken = browserSession.csrfToken;
+          await recordSecurityEvent(
+            client,
+            { id, tenant_id: tenantId },
+            "signed_in",
+            1,
           );
           await client.query("COMMIT");
           user = {
@@ -398,11 +413,54 @@ export function createApp({ pool, hub, config }) {
         return;
       }
       if (pathname === "/api/auth/logout" && request.method === "POST") {
-        await pool.query("DELETE FROM sessions WHERE token_hash=$1", [
-          session.token_hash,
-        ]);
+        await security.logout(session);
         response.setHeader("set-cookie", cookie("", 0));
         json(response, 200, { ok: true });
+        return;
+      }
+      if (pathname === "/api/security" && request.method === "GET") {
+        const offset = url.searchParams.get("offset") ?? "0";
+        if (!/^\d{1,6}$/.test(offset))
+          throw new HttpError(400, "Choose a valid session page");
+        json(response, 200, await security.list(session, Number(offset)));
+        return;
+      }
+      if (pathname === "/api/security/password" && request.method === "POST") {
+        const body = await bodyJson(request);
+        if (!securityLimiter.allow(session.id)) {
+          response.setHeader("retry-after", "900");
+          throw new HttpError(
+            429,
+            "Too many attempts. Try again in 15 minutes.",
+          );
+        }
+        const { token, csrfToken } = await security.changePassword(
+          session,
+          {
+            currentPassword: body.currentPassword,
+            newPassword: body.newPassword,
+          },
+          request.headers["user-agent"],
+        );
+        securityLimiter.clear(session.id);
+        response.setHeader("set-cookie", cookie(token));
+        json(response, 200, sessionData(session, csrfToken));
+        return;
+      }
+      if (
+        [
+          "/api/security/sessions/revoke",
+          "/api/security/sessions/revoke-others",
+        ].includes(pathname) &&
+        request.method === "POST"
+      ) {
+        const body = await bodyJson(request);
+        const target = pathname.endsWith("/revoke-others") ? null : body.id;
+        if (target !== null && typeof target !== "string")
+          throw new HttpError(400, "Choose a valid browser session");
+        json(response, 200, {
+          revoked: await security.revoke(session, target),
+        });
         return;
       }
       const runtime = await hub.forTenant(session.tenant_id);
@@ -728,7 +786,9 @@ export function createApp({ pool, hub, config }) {
         response.end();
         return;
       }
-      const status = error instanceof HttpError ? error.status : 500;
+      const expected =
+        error instanceof HttpError || error instanceof SecurityError;
+      const status = expected ? error.status : 500;
       if (status === 500)
         console.error(
           JSON.stringify({
@@ -737,10 +797,9 @@ export function createApp({ pool, hub, config }) {
           }),
         );
       json(response, status, {
-        error:
-          error instanceof HttpError
-            ? error.message
-            : "The request could not be completed. Please try again.",
+        error: expected
+          ? error.message
+          : "The request could not be completed. Please try again.",
       });
     }
   };

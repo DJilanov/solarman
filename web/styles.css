@@ -3005,3 +3005,85 @@ html[lang="bg"] .segmented button {
 .capacity-details[open] summary {
   margin-bottom: 18px;
 }
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.security-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: 24px;
+  align-items: start;
+}
+.security-grid .panel-head,
+.browser-session-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+}
+.security-form {
+  display: grid;
+  gap: 16px;
+}
+.security-form label {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+}
+.browser-session {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border);
+}
+.browser-session:first-child {
+  padding-top: 0;
+}
+.browser-session:last-child {
+  border-bottom: 0;
+}
+.browser-description summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+.browser-description p {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  color: var(--muted);
+}
+.security-events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.security-events li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+.security-events li:last-child {
+  border-bottom: 0;
+}
+.security-events strong,
+.security-events span {
+  display: block;
+}
+.security-events span,
+.security-events time {
+  font-size: 12px;
+  color: var(--muted);
+}
+.security-events span {
+  margin-top: 6px;
+}
+@media (max-width: 1050px) {
+  .security-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

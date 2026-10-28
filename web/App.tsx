@@ -52,6 +52,7 @@ import type { Action, Command, OverviewData, Session } from "./types";
 
 const CommandDetailsPage = lazy(() => import("./command-details"));
 const SystemHealthPage = lazy(() => import("./system-health"));
+const AccountSecurityPage = lazy(() => import("./account-security"));
 const WriteHistoryPage = lazy(() =>
   import("./command-details").then((module) => ({
     default: module.WriteHistoryPage,
@@ -472,6 +473,7 @@ function Dashboard({
         command,
         reload,
         refreshSession,
+        updateSession: onSession,
       }}
     >
       <div className="app-shell">
@@ -585,6 +587,14 @@ function Dashboard({
                 }
               />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route
+                path="/settings/security"
+                element={
+                  <Suspense fallback={<Loading />}>
+                    <AccountSecurityPage />
+                  </Suspense>
+                }
+              />
               <Route
                 path="/settings/health"
                 element={

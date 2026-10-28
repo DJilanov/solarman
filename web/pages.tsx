@@ -1297,9 +1297,14 @@ export function SettingsPage(): ReactNode {
           "Manage the provider account and inverter belonging to your workspace.",
         )}
         action={
-          <Link className="button secondary small" to="/settings/health">
-            {tr("System health")}
-          </Link>
+          <div className="settings-actions">
+            <Link className="button secondary small" to="/settings/security">
+              {tr("Account security")}
+            </Link>
+            <Link className="button secondary small" to="/settings/health">
+              {tr("System health")}
+            </Link>
+          </div>
         }
       />
       {error && <Notice tone="danger">{error}</Notice>}

@@ -18,6 +18,11 @@ import { ApiCapacityError } from "../../src/api-capacity.mjs";
 import { ControlJournal } from "../../src/control-journal.mjs";
 import { parseFrame, frame } from "../../src/modbus.mjs";
 import { Operations } from "../../src/operations.mjs";
+import {
+  AccountSecurity,
+  SecurityError,
+  createBrowserSession,
+} from "../../src/account-security.mjs";
 
 let pool;
 let hub;
@@ -38,6 +43,7 @@ async function fetchApi(
     csrf = true,
     originHeader = true,
     idempotency,
+    agent,
   } = {},
 ) {
   const headers = {
@@ -46,6 +52,7 @@ async function fetchApi(
     ...(body ? { "content-type": "application/json" } : {}),
     ...(auth && csrf ? { "x-csrf-token": auth.csrfToken } : {}),
     ...(idempotency ? { "idempotency-key": idempotency } : {}),
+    ...(agent ? { "user-agent": agent } : {}),
   };
   return fetch(`${origin}/api${path}`, {
     method,
@@ -54,10 +61,11 @@ async function fetchApi(
   });
 }
 
-async function login(email) {
+async function login(email, loginPassword = password, agent) {
   const response = await fetchApi("/auth/login", {
     method: "POST",
-    body: { email, password },
+    body: { email, password: loginPassword },
+    agent,
   });
   assert.equal(response.status, 200);
   const data = await response.json();
@@ -2790,4 +2798,423 @@ test("startup with a smaller allowance revokes saved activation without discardi
     await restarted?.close();
     await runtime.close();
   }
+});
+
+async function securityUser(t) {
+  const user = {
+    id: randomUUID(),
+    tenant: randomUUID(),
+    email: `security-${randomUUID()}@example.test`,
+  };
+  await pool.query("INSERT INTO tenants (id,name) VALUES ($1,$2)", [
+    user.tenant,
+    "Security fixture",
+  ]);
+  await pool.query(
+    "INSERT INTO users (id,tenant_id,email,password_hash) VALUES ($1,$2,$3,$4)",
+    [user.id, user.tenant, user.email, await hashPassword(password)],
+  );
+  await pool.query("INSERT INTO controller_state (tenant_id) VALUES ($1)", [
+    user.tenant,
+  ]);
+  t.after(async () => {
+    await pool.query("DELETE FROM controller_state WHERE tenant_id=$1", [
+      user.tenant,
+    ]);
+    await pool.query("DELETE FROM users WHERE id=$1", [user.id]);
+    await pool.query("DELETE FROM tenants WHERE id=$1", [user.tenant]);
+  });
+  return user;
+}
+
+async function securityContext(auth) {
+  return (
+    await pool.query(
+      "SELECT user_id AS id,id AS session_id,token_hash FROM sessions WHERE token_hash=$1",
+      [tokenHash(auth.cookie.split("=")[1])],
+    )
+  ).rows[0];
+}
+
+test("password changes require the current password, rotate secrets, revoke other browsers and preserve other users", async (t) => {
+  const user = await securityUser(t);
+  const other = await securityUser(t);
+  const current = await login(
+    user.email,
+    password,
+    "integration-current-browser",
+  );
+  const second = await login(user.email, password, "integration-other-browser");
+  const separate = await login(other.email);
+  await pool.query(
+    "UPDATE controller_state SET paused=false,control_enabled=true WHERE tenant_id=$1",
+    [user.tenant],
+  );
+  assert.equal((await fetchApi("/security")).status, 401);
+  const before = await (await fetchApi("/security", { auth: current })).json();
+  assert.equal(before.sessionCount, 2);
+  assert.equal(before.sessions.filter((s) => s.current).length, 1);
+  const original = before.sessions.find((s) => s.current);
+  const serialized = JSON.stringify(before);
+  for (const secret of [
+    password,
+    current.csrfToken,
+    current.cookie.split("=")[1],
+    "token_hash",
+    "csrf_token",
+    "password_hash",
+  ])
+    assert.equal(serialized.includes(secret), false);
+  const request = {
+    auth: current,
+    method: "POST",
+    body: {
+      currentPassword: password,
+      newPassword: "replacement-with-space= ",
+    },
+  };
+  assert.equal(
+    (await fetchApi("/security/password", { ...request, csrf: false })).status,
+    403,
+  );
+  assert.equal(
+    (
+      await fetchApi("/security/password", {
+        ...request,
+        body: { ...request.body, currentPassword: "incorrect" },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await fetchApi("/security/password", {
+        ...request,
+        body: { ...request.body, newPassword: "short" },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await fetchApi("/security/password", {
+        ...request,
+        body: { ...request.body, newPassword: password },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (await (await fetchApi("/security", { auth: current })).json())
+      .sessionCount,
+    2,
+  );
+  const changed = await fetchApi("/security/password", request);
+  assert.equal(changed.status, 200);
+  const renewed = {
+    ...(await changed.json()),
+    cookie: changed.headers.get("set-cookie").split(";")[0],
+  };
+  assert.notEqual(renewed.cookie, current.cookie);
+  assert.notEqual(renewed.csrfToken, current.csrfToken);
+  assert.equal(
+    (await fetchApi("/auth/session", { auth: current })).status,
+    401,
+  );
+  assert.equal((await fetchApi("/auth/session", { auth: second })).status, 401);
+  assert.equal(
+    (await fetchApi("/auth/session", { auth: separate })).status,
+    200,
+  );
+  const after = await (await fetchApi("/security", { auth: renewed })).json();
+  assert.equal(after.sessionCount, 1);
+  assert.equal(after.sessions[0].id, original.id);
+  assert.equal(after.sessions[0].createdAt, original.createdAt);
+  assert.ok(after.passwordChangedAt);
+  assert.equal(
+    after.events.find((e) => e.kind === "password_changed").affectedSessions,
+    2,
+  );
+  assert.equal(
+    (
+      await fetchApi("/security/sessions/revoke-others", {
+        auth: { ...renewed, csrfToken: current.csrfToken },
+        method: "POST",
+        body: {},
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await fetchApi("/security/sessions/revoke-others", {
+        auth: renewed,
+        method: "POST",
+        body: {},
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await fetchApi("/auth/login", {
+        method: "POST",
+        body: { email: user.email, password },
+      })
+    ).status,
+    401,
+  );
+  assert.ok((await login(user.email, request.body.newPassword)).cookie);
+  const otherData = await (
+    await fetchApi("/security", { auth: separate })
+  ).json();
+  assert.equal(
+    JSON.stringify(otherData).includes(
+      after.events.find((e) => e.kind === "password_changed").id,
+    ),
+    false,
+  );
+  assert.deepEqual(
+    (
+      await pool.query(
+        "SELECT paused,control_enabled FROM controller_state WHERE tenant_id=$1",
+        [user.tenant],
+      )
+    ).rows[0],
+    { paused: false, control_enabled: true },
+  );
+  assert.equal(hub.runtimes.has(user.tenant), false);
+});
+
+test("browser revocation is scoped, retains the current browser, paginates and records no invented legacy activity", async (t) => {
+  const user = await securityUser(t);
+  const other = await securityUser(t);
+  const current = await login(user.email, password, "x".repeat(400));
+  const otherAuth = await login(other.email);
+  const connection = await pool.connect();
+  try {
+    for (let i = 0; i < 22; i++)
+      await createBrowserSession(
+        connection,
+        user.id,
+        "fixture secondary browser",
+      );
+  } finally {
+    connection.release();
+  }
+  const data = await (await fetchApi("/security", { auth: current })).json();
+  assert.equal(data.sessionCount, 23);
+  assert.equal(data.sessions.length, 20);
+  assert.equal(data.hasMoreSessions, true);
+  assert.equal(data.sessions[0].current, true);
+  assert.equal(data.sessions[0].userAgent.length, 256);
+  const target = data.sessions.find((s) => !s.current);
+  await pool.query(
+    "UPDATE sessions SET user_agent='',last_seen_at=null WHERE id=$1",
+    [target.id],
+  );
+  const refreshed = await (
+    await fetchApi("/security", { auth: current })
+  ).json();
+  assert.equal(
+    refreshed.sessions.find((s) => s.id === target.id).lastSeenAt,
+    null,
+  );
+  const page = await (
+    await fetchApi("/security?offset=20", { auth: current })
+  ).json();
+  assert.equal(page.sessions.length, 3);
+  assert.equal(page.hasMoreSessions, false);
+  assert.equal(
+    (await fetchApi("/security?offset=invalid", { auth: current })).status,
+    400,
+  );
+  const revoke = { auth: current, method: "POST", body: { id: target.id } };
+  assert.equal(
+    (
+      await fetchApi("/security/sessions/revoke", {
+        ...revoke,
+        auth: otherAuth,
+      })
+    ).status,
+    404,
+  );
+  assert.equal(
+    (
+      await fetchApi("/security/sessions/revoke", {
+        ...revoke,
+        body: { id: data.sessions[0].id },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (await fetchApi("/security/sessions/revoke", revoke)).status,
+    200,
+  );
+  assert.equal(
+    (await fetchApi("/security/sessions/revoke", revoke)).status,
+    404,
+  );
+  const ended = await fetchApi("/security/sessions/revoke-others", {
+    auth: current,
+    method: "POST",
+    body: {},
+  });
+  assert.deepEqual(await ended.json(), { revoked: 21 });
+  const remaining = await (
+    await fetchApi("/security", { auth: current })
+  ).json();
+  assert.equal(remaining.sessionCount, 1);
+  assert.equal(
+    remaining.events.find((e) => e.kind === "other_sessions_revoked")
+      .affectedSessions,
+    21,
+  );
+  assert.equal((await fetchApi("/security", { auth: otherAuth })).status, 200);
+  const old = new Date(Date.now() - 600000);
+  await pool.query("UPDATE sessions SET last_seen_at=$2 WHERE id=$1", [
+    data.sessions[0].id,
+    old,
+  ]);
+  const seen = await (await fetchApi("/security", { auth: current })).json();
+  assert.ok(new Date(seen.sessions[0].lastSeenAt) > old);
+  assert.equal(
+    (await (await fetchApi("/security", { auth: current })).json()).sessions[0]
+      .lastSeenAt,
+    seen.sessions[0].lastSeenAt,
+  );
+});
+
+test("a delayed old-password login cannot recreate a revoked browser after a password change", async (t) => {
+  const user = await securityUser(t);
+  const current = await login(user.email);
+  const snapshot = (
+    await pool.query("SELECT id,password_hash FROM users WHERE id=$1", [
+      user.id,
+    ])
+  ).rows[0];
+  assert.equal(
+    (
+      await fetchApi("/security/password", {
+        auth: current,
+        method: "POST",
+        body: {
+          currentPassword: password,
+          newPassword: "replacement-password",
+        },
+      })
+    ).status,
+    200,
+  );
+  const security = new AccountSecurity(pool);
+  await assert.rejects(
+    security.login(snapshot, "delayed browser"),
+    (error) => error instanceof SecurityError && error.status === 401,
+  );
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::integer AS n FROM sessions WHERE user_id=$1",
+        [user.id],
+      )
+    ).rows[0].n,
+    1,
+  );
+});
+
+test("simultaneous password changes accept only one and a revoked session cannot mutate security", async (t) => {
+  const user = await securityUser(t);
+  const current = await login(user.email);
+  const session = await securityContext(current);
+  const first = new AccountSecurity(pool);
+  const second = new AccountSecurity(pool);
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let arrived = 0;
+  let ready;
+  const bothReady = new Promise((resolve) => {
+    ready = resolve;
+  });
+  for (const service of [first, second]) {
+    const withUser = service.withUser.bind(service);
+    service.withUser = async (...args) => {
+      if (++arrived === 2) ready();
+      await gate;
+      return withUser(...args);
+    };
+  }
+  const attempts = Promise.allSettled([
+    first.changePassword(
+      session,
+      { currentPassword: password, newPassword: "first-replacement-password" },
+      "first",
+    ),
+    second.changePassword(
+      session,
+      { currentPassword: password, newPassword: "second-replacement-password" },
+      "second",
+    ),
+  ]);
+  await bothReady;
+  release();
+  const results = await attempts;
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  const failed = results.find((r) => r.status === "rejected");
+  assert.ok(failed.reason instanceof SecurityError);
+  assert.equal(failed.reason.status, 401);
+  const security = new AccountSecurity(pool);
+  await assert.rejects(
+    security.revoke(session, null),
+    (error) => error instanceof SecurityError && error.status === 401,
+  );
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::integer AS n FROM sessions WHERE user_id=$1",
+        [user.id],
+      )
+    ).rows[0].n,
+    1,
+  );
+  // Logout accepted before rotation still ends that same public browser identity.
+  await security.logout(session);
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::integer AS n FROM sessions WHERE user_id=$1",
+        [user.id],
+      )
+    ).rows[0].n,
+    0,
+  );
+});
+
+test("password reauthentication is rate-limited without ending the valid browser session", async (t) => {
+  const user = await securityUser(t);
+  const current = await login(user.email);
+  for (let attempt = 0; attempt < 8; attempt++)
+    assert.equal(
+      (
+        await fetchApi("/security/password", {
+          auth: current,
+          method: "POST",
+          body: {
+            currentPassword: "wrong-password",
+            newPassword: "replacement-password",
+          },
+        })
+      ).status,
+      400,
+    );
+  const limited = await fetchApi("/security/password", {
+    auth: current,
+    method: "POST",
+    body: { currentPassword: password, newPassword: "replacement-password" },
+  });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("retry-after"), "900");
+  assert.equal((await fetchApi("/security", { auth: current })).status, 200);
 });

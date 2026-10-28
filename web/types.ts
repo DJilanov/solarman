@@ -3,6 +3,32 @@ export interface Session {
   tenant: { id: string; name: string; timezone: string };
   csrfToken: string;
 }
+export interface BrowserSession {
+  id: string;
+  current: boolean;
+  userAgent: string;
+  createdAt: string;
+  lastSeenAt: string | null;
+  expiresAt: string;
+}
+export interface AccountSecurityData {
+  passwordChangedAt: string | null;
+  sessions: BrowserSession[];
+  sessionCount: number;
+  hasMoreSessions: boolean;
+  offset: number;
+  events: {
+    id: string;
+    kind:
+      | "signed_in"
+      | "signed_out"
+      | "password_changed"
+      | "session_revoked"
+      | "other_sessions_revoked";
+    affectedSessions: number;
+    at: string;
+  }[];
+}
 export interface Incident {
   id: string;
   kind:

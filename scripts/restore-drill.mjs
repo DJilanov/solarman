@@ -144,9 +144,13 @@ async function main() {
     );
     if (
       report.state !== "verified" ||
-      !report.authenticationVerified ||
-      !report.credentialsVerified ||
-      !report.controlQuarantined ||
+      report.inventoryVerified !== true ||
+      report.authenticationVerified !== true ||
+      report.accountSecurityVerified !== true ||
+      report.schemaUpgradeVerified !== true ||
+      report.credentialsVerified !== true ||
+      report.controlQuarantined !== true ||
+      !Array.isArray(report.migrationsApplied) ||
       report.deviceAccessAttempts !== 0
     )
       throw new BackupError(
@@ -154,6 +158,7 @@ async function main() {
           "sandbox_creation",
           "database_restore",
           "inventory_validation",
+          "schema_upgrade",
           "quarantine",
           "authentication",
           "database_cleanup_failed",

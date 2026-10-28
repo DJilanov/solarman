@@ -36,6 +36,7 @@ test("every literal translation used by the interface exists in both catalogues"
     "incident-summary.tsx",
     "backup-health.tsx",
     "api-capacity.tsx",
+    "account-security.tsx",
   ]) {
     const source = readFileSync(
       new URL(`../web/${file}`, import.meta.url),
@@ -46,6 +47,36 @@ test("every literal translation used by the interface exists in both catalogues"
       assert.ok(Object.hasOwn(english, key), `${file}: ${key}`);
       assert.ok(Object.hasOwn(bulgarian, key), `${file}: ${key}`);
     }
+  }
+});
+
+test("account security errors and event labels have English and Bulgarian translations", () => {
+  const backend = readFileSync(
+    new URL("../src/account-security.mjs", import.meta.url),
+    "utf8",
+  );
+  const frontend = readFileSync(
+    new URL("../web/account-security.tsx", import.meta.url),
+    "utf8",
+  );
+  const keys = [
+    ...[
+      ...backend.matchAll(/new SecurityError\(\s*\d+,\s*("(?:[^"\\]|\\.)*")/g),
+    ].map((match) => JSON.parse(match[1])),
+    ...[
+      ...frontend.matchAll(
+        /(?:signed_in|signed_out|password_changed|session_revoked|other_sessions_revoked):\s*("(?:[^"\\]|\\.)*")/g,
+      ),
+    ].map((match) => JSON.parse(match[1])),
+    "Passwords do not match",
+    "Password changed. Other browsers are signed out; this browser has renewed access.",
+    "Browser session signed out",
+    "Other browser sessions signed out",
+    "Unable to update account security",
+  ];
+  for (const key of keys) {
+    assert.ok(Object.hasOwn(english, key), key);
+    assert.ok(Object.hasOwn(bulgarian, key), key);
   }
 });
 

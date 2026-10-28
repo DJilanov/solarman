@@ -11,6 +11,7 @@ export interface WorkspaceContext {
   command: (action: Action) => Promise<void>;
   reload: () => void;
   refreshSession: () => Promise<void>;
+  updateSession: (session: Session) => void;
 }
 export const Context = createContext<WorkspaceContext | null>(null);
 export function useWorkspace(): WorkspaceContext {

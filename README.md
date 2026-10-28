@@ -17,6 +17,7 @@ SOLARMAN OpenAPI **App ID / App Secret** activation is required in addition to a
 - **Controls:** refresh diagnostics, top up to 50%, stop scheduled top-ups, pause/resume automation. Commands have idempotent request IDs, device acknowledgments, write readbacks and an audit trail.
 - **Activity:** searchable command history with individual request, verification and write details, plus all inverter writes including unlinked recovery operations and earlier bindings.
 - **System health:** persistent device, control-recovery and API-capacity alerts with seen/active/resolved states, available from Settings and an Overview alert summary.
+- **Account security:** change the dashboard password, review browser sessions, sign out another browser or every other browser, and inspect recent private security events. Available from Settings in English and Bulgarian.
 - **Settings:** private provider link, optional personal API keys, device discovery, compatibility profile, timezone, API usage and raw provider readings.
 
 Missing data stays unavailable rather than becoming zero. Estimated energy excludes gaps longer than twice the sampling interval and honors the selected timezone and daylight-saving boundaries. Browser refreshes read the database; explicit **Refresh readings** requests contact the inverter.
@@ -46,6 +47,16 @@ The control journal stores each write's intent before dispatch, then records dev
 Activity links to each command's recorded device, actor, result, decision and verification report. Write details show the requested register values and separate intent, acknowledgment, readback and cleanup times. Both command writes and the complete workspace journal use 25-record pages; the latter includes system recovery without a linked command and previous inverter bindings. New commands retain their selected device at acceptance. Historical device identity is backfilled only from unambiguous write or device-verification evidence; otherwise it remains unrecorded. Browsing or refreshing these records reads PostgreSQL and does not contact SOLARMAN or repeat a command. Search and pagination survive a round trip to command details. The detail screens load separately from the main dashboard bundle.
 
 Credential updates pause automation and revoke its activation atomically with the credential change. They preserve any outstanding cleanup obligation. The updated credentials must discover the same inverter before recovery can continue; the host must still allow writes. This recovery authority clears scheduled permission only and does not re-enable workspace control. Inverter, profile and timezone changes are refused while any previous binding has unresolved permission. A cached selected serial is never considered ready unless the latest successful discovery still returns it.
+
+## Account security
+
+Settings → Account security manages the local dashboard login separately from SOLARMAN credentials. Changing a password requires the current password, accepts 8–1024 characters without trimming, renews the current browser's authentication and CSRF secrets, and invalidates every other session atomically. The new session retains its public browser ID and original sign-in time. Password checks are rate-limited. Login issuance, password changes and revocations serialize on the user row, so a delayed login using a previously verified old password cannot restore access after a change.
+
+Browser sessions show sign-in, expiry and approximate activity times, with paginated access to every active session. Activity is recorded at most every five minutes without extending the seven-day authentication expiry. Browser descriptions come from client-provided User-Agent metadata, capped at 256 characters; old unknown activity remains unrecorded until that browser makes a request. Session lists expose public IDs and never authentication/CSRF secrets or password hashes. Users can end another browser or every other browser; the current browser uses the existing Sign out action. The latest 20 sign-in, sign-out, password-change and revocation events are private to that user.
+
+Changing dashboard credentials or signing out browsers does not pause inverter automation or cancel accepted commands. Use Stop scheduled top-ups when charging intent must be paused. If a connection fails during a password change, the interface reports an unconfirmed outcome rather than promising failure. The bootstrap password hash in the environment is used to create the initial account; it does not replace an existing user's changed password on restart. Forgotten-password recovery remains a separate pending workflow.
+
+Session renewal follows the [OWASP session management guidance](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html). Account-security requests use PostgreSQL only and do not initialize a provider runtime or dispatch inverter commands.
 
 ## Monitoring and source timestamps
 

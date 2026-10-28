@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { createServer } from "node:http";
 import assert from "node:assert/strict";
-import { createPool } from "./database.mjs";
+import { createPool, migrate } from "./database.mjs";
 import { createApp } from "./http-app.mjs";
 import { hashPassword, validPasswordHash } from "./auth.mjs";
 import { decryptCredentials, encryptionKey } from "./credentials.mjs";
@@ -79,13 +79,57 @@ async function verifyAuthentication(pool) {
       body: JSON.stringify({ email, password }),
     });
     assert.equal(login.status, 200);
-    const session = await login.json();
-    const cookie = login.headers.get("set-cookie").split(";")[0];
+    let session = await login.json();
+    let cookie = login.headers.get("set-cookie").split(";")[0];
     const authenticated = await fetch(origin + "/api/auth/session", {
       headers: { cookie },
     });
     assert.equal(authenticated.status, 200);
     assert.equal((await authenticated.json()).user.id, user);
+    const second = await fetch(origin + "/api/auth/login", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ email, password }),
+    });
+    assert.equal(second.status, 200);
+    const previous = [cookie, second.headers.get("set-cookie").split(";")[0]];
+    const changed = await fetch(origin + "/api/security/password", {
+      method: "POST",
+      headers: {
+        cookie,
+        origin: "http://localhost",
+        "content-type": "application/json",
+        "x-csrf-token": session.csrfToken,
+      },
+      body: JSON.stringify({
+        currentPassword: password,
+        newPassword: randomBytes(32).toString("base64url"),
+      }),
+    });
+    assert.equal(changed.status, 200);
+    const renewed = await changed.json();
+    assert.notEqual(renewed.csrfToken, session.csrfToken);
+    session = renewed;
+    cookie = changed.headers.get("set-cookie").split(";")[0];
+    for (const oldCookie of previous)
+      assert.equal(
+        (
+          await fetch(origin + "/api/auth/session", {
+            headers: { cookie: oldCookie },
+          })
+        ).status,
+        401,
+      );
+    const security = await fetch(origin + "/api/security", {
+      headers: { cookie },
+    });
+    assert.equal(security.status, 200);
+    const state = await security.json();
+    assert.equal(state.sessionCount, 1);
+    assert.ok(state.events.some((event) => event.kind === "password_changed"));
     const logout = await fetch(origin + "/api/auth/logout", {
       method: "POST",
       headers: {
@@ -216,6 +260,13 @@ export async function restoreDrill(header, dump) {
     } finally {
       connection.release();
     }
+    stage = "schema_upgrade";
+    await migrate(pool);
+    report.migrationsApplied = (
+      await pool.query("SELECT version FROM schema_migrations ORDER BY version")
+    ).rows
+      .map((row) => row.version)
+      .filter((version) => !header.contents.migrations.includes(version));
     stage = "quarantine";
     await pool.query(
       "UPDATE controller_state SET paused=true,manual_topup=false,control_enabled=false,verification=null,topup_expires_at=null,control_epoch=control_epoch+1",
@@ -239,6 +290,8 @@ export async function restoreDrill(header, dump) {
       inventoryVerified: true,
       credentialsVerified: true,
       authenticationVerified: true,
+      accountSecurityVerified: true,
+      schemaUpgradeVerified: true,
       controlQuarantined: true,
       deviceAccessAttempts: 0,
     });

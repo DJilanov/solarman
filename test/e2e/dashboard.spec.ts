@@ -12,6 +12,7 @@ import type {
   Incident,
   BackupStatus,
   ApiCapacity,
+  AccountSecurityData,
 } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
@@ -29,6 +30,234 @@ async function signIn(page: Page): Promise<void> {
     page.getByRole("heading", { name: "Energy overview", exact: true }),
   ).toBeVisible();
 }
+
+test("account security renews the current browser and revokes other browsers with real cookies in Bulgarian", async ({
+  page,
+  browser,
+}) => {
+  await signIn(page);
+  const owner = (await (
+    await page.request.get("/api/auth/session")
+  ).json()) as Session;
+  const email = `security-${Date.now()}@example.test`;
+  const initial = "security-fixture-password";
+  const replacement = "new-security-fixture-password= ";
+  const invitation = await page.request.post("/api/admin/invitations", {
+    headers: {
+      origin: "http://localhost:3000",
+      "x-csrf-token": owner.csrfToken,
+    },
+    data: { email, tenantName: "Security browser fixture" },
+  });
+  expect(invitation.status()).toBe(201);
+  const invitationData = (await invitation.json()) as { url: string };
+  const firstContext = await browser.newContext({
+    baseURL: "http://localhost:3000",
+    locale: "en-GB",
+  });
+  const secondContext = await browser.newContext({
+    baseURL: "http://localhost:3000",
+    locale: "en-GB",
+  });
+  try {
+    const activation = await firstContext.request.post("/api/auth/activate", {
+      headers: { origin: "http://localhost:3000" },
+      data: {
+        token: new URL(invitationData.url).searchParams.get("token"),
+        password: initial,
+      },
+    });
+    expect(activation.status()).toBe(200);
+    const first = await firstContext.newPage();
+    const second = await secondContext.newPage();
+    const loginSecond = async (password: string): Promise<void> => {
+      await second.goto("/");
+      await second.getByLabel("Email address", { exact: true }).fill(email);
+      await second.getByLabel("Password", { exact: true }).fill(password);
+      await second
+        .getByRole("button", { name: "Sign in", exact: true })
+        .click();
+      await expect(
+        second.getByRole("heading", { name: "Energy overview", exact: true }),
+      ).toBeVisible();
+    };
+    await loginSecond(initial);
+    await first.goto("/settings");
+    await first
+      .getByRole("link", { name: "Account security", exact: true })
+      .click();
+    await expect(first.locator(".browser-session")).toHaveCount(2);
+    const before = (await (
+      await first.request.get("/api/auth/session")
+    ).json()) as Session;
+    await first
+      .getByRole("button", { name: "End browser session", exact: true })
+      .click();
+    await expect(first.locator(".browser-session")).toHaveCount(1);
+    expect((await second.request.get("/api/auth/session")).status()).toBe(401);
+    await loginSecond(initial);
+    await first
+      .getByRole("button", { name: "Refresh status", exact: true })
+      .click();
+    await expect(first.locator(".browser-session")).toHaveCount(2);
+    await first
+      .getByLabel("Current password", { exact: true })
+      .fill("incorrect-password");
+    await first.getByLabel("New password", { exact: true }).fill(replacement);
+    await first
+      .getByLabel("Confirm new password", { exact: true })
+      .fill("mismatching-password");
+    await first.locator(".language-switch select").selectOption("bg");
+    await first
+      .getByRole("button", { name: "Промени паролата", exact: true })
+      .click();
+    await expect(first.getByRole("alert")).toContainText(
+      "Паролите не съвпадат",
+    );
+    await first
+      .getByLabel("Потвърдете новата парола", { exact: true })
+      .fill(replacement);
+    await first
+      .getByRole("button", { name: "Промени паролата", exact: true })
+      .click();
+    await expect(first.getByRole("alert")).toContainText(
+      "Текущата парола е неправилна",
+    );
+    expect((await second.request.get("/api/auth/session")).status()).toBe(200);
+    await first.getByLabel("Текуща парола", { exact: true }).fill(initial);
+    await first
+      .getByRole("button", { name: "Промени паролата", exact: true })
+      .click();
+    await expect(
+      first.getByText(
+        "Паролата е променена. Другите браузъри са излезли от акаунта; достъпът на този браузър е обновен.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(first.locator(".browser-session")).toHaveCount(1);
+    const after = (await (
+      await first.request.get("/api/auth/session")
+    ).json()) as Session;
+    expect(after.csrfToken).not.toBe(before.csrfToken);
+    expect((await second.request.get("/api/auth/session")).status()).toBe(401);
+    await expect(first.getByLabel("Нова парола", { exact: true })).toHaveValue(
+      "",
+    );
+    await loginSecond(replacement);
+    await first
+      .getByRole("button", { name: "Обновяване на състоянието", exact: true })
+      .click();
+    await expect(first.locator(".browser-session")).toHaveCount(2);
+    await first
+      .getByRole("button", { name: "Излез от другите браузъри", exact: true })
+      .click();
+    await expect(first.locator(".browser-session")).toHaveCount(1);
+    expect((await second.request.get("/api/auth/session")).status()).toBe(401);
+    await first.setViewportSize({ width: 320, height: 740 });
+    await expect(first.locator(".security-events")).toContainText(
+      "Промяна на паролата и обновяване на достъпа през браузър",
+    );
+    expect(
+      await first.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      ),
+    ).toBe(false);
+    await first.screenshot({
+      path: "test-results/account-security-mobile-bg.png",
+      fullPage: true,
+    });
+    await first.getByRole("button", { name: "Изход", exact: true }).click();
+    await expect(
+      first.getByRole("heading", { name: "Добре дошли отново", exact: true }),
+    ).toBeVisible();
+  } finally {
+    await firstContext.close();
+    await secondContext.close();
+  }
+});
+
+test("account security offers retry, session pagination and an honest unknown password outcome", async ({
+  page,
+}) => {
+  await signIn(page);
+  const now = new Date().toISOString();
+  let fail = true;
+  let offset = 0;
+  const fixture: AccountSecurityData = {
+    passwordChangedAt: null,
+    sessionCount: 22,
+    offset: 0,
+    hasMoreSessions: true,
+    sessions: [
+      {
+        id: randomUUID(),
+        current: true,
+        userAgent: "fixture browser",
+        createdAt: now,
+        lastSeenAt: now,
+        expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      },
+    ],
+    events: [],
+  };
+  await page.route("**/api/security?*", (route) => {
+    offset = Number(new URL(route.request().url()).searchParams.get("offset"));
+    if (fail)
+      return route.fulfill({
+        status: 503,
+        json: { error: "Temporary security service failure" },
+      });
+    return route.fulfill({
+      json: {
+        ...fixture,
+        offset,
+        hasMoreSessions: offset === 0,
+        sessions: offset === 0 ? fixture.sessions : [],
+      },
+    });
+  });
+  await page.goto("/settings/security");
+  await expect(page.getByRole("alert")).toContainText(
+    "Temporary security service failure",
+  );
+  fail = false;
+  await page
+    .getByRole("button", { name: "Refresh status", exact: true })
+    .click();
+  await expect(page.getByText("This browser", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(
+    page.getByText("No browser sessions on this page.", { exact: true }),
+  ).toBeVisible();
+  expect(offset).toBe(20);
+  await page.getByRole("button", { name: "Previous", exact: true }).click();
+  await expect(page.getByText("This browser", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Previous", exact: true }),
+  ).toBeDisabled();
+  await page.route("**/api/security/password", (route) =>
+    route.abort("failed"),
+  );
+  await page
+    .getByLabel("Current password", { exact: true })
+    .fill("fixture-current-password");
+  await page
+    .getByLabel("New password", { exact: true })
+    .fill("fixture-replacement-password");
+  await page
+    .getByLabel("Confirm new password", { exact: true })
+    .fill("fixture-replacement-password");
+  await page
+    .getByRole("button", { name: "Change password", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText(
+    "The password change could not be confirmed. It may have completed",
+  );
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(page.getByRole("alert")).toContainText(
+    "Промяната на паролата не може да бъде потвърдена",
+  );
+});
 
 test("stored measurements render charts, legends and a full CSV download", async ({
   page,
