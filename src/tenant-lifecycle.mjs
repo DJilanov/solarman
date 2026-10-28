@@ -1,4 +1,5 @@
 import { AccountSecurity, SecurityError } from "./account-security.mjs";
+import { invalidateCommissioning } from "./commissioning-state.mjs";
 
 export const SUSPENDED_MESSAGE =
   "This workspace is suspended. New automation and administration are unavailable.";
@@ -14,11 +15,17 @@ export async function requireActiveTenant(client, tenantId) {
     throw new SecurityError(409, SUSPENDED_MESSAGE);
 }
 
-/** @param {import('pg').PoolClient} client @param {string} tenantId @param {boolean} enabled @returns {Promise<void>} */
-export async function quarantineWorkspace(client, tenantId, enabled) {
+/** @param {import('pg').PoolClient} client @param {string} tenantId @param {boolean} enabled @param {string} [reason] @returns {Promise<void>} */
+export async function quarantineWorkspace(
+  client,
+  tenantId,
+  enabled,
+  reason = "workspace_changed",
+) {
+  await invalidateCommissioning(client, tenantId, reason);
   await client.query(
-    "UPDATE policy_observation_runs SET state='invalidated',reason='workspace_changed',ended_at=clock_timestamp() WHERE tenant_id=$1 AND state='observing'",
-    [tenantId],
+    "UPDATE policy_observation_runs SET state='invalidated',reason=$2,ended_at=clock_timestamp() WHERE tenant_id=$1 AND state='observing'",
+    [tenantId, reason],
   );
   await client.query(
     "UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,control_enabled=false,verification=null,control_epoch=control_epoch+1,updated_at=now() WHERE tenant_id=$1",
@@ -35,7 +42,7 @@ export async function quarantineWorkspace(client, tenantId, enabled) {
       [tenantId],
     );
   await client.query(
-    "UPDATE command_executions SET status='interrupted',message='Control request cancelled; workspace state changed',completed_at=now() WHERE tenant_id=$1 AND action IN ('resume','topup','enable_controls') AND status='queued'",
+    "UPDATE command_executions SET status='interrupted',message='Control request cancelled; workspace state changed',completed_at=now() WHERE tenant_id=$1 AND action IN ('resume','topup','enable_controls','commission_controls','commission_topup') AND status='queued'",
     [tenantId],
   );
 }

@@ -653,6 +653,9 @@ export function Controls(): ReactNode {
         <Link className="button secondary" to="/controls/observations">
           {tr("Observe the home policy")}
         </Link>
+        <Link className="button secondary" to="/controls/commissioning">
+          {tr("Commission the home policy")}
+        </Link>
       </Panel>
       <div className="controls-grid">
         <Panel

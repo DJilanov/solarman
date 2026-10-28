@@ -59,3 +59,11 @@ Persistent stale-data detection allows the effective device poll interval plus e
 Read `/home/mitko/solarman/previous` and confirm the desired release and schema compatibility before switching. Delete only the `solarman` PM2 process, then set `RELEASE_SHA` to the desired commit and run `pm2 start <release>/ecosystem.config.cjs --only solarman --update-env`. Verify health and the actual process working directory and frontend, update the `current` symlink, then run `pm2 save`. Do not restart other applications.
 
 If hardware writes were enabled and the API is unavailable, process shutdown cannot guarantee AC permission was cleared. Check the inverter in SOLARMAN and follow [manual recovery](controller.md#manual-recovery).
+
+## Commissioning and rollback
+
+Migration 020 revokes previous activation while retaining cleanup obligations; activation alone cannot replace commissioning approval. Ordinary starts and enabling writes check approved device-bound commissioning. Attended sessions require current-password confirmation and end on expiry or service restart. Keep host writes disabled until an attended physical test is ready. The independent source-limit mapping remains unverified, so unattended approval stays blocked.
+
+If the new release fails health checks, deployment stops that process and runs `scripts/quarantine-rollback.mjs` before starting the previous release. Quarantine pauses/revokes all workspace controls, invalidates commissioning and observations, cancels queued starts and preserves physical cleanup. If quarantine fails, the previous application is not started. This prevents older software, which lacks the new commissioning gate, from inheriting an attended session.
+
+Recovery tooling invalidates both active attended sessions and approval fixtures after restoring a backup. Its `commissioningQuarantined` proof includes archived invalidation records and must pass before a restore is accepted.

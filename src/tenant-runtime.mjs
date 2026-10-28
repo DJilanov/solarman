@@ -18,6 +18,12 @@ import { Supervision } from "./supervision.mjs";
 import { observationBinding } from "./policy-observations.mjs";
 import { DeviceHealth } from "./operations.mjs";
 import {
+  commissioningAllowed,
+  commissioningBinding,
+  currentCommissioning,
+  invalidateCommissioning,
+} from "./commissioning-state.mjs";
+import {
   BLUESUN_MAPPING,
   TELEMETRY_MAX_AGE_MS,
   INVERTER_CLOCK_MAX_SKEW_SECONDS,
@@ -56,6 +62,7 @@ export class TenantRuntime {
     this.topupExpiresAt = null;
     this.controlEnabled = false;
     this.verification = null;
+    this.commissioning = null;
     this.enableEpoch = 0;
     this.inhibitStarts = false;
     this.controlPollMs = 900_000;
@@ -203,6 +210,24 @@ export class TenantRuntime {
     this.verification = result.rows[0].verification;
     this.topupExpiresAt = result.rows[0].topup_expires_at;
     this.lifecycle = result.rows[0].lifecycle;
+    this.commissioning = await currentCommissioning(this.pool, this.tenantId);
+    if (
+      this.controlEnabled &&
+      !this.commissioningPermitted("approved") &&
+      !this.commissioningPermitted("attended")
+    ) {
+      this.inhibitStarts = true;
+      await this.journal.requestCleanup({
+        pause: true,
+        cancelStarts: true,
+        revokeControl: true,
+      });
+      this.controlEnabled = false;
+      this.verification = null;
+      this.paused = true;
+      this.manualTopup = false;
+      this.topupExpiresAt = null;
+    }
     if (this.lifecycle !== "active") {
       this.inhibitStarts = true;
       if (
@@ -258,6 +283,15 @@ export class TenantRuntime {
         supportedControlFirmware(this.verification.firmware) &&
         this.verification.device === this.device &&
         this.verification.profile === this.account?.profile,
+    );
+  }
+
+  /** @param {'approved'|'attended'} mode @returns {boolean} */
+  commissioningPermitted(mode) {
+    return commissioningAllowed(
+      this.commissioning,
+      commissioningBinding(this.account, this.verification),
+      mode,
     );
   }
 
@@ -328,6 +362,7 @@ export class TenantRuntime {
       supported: this.account?.profile === "bluesun-bse20kh3",
       serverAllowed: this.hostWritesAllowed,
       workspaceEnabled: this.controlEnabled,
+      commissioningApproved: this.commissioningPermitted("approved"),
       verified: this.verificationStatus(now).state === "verified",
       firmwareVerified: matchingControlFirmware(
         this.verification?.firmware,
@@ -361,6 +396,13 @@ export class TenantRuntime {
         verificationStatus: this.verificationStatus(now),
         clock: this.clockEvidence(now),
         firmware: this.firmware,
+        commissioning: {
+          id: this.commissioning?.id ?? null,
+          state: this.commissioning?.state ?? "missing",
+          approved: this.commissioningPermitted("approved"),
+          attended: this.commissioningPermitted("attended"),
+          attendedUntil: this.commissioning?.attended_until ?? null,
+        },
         recovery: this.journal.status(this.executionId),
         ...readiness,
       },
@@ -544,6 +586,12 @@ export class TenantRuntime {
           !matchingControlFirmware(verification?.firmware, this.firmware)),
     );
     if (verificationInvalidated) {
+      await invalidateCommissioning(
+        this.pool,
+        this.tenantId,
+        "firmware_changed",
+      );
+      this.commissioning = null;
       // Revoke starts atomically without discarding the original device's cleanup obligation.
       this.inhibitStarts = true;
       this.enableEpoch++;
@@ -880,6 +928,8 @@ export class TenantRuntime {
       this.lifecycle === "active" &&
       this.writesEnabled &&
       this.controlEnabled &&
+      (this.commissioningPermitted("approved") ||
+        this.commissioningPermitted("attended")) &&
       this.verifiedDevice();
     if (canWrite && !this.ratedPowerChecked) {
       const rated = await this.inspector.read(4, 7, 2);
@@ -1056,15 +1106,21 @@ export class TenantRuntime {
     }
   }
 
-  /** @param {'enable_controls' | 'resume' | 'topup'} action @param {string} epoch @returns {Promise<boolean>} */
+  /** @param {'enable_controls' | 'resume' | 'topup' | 'commission_controls' | 'commission_topup'} action @param {string} epoch @returns {Promise<boolean>} */
   async applyStartIntent(action, epoch) {
-    if (action === "enable_controls") {
+    if (["enable_controls", "commission_controls"].includes(action)) {
       const updated = await this.hub.budget.enableControl({
         appKey: this.appKey,
         tenantId: this.tenantId,
         accountId: this.account.id,
         device: this.device,
         epoch,
+        commissioningMode:
+          action === "commission_controls" ? "attended" : "approved",
+        commissioningBinding: commissioningBinding(
+          this.account,
+          this.verification,
+        ),
       });
       if (updated) await this.initialize();
       return updated;
@@ -1073,12 +1129,14 @@ export class TenantRuntime {
     const result = await this.q(
       `UPDATE controller_state SET
       paused=CASE WHEN $2='resume' THEN false ELSE paused END,
-      manual_topup=($2='topup'),
-      topup_expires_at=CASE WHEN $2='topup' THEN now()+interval '6 hours' ELSE null END,
+      manual_topup=($2 IN('topup','commission_topup')),
+      topup_expires_at=CASE WHEN $2='commission_topup' THEN (SELECT attended_until FROM control_commissioning WHERE tenant_id=$1 AND state='attending') WHEN $2='topup' THEN now()+interval '6 hours' ELSE null END,
       updated_at=now()
       WHERE tenant_id=$1 AND control_epoch=$3 AND control_enabled AND EXISTS (SELECT 1 FROM tenants t WHERE t.id=$1 AND t.lifecycle='active')
+      AND EXISTS(SELECT 1 FROM control_commissioning r WHERE r.tenant_id=$1 AND r.binding=$4 AND
+        (($2='commission_topup' AND r.state='attending' AND r.attended_until>clock_timestamp()) OR ($2<>'commission_topup' AND r.state='approved')))
       RETURNING tenant_id`,
-      [action, epoch],
+      [action, epoch, commissioningBinding(this.account, this.verification)],
     );
     if (!result.rowCount) return false;
     await this.initialize();
@@ -1102,7 +1160,13 @@ export class TenantRuntime {
       .rows[0];
     this.lifecycle = tenant?.lifecycle ?? "suspended";
     if (
-      ["enable_controls", "resume", "topup"].includes(action) &&
+      [
+        "enable_controls",
+        "resume",
+        "topup",
+        "commission_controls",
+        "commission_topup",
+      ].includes(action) &&
       this.lifecycle !== "active"
     )
       throw new Error(
@@ -1113,6 +1177,8 @@ export class TenantRuntime {
         "refresh",
         "verify",
         "enable_controls",
+        "commission_controls",
+        "commission_topup",
         "disable_controls",
         "retry_capacity",
         "topup",
@@ -1156,11 +1222,24 @@ export class TenantRuntime {
         "Hardware writes require an enabled, verified Bluesun profile",
       );
     if (
+      ["commission_controls", "commission_topup"].includes(action) &&
+      (!this.readiness().canCommission ||
+        !this.commissioningPermitted("attended") ||
+        (action === "commission_topup" && !this.controlEnabled))
+    )
+      throw new Error("An active attended commissioning session is required");
+    if (
       this.scheduled.size >= 5 &&
       !["stop", "pause", "disable_controls"].includes(action)
     )
       throw new Error("Wait for a pending command to finish");
-    const controlEpoch = ["enable_controls", "resume", "topup"].includes(action)
+    const controlEpoch = [
+      "enable_controls",
+      "resume",
+      "topup",
+      "commission_controls",
+      "commission_topup",
+    ].includes(action)
       ? (
           await this.q(
             "SELECT control_epoch::text AS epoch FROM controller_state WHERE tenant_id=$1",
@@ -1238,7 +1317,13 @@ export class TenantRuntime {
           }
           this.events = [];
           if (
-            ["topup", "resume", "enable_controls"].includes(action) &&
+            [
+              "topup",
+              "resume",
+              "enable_controls",
+              "commission_controls",
+              "commission_topup",
+            ].includes(action) &&
             enableEpoch !== this.enableEpoch
           ) {
             await this.q(
@@ -1262,11 +1347,16 @@ export class TenantRuntime {
             message = report.passed
               ? "Device settings verified"
               : "Device settings need attention";
-          } else if (action === "enable_controls") {
+          } else if (
+            ["enable_controls", "commission_controls"].includes(action)
+          ) {
             if (!this.capacity()?.controlAvailable)
               throw new ApiCapacityError();
             if (
-              !this.readiness().canEnable ||
+              !(action === "commission_controls"
+                ? this.readiness().canCommission &&
+                  this.commissioningPermitted("attended")
+                : this.readiness().canEnable) ||
               Date.now() - new Date(this.verification.checkedAt).getTime() >
                 1800_000
             )
@@ -1281,7 +1371,9 @@ export class TenantRuntime {
               return;
             }
             message =
-              "Control enabled for this workspace; automation remains paused";
+              action === "commission_controls"
+                ? "Attended controls enabled; unattended automation remains blocked"
+                : "Control enabled for this workspace; automation remains paused";
           } else if (["stop", "pause", "disable_controls"].includes(action)) {
             await this.q(
               "UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
@@ -1298,8 +1390,13 @@ export class TenantRuntime {
                 ? "Workspace control disabled; scheduled permission cleared"
                 : "Workspace control disabled; scheduled permission off remains unconfirmed";
           } else {
-            if (["topup", "resume"].includes(action)) {
-              if (!this.readiness().canStart)
+            if (["topup", "resume", "commission_topup"].includes(action)) {
+              if (
+                !(action === "commission_topup"
+                  ? this.readiness().canCommission &&
+                    this.commissioningPermitted("attended")
+                  : this.readiness().canStart)
+              )
                 throw new Error(
                   "Hardware writes require an enabled, verified Bluesun profile",
                 );
@@ -1315,10 +1412,10 @@ export class TenantRuntime {
             if (this.client && this.ready) {
               const result = await this.collect(
                 action === "refresh",
-                ["topup", "resume"].includes(action),
+                ["topup", "resume", "commission_topup"].includes(action),
               );
               if (
-                ["topup", "resume"].includes(action) &&
+                ["topup", "resume", "commission_topup"].includes(action) &&
                 enableEpoch !== this.enableEpoch
               ) {
                 await this.cancelStart(job.id);
@@ -1334,7 +1431,7 @@ export class TenantRuntime {
             [job.id, message, { events: this.events }],
           );
         } catch (error) {
-          if (action === "topup") {
+          if (["topup", "commission_topup"].includes(action)) {
             this.cleanupRequired = true;
             await this.q(
               "UPDATE controller_state SET manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
@@ -1344,7 +1441,12 @@ export class TenantRuntime {
           await this.fail(
             job.id,
             error,
-            !["refresh", "verify", "enable_controls"].includes(action),
+            ![
+              "refresh",
+              "verify",
+              "enable_controls",
+              "commission_controls",
+            ].includes(action),
           );
         } finally {
           this.executionId = null;

@@ -18,6 +18,7 @@ import type {
   TenantMetadata,
   PolicyObservationData,
   PolicyObservationRun,
+  CommissioningData,
 } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
@@ -3742,4 +3743,255 @@ test("policy observations preserve an unknown start, distinguish physical signal
     fullPage: true,
   });
   expect(actions).toEqual(["start", "check", "stop"]);
+});
+
+test("commissioning separates preparation from attended controls, keeps Stop available and covers unconfirmed changes in Bulgarian on mobile", async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await signIn(page);
+  const overview = (await (
+    await page.request.get("/api/overview")
+  ).json()) as OverviewData;
+  const now = new Date().toISOString();
+  const identity = {
+    accountId: randomUUID(),
+    device: "commissioning-browser-inverter",
+    profile: "bluesun-bse20kh3",
+    model: "BSE20KH3",
+    timezone: "Europe/Sofia",
+    mapping: "browser-fixture",
+    policy: "browser-fixture",
+    firmware: { protocol: "2.02", dsp: "1.57", hmi: "1.45" },
+  };
+  const verification = {
+    checkedAt: now,
+    passed: true,
+    checks: [],
+    firmware: identity.firmware,
+  };
+  overview.controller.control = {
+    ...overview.controller.control,
+    canCommission: true,
+    canStart: false,
+    canEnable: false,
+    canStop: true,
+    serverAllowed: true,
+    workspaceEnabled: false,
+    verification,
+    verificationStatus: {
+      state: "verified",
+      checkedAt: now,
+      expiresAt: new Date(Date.now() + 1800000).toISOString(),
+    },
+    commissioning: {
+      id: null,
+      state: "missing",
+      approved: false,
+      attended: false,
+      attendedUntil: null,
+    },
+  };
+  overview.latest = {
+    at: now,
+    receivedAt: now,
+    source: "provider",
+    samplingSeconds: 300,
+    soc: 30,
+    pvW: 0,
+    loadW: 1000,
+    gridW: 3000,
+    batteryW: -1942,
+    temperatureC: 18,
+    acEnabled: false,
+  };
+  const data: CommissioningData = {
+    canPrepare: true,
+    attendedMinutes: 30,
+    identity,
+    run: null,
+    history: [],
+  };
+  const mutations: string[] = [];
+  const commands: string[] = [];
+  let loseCreate = true;
+  let running: Command | null = null;
+  await page.route("**/api/overview", async (route) =>
+    route.fulfill({ json: overview }),
+  );
+  await page.route("**/api/commissioning", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as {
+        action: string;
+        currentPassword: string;
+        attending?: boolean;
+      };
+      expect(body.currentPassword).toBe("browser-fixture-password");
+      expect(route.request().headers()["x-csrf-token"]).toBeTruthy();
+      mutations.push(body.action);
+      if (body.action === "create") {
+        const id = randomUUID();
+        data.run = {
+          id,
+          state: "preparing",
+          revision: "1",
+          createdAt: now,
+          updatedAt: now,
+          attendedUntil: null,
+          currentBinding: true,
+          identity,
+          verification,
+          evidence: {},
+          events: [{ action: "created", revision: "1", created_at: now }],
+          requirements: (
+            [
+              "solar",
+              "discharge",
+              "gridCharge",
+              "gridStop",
+              "dayNight",
+              "recovery",
+              "sourceLimits",
+            ] as const
+          ).map((code) => ({ code, passed: false })),
+        };
+        data.history = [
+          {
+            id,
+            state: "preparing",
+            created_at: now,
+            ended_at: null,
+            reason: null,
+          },
+        ];
+        if (loseCreate) {
+          loseCreate = false;
+          return route.abort("failed");
+        }
+      } else if (body.action === "attend" && data.run) {
+        expect(body.attending).toBe(true);
+        data.run.state = "attending";
+        data.run.revision = "2";
+        data.run.attendedUntil = new Date(Date.now() + 1800000).toISOString();
+        overview.controller.control.commissioning = {
+          id: data.run.id,
+          state: "attending",
+          approved: false,
+          attended: true,
+          attendedUntil: data.run.attendedUntil,
+        };
+      }
+    }
+    return route.fulfill({ json: data });
+  });
+  await page.route("**/api/commands", async (route) => {
+    const body = route.request().postDataJSON() as { action: string };
+    commands.push(body.action);
+    const job: Command = {
+      id: randomUUID(),
+      actor: "Browser fixture",
+      action: body.action,
+      status: body.action === "commission_topup" ? "running" : "succeeded",
+      message: null,
+      created_at: now,
+      completed_at: now,
+    };
+    if (body.action === "commission_controls")
+      overview.controller.control.workspaceEnabled = true;
+    if (body.action === "commission_topup") running = job;
+    return route.fulfill({ status: 202, json: job });
+  });
+  await page.route("**/api/commands/*", async (route) =>
+    route.fulfill({ json: running }),
+  );
+  await page.goto("/controls/commissioning");
+  await expect(
+    page.getByRole("heading", { name: "Prove the home policy", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByLabel("Current dashboard password", { exact: true })
+    .fill("browser-fixture-password");
+  await page
+    .getByRole("button", { name: "Prepare commissioning", exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      "The commissioning change is unconfirmed. Refresh its status before trying again.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Open attended session", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByLabel("Current dashboard password", { exact: true }),
+  ).toHaveValue("");
+  await page
+    .getByRole("button", { name: "Refresh commissioning status", exact: true })
+    .click();
+  await page
+    .getByLabel("Current dashboard password", { exact: true })
+    .fill("browser-fixture-password");
+  await page
+    .getByRole("checkbox", {
+      name: "I am attending the inverter test and can verify its physical behavior and recovery.",
+      exact: true,
+    })
+    .check();
+  await page
+    .getByRole("button", { name: "Open attended session", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", {
+      name: "Approve unattended control",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await page
+    .getByRole("button", { name: "Enable attended controls", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Test grid top-up to 50%", exact: true }),
+  ).toBeEnabled();
+  await page
+    .getByRole("button", { name: "Test grid top-up to 50%", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Stop scheduled top-ups", exact: true }),
+  ).toBeEnabled();
+  await page
+    .getByRole("button", { name: "Stop scheduled top-ups", exact: true })
+    .click();
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(
+    page.getByRole("heading", {
+      name: "Проверка на правилата за дома",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Отделни ограничения на мощността от мрежата и слънцето", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "Одобри автоматичното управление",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await page.setViewportSize({ width: 320, height: 1100 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "test-results/commissioning-mobile-bg.png",
+    fullPage: true,
+  });
+  expect(pageErrors).toEqual([]);
+  expect(mutations).toEqual(["create", "attend"]);
+  expect(commands).toEqual(["commission_controls", "commission_topup", "stop"]);
 });

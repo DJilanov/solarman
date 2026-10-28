@@ -5,8 +5,13 @@ import { createPool, migrate } from "./database.mjs";
 import { createApp } from "./http-app.mjs";
 import { WorkspaceOffboarding } from "./workspace-offboarding.mjs";
 import { erasureReceipt } from "./erasure-guard.mjs";
+import { invalidateCommissioning } from "./commissioning-state.mjs";
 import { hashPassword, validPasswordHash } from "./auth.mjs";
-import { verifyStoredCredentials, encryptionKey,encryptCredentials } from "./credentials.mjs";
+import {
+  verifyStoredCredentials,
+  encryptionKey,
+  encryptCredentials,
+} from "./credentials.mjs";
 import {
   observationIdentity,
   observationBinding,
@@ -55,8 +60,12 @@ export function validateDrill(header, dump) {
 }
 
 /** @typedef {{password:string,user:string,email:string}} AuthenticationFixture */
-/** @param {import('pg').Pool} pool @param {Buffer} key @returns {Promise<AuthenticationFixture>} */
-async function createAuthenticationFixture(pool, key) {
+/** @param {import('pg').Pool} pool @param {Buffer} key @param {'attending'|'approved'} [commissioningState] @returns {Promise<AuthenticationFixture>} */
+async function createAuthenticationFixture(
+  pool,
+  key,
+  commissioningState = "attending",
+) {
   const password = randomBytes(32).toString("base64url");
   const tenant = randomUUID();
   const user = randomUUID();
@@ -109,6 +118,20 @@ async function createAuthenticationFixture(pool, key) {
       { checkedAt: new Date().toISOString(), passed: false, checks: [] },
       user,
       emptyObservationProgress(),
+    ],
+  );
+  await pool.query(
+    "INSERT INTO control_commissioning(id,tenant_id,account_id,device,binding,identity,verification,created_by,state,attended_until) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,CASE WHEN $9='attending' THEN clock_timestamp()+interval '30 minutes' ELSE null END)",
+    [
+      randomUUID(),
+      tenant,
+      account,
+      device,
+      observationBinding(identity),
+      identity,
+      { checkedAt: new Date().toISOString(), passed: false, checks: [] },
+      user,
+      commissioningState,
     ],
   );
   return { password, user, email };
@@ -337,6 +360,16 @@ async function verifyAuthentication(pool, { password, user, email }, erased) {
       );
     assert.equal(observation.data.state, "invalidated");
     assert.equal(observation.data.reason, "restore");
+    assert.equal(complete.counts.commissioning, 1);
+    const commissioning = lines
+      .map((line) => JSON.parse(line))
+      .find(
+        (record) =>
+          record.type === "record" && record.section === "commissioning",
+      );
+    assert.equal(commissioning.data.state, "invalidated");
+    assert.equal(commissioning.data.reason, "restore");
+    assert.equal(commissioning.data.attended_until, null);
     assert.equal(
       complete.sha256,
       createHash("sha256")
@@ -552,6 +585,29 @@ export async function restoreDrill(header, dump) {
       pool,
       encryptionKey(header.credentialKey),
     );
+    await createAuthenticationFixture(
+      pool,
+      encryptionKey(header.credentialKey),
+      "approved",
+    );
+    for (const state of ["attending", "approved"])
+      assert.ok(
+        (
+          await pool.query(
+            "SELECT count(*)::int AS n FROM control_commissioning WHERE state=$1",
+            [state],
+          )
+        ).rows[0].n > 0,
+      );
+    await invalidateCommissioning(pool, null, "restore");
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM control_commissioning WHERE state<>'invalidated' OR attended_until IS NOT NULL",
+        )
+      ).rows[0].n,
+      0,
+    );
     assert.ok(
       (
         await pool.query(
@@ -644,6 +700,7 @@ export async function restoreDrill(header, dump) {
       workspaceExportVerified: true,
       erasureFencesVerified: true,
       observationsQuarantined: true,
+      commissioningQuarantined: true,
       recoveryQuarantined: true,
       schemaUpgradeVerified: true,
       controlQuarantined: true,

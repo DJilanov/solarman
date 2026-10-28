@@ -219,9 +219,17 @@ export interface ControllerStatus {
     serverAllowed: boolean;
     workspaceEnabled: boolean;
     canVerify: boolean;
+    canCommission: boolean;
     canEnable: boolean;
     canStart: boolean;
     canStop: boolean;
+    commissioning: {
+      id: string | null;
+      state: "missing" | "preparing" | "attending" | "approved";
+      approved: boolean;
+      attended: boolean;
+      attendedUntil: string | null;
+    };
     verificationStatus: {
       state: "missing" | "failed" | "outdated" | "expired" | "verified";
       checkedAt: string | null;
@@ -469,6 +477,8 @@ export type Action =
   | "disable_controls"
   | "retry_capacity"
   | "enable_controls"
+  | "commission_controls"
+  | "commission_topup"
   | "topup"
   | "stop"
   | "pause"
@@ -542,6 +552,50 @@ export interface PolicyObservationData {
     state: ObservationState;
     reason: string | null;
     started_at: string;
+    ended_at: string | null;
+  }[];
+}
+
+export interface CommissioningData {
+  identity: ObservationIdentity | null;
+  canPrepare: boolean;
+  attendedMinutes: number;
+  run: {
+    id: string;
+    state: "preparing" | "attending" | "approved";
+    revision: string;
+    createdAt: string;
+    updatedAt: string;
+    attendedUntil: string | null;
+    currentBinding: boolean | null;
+    identity: ObservationIdentity;
+    verification: NonNullable<ControllerStatus["control"]["verification"]>;
+    evidence: {
+      observation?: {
+        id: string;
+        checkedAt: string;
+        progress: ObservationProgress;
+      };
+      recovery?: { commandId: string; completedAt: string };
+    };
+    requirements: {
+      code:
+        | "solar"
+        | "discharge"
+        | "gridCharge"
+        | "gridStop"
+        | "dayNight"
+        | "recovery"
+        | "sourceLimits";
+      passed: boolean;
+    }[];
+    events: { action: string; revision: string; created_at: string }[];
+  } | null;
+  history: {
+    id: string;
+    state: string;
+    reason: string | null;
+    created_at: string;
     ended_at: string | null;
   }[];
 }

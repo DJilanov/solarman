@@ -1,57 +1,16 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { observationIdentity, observationBinding } from "./policy-identity.mjs";
+export { observationIdentity, observationBinding } from "./policy-identity.mjs";
 import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import { requireActiveTenant } from "./tenant-lifecycle.mjs";
-import { supportedControlFirmware } from "./control-readiness.mjs";
-import { BLUESUN_MAPPING, TELEMETRY_MAX_AGE_MS } from "./telemetry.mjs";
+import { TELEMETRY_MAX_AGE_MS } from "./telemetry.mjs";
+/** @typedef {import('./policy-identity.mjs').ObservationIdentityInput} ObservationIdentityInput */
+/** @typedef {import('./policy-identity.mjs').ObservationIdentity} ObservationIdentity */
 
-/** @typedef {{accountId:string,device:string,profile:string,timezone:string,firmware:{protocol:string,dsp:string,hmi:string}}} ObservationIdentityInput */
-/** @typedef {{accountId:string,device:string,profile:'bluesun-bse20kh3',model:'BSE20KH3',timezone:string,mapping:string,policy:string,firmware:{protocol:string,dsp:string,hmi:string}}} ObservationIdentity */
 /** @typedef {{id:string,at:string,receivedAt:string,samplingSeconds:number,soc:number,pvW:number,loadW:number,gridW:number,batteryW:number,source:'provider'|'register'}} ObservationSample */
 /** @typedef {{count:number,first:ObservationSample|null,last:ObservationSample|null,observedAt:string|null}} ObservationEvidence */
 /** @typedef {{version:1,accepted:number,rejected:number,firstAt:string|null,last:ObservationSample|null,coveredSeconds:number,solarSeen:boolean,nightSeen:boolean,approach:ObservationSample|null,solar:ObservationEvidence,discharge:ObservationEvidence,gridCharge:ObservationEvidence,gridStop:ObservationEvidence}} ObservationProgress */
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-
-/** @param {ObservationIdentityInput} input @returns {ObservationIdentity|null} */
-export function observationIdentity(input) {
-  if (
-    !input ||
-    !UUID.test(input.accountId) ||
-    typeof input.device !== "string" ||
-    !input.device ||
-    input.device.length > 200 ||
-    input.profile !== "bluesun-bse20kh3" ||
-    !supportedControlFirmware(input.firmware) ||
-    typeof input.timezone !== "string"
-  )
-    return null;
-  try {
-    new Intl.DateTimeFormat("en", { timeZone: input.timezone });
-  } catch {
-    return null;
-  }
-  return {
-    accountId: input.accountId,
-    device: input.device,
-    profile: "bluesun-bse20kh3",
-    model: "BSE20KH3",
-    timezone: input.timezone,
-    mapping: BLUESUN_MAPPING,
-    policy: "reserve-50/ac-2kw/solar-100/v1",
-    firmware: {
-      protocol: input.firmware.protocol,
-      dsp: input.firmware.dsp,
-      hmi: input.firmware.hmi,
-    },
-  };
-}
-
-/** @param {ObservationIdentityInput} input @returns {string|null} */
-export function observationBinding(input) {
-  const identity = observationIdentity(input);
-  return identity
-    ? createHash("sha256").update(JSON.stringify(identity)).digest("hex")
-    : null;
-}
 
 /** @returns {ObservationEvidence} */
 function emptyEvidence() {
@@ -270,7 +229,7 @@ export async function quarantineObservationRuns(client) {
 }
 
 /** @param {unknown} value @returns {ObservationProgress} */
-function progress(value) {
+export function parseObservationProgress(value) {
   if (
     !value ||
     typeof value !== "object" ||
@@ -336,7 +295,10 @@ export class PolicyObservations {
       status.control.verificationStatus.state === "verified" &&
       status.control.canVerify &&
       !status.control.reasons.some(
-        (reason) => !["server", "workspace", "capacity"].includes(reason.code),
+        (reason) =>
+          !["server", "workspace", "capacity", "commissioning"].includes(
+            reason.code,
+          ),
       ) &&
       Boolean(this.identity(runtime))
     );
@@ -377,8 +339,8 @@ export class PolicyObservations {
             currentBinding: identity
               ? row.binding === observationBinding(identity)
               : null,
-            progress: progress(row.progress),
-            window: observationWindow(progress(row.progress)),
+            progress: parseObservationProgress(row.progress),
+            window: observationWindow(parseObservationProgress(row.progress)),
           }
         : null,
       history,
@@ -490,7 +452,7 @@ export class PolicyObservations {
           [tenantId, run.account_id, run.device, run.cursor_id],
         )
       ).rows;
-      let next = progress(run.progress),
+      let next = parseObservationProgress(run.progress),
         cursor = run.cursor_id,
         invalid = false;
       for (const row of rows) {

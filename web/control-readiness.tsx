@@ -68,7 +68,7 @@ function blockerHelp(code: string): {
     server: {
       owner: tr("Server operator"),
       instruction: tr(
-        "The server operator must enable inverter changes for this installation after commissioning.",
+        "The server operator must permit attended inverter tests after fresh verification. Unattended control requires separate commissioning approval.",
       ),
     },
     connection: {
@@ -117,6 +117,12 @@ function blockerHelp(code: string): {
       owner: tr("Workspace owner"),
       instruction: tr(
         "Enable workspace control after the other requirements pass. Automation stays paused until you start it.",
+      ),
+    },
+    commissioning: {
+      owner: tr("Workspace owner"),
+      instruction: tr(
+        "Open commissioning, collect physical evidence and complete approval before unattended control.",
       ),
     },
     capacity: {

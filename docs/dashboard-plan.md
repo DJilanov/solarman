@@ -1,8 +1,10 @@
 # Solarman dashboard implementation plan
 
-## Completion audit — 2026-10-28
+The current execution order, production state and acceptance gates are in the [completion plan](finish-plan.md), updated at 20:42 UTC on 2026-10-28. The audit and work breakdown below retain their original timestamps and are historical; completed offboarding and policy-observation releases are reflected in the current plan.
 
-This is the current execution plan. The original requirements below remain the acceptance baseline. Home control and hosted-tenant readiness have separate completion gates.
+## Historical completion audit — 2026-10-28
+
+The original requirements below remain the acceptance baseline. Home control and hosted-tenant readiness have separate completion gates.
 
 ### Verified production state
 
@@ -57,7 +59,9 @@ The next home-control increment adds prospective policy-observation runs. Their 
 
 Policy-observation software validation passed type/syntax checks, build, 125 local unit tests with one Linux-only skip, the full 132-test integration run and all 32 browser tests. Final focused integration cases additionally reject malformed saved progress and distinguish unavailable current identity from an observed binding change. A final two-test browser run covers that distinction, unconfirmed start, immutable history and the Bulgarian mobile layout. Sample coverage does not count a missing expected upload as complete coverage. Recovery tooling now seeds an active observation fixture, invalidates it and checks its archived state; matching older/fresh offsite restore proofs remain release gates.
 
-## Ordered finish plan
+## Historical work breakdown
+
+This earlier breakdown is retained for context. Follow [finish-plan.md](finish-plan.md) for current priorities and completion status.
 
 ### 1. Restore reliable native diagnostics — first home-control blocker
 

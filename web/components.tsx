@@ -453,6 +453,8 @@ export function commandLabel(action: string): string {
     refresh: "Refresh diagnostics",
     verify: "Verify device settings",
     enable_controls: "Enable workspace control",
+    commission_controls: "Enable attended controls",
+    commission_topup: "Test grid top-up to 50%",
     disable_controls: "Disable workspace control",
     retry_capacity: "Retry monitoring capacity",
     topup: "Top up to 50%",

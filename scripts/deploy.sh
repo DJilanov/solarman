@@ -43,11 +43,12 @@ for attempt in $(seq 1 30); do
   sleep 2
 done
 if [[ "$healthy" != true ]]; then
-  if [[ -n "$previous_path" ]]; then
+  if pm2 describe solarman >/dev/null 2>&1; then
     pm2 delete solarman
+  fi
+  node --env-file=/home/mitko/.config/solarman/app.env scripts/quarantine-rollback.mjs
+  if [[ -n "$previous_path" ]]; then
     RELEASE_SHA=$(basename "$previous_path") pm2 start "$previous_path/ecosystem.config.cjs" --only solarman --update-env
-  else
-    pm2 stop solarman
   fi
   echo 'Release health check failed; previous process restored when available.' >&2
   exit 1

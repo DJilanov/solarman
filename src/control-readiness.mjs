@@ -9,6 +9,8 @@ export const CONTROL_REASONS = {
   firmware: "Verify the current firmware before enabling control",
   capacity: "Shared API capacity cannot support control for this workspace",
   workspace: "Control has not been enabled for this workspace",
+  commissioning:
+    "Physical commissioning approval is required before unattended control",
   settings: "Refresh readings to confirm the current control settings",
   clock: "The inverter clock must match the workspace timezone",
   clock_refresh: "Refresh readings to confirm the current inverter clock",
@@ -73,7 +75,7 @@ export function verificationStatus(
   };
 }
 
-/** @param {{ tenantClosing?:boolean, tenantActive?: boolean, connected: boolean, supported: boolean, serverAllowed: boolean, workspaceEnabled: boolean, verified: boolean, firmwareVerified: boolean, capacityAvailable: boolean, settingsMatch: boolean, clockVerified: boolean, clockFresh: boolean, cleanupVerified: boolean, stopping: boolean }} facts @returns {{ reasons: {code: string, message: string}[], canVerify: boolean, canEnable: boolean, canStart: boolean, canStop: boolean }} */
+/** @param {{ tenantClosing?:boolean, tenantActive?: boolean, commissioningApproved?:boolean, connected: boolean, supported: boolean, serverAllowed: boolean, workspaceEnabled: boolean, verified: boolean, firmwareVerified: boolean, capacityAvailable: boolean, settingsMatch: boolean, clockVerified: boolean, clockFresh: boolean, cleanupVerified: boolean, stopping: boolean }} facts @returns {{ reasons: {code: string, message: string}[], canVerify: boolean, canCommission: boolean, canEnable: boolean, canStart: boolean, canStop: boolean }} */
 export function controlReadiness(facts) {
   const codes = [];
   if (facts.tenantClosing) codes.push("closing");
@@ -85,6 +87,7 @@ export function controlReadiness(facts) {
   if (!facts.firmwareVerified) codes.push("firmware");
   if (facts.connected && !facts.capacityAvailable) codes.push("capacity");
   if (!facts.workspaceEnabled) codes.push("workspace");
+  if (!facts.commissioningApproved) codes.push("commissioning");
   if (!facts.settingsMatch) codes.push("settings");
   if (!facts.clockFresh) codes.push("clock_refresh");
   else if (!facts.clockVerified) codes.push("clock");
@@ -96,6 +99,7 @@ export function controlReadiness(facts) {
     canVerify: available,
     canEnable:
       available &&
+      facts.commissioningApproved === true &&
       !facts.tenantClosing &&
       facts.tenantActive !== false &&
       facts.serverAllowed &&
@@ -107,6 +111,9 @@ export function controlReadiness(facts) {
       facts.clockFresh &&
       facts.cleanupVerified,
     canStart: codes.length === 0,
+    canCommission:
+      available &&
+      codes.every((code) => ["workspace", "commissioning"].includes(code)),
     // Stopping must remain available when settings verification has failed.
     canStop: facts.connected && !facts.stopping,
   };

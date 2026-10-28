@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { parseFrame } from "./modbus.mjs";
+import {
+  commissioningAllowed,
+  commissioningBinding,
+  currentCommissioning,
+} from "./commissioning-state.mjs";
 
 /** @param {number} address @param {number[]} values @returns {'enable' | 'disable' | 'window'} */
 function operation(address, values) {
@@ -98,7 +103,7 @@ export class ControlJournal {
       await connection.query("BEGIN");
       const account = (
         await connection.query(
-          `SELECT c.control_enabled,c.paused,c.manual_topup,a.profile,a.validated_at
+          `SELECT c.control_enabled,c.paused,c.manual_topup,c.verification,a.id,a.device_sn,a.timezone,a.profile,a.validated_at
         FROM controller_state c JOIN solarman_accounts a ON a.tenant_id=c.tenant_id
         WHERE a.tenant_id=$1 AND a.id=$2 AND a.device_sn=$3
         AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.discovered_devices) d WHERE d->>'deviceSn'=a.device_sn)
@@ -131,6 +136,23 @@ export class ControlJournal {
       )
         throw new Error(
           "Inverter write blocked by the current workspace state",
+        );
+      const commissioning =
+        action === "disable"
+          ? null
+          : await currentCommissioning(connection, this.context.tenantId);
+      const binding = commissioningBinding(account, account?.verification);
+      if (
+        action !== "disable" &&
+        !commissioningAllowed(commissioning, binding, "approved") &&
+        !(
+          account?.paused &&
+          account?.manual_topup &&
+          commissioningAllowed(commissioning, binding, "attended")
+        )
+      )
+        throw new Error(
+          "Inverter write requires current commissioning permission",
         );
       await connection.query(
         `INSERT INTO device_control_state (tenant_id,account_id,device,state) VALUES ($1,$2,$3,'uncertain')
@@ -178,14 +200,24 @@ export class ControlJournal {
     const action = operation(data.readUInt16BE(2), values);
     const row = (
       await this.pool.query(
-        `SELECT c.control_enabled,c.paused,c.manual_topup,t.lifecycle,d.state
+        `SELECT c.control_enabled,c.paused,c.manual_topup,c.verification,a.id,a.device_sn,a.timezone,a.profile,t.lifecycle,d.state,
+        r.state AS commissioning_state,r.binding AS commissioning_binding,r.attended_until
       FROM controller_state c JOIN tenants t ON t.id=c.tenant_id JOIN solarman_accounts a ON a.tenant_id=c.tenant_id
       LEFT JOIN device_control_state d ON d.tenant_id=a.tenant_id AND d.account_id=a.id AND d.device=a.device_sn
+      LEFT JOIN control_commissioning r ON r.tenant_id=a.tenant_id AND r.state<>'invalidated'
       WHERE a.tenant_id=$1 AND a.id=$2 AND a.device_sn=$3 AND a.validated_at IS NOT NULL AND a.profile='bluesun-bse20kh3'
       AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.discovered_devices) v WHERE v->>'deviceSn'=a.device_sn)`,
         this.binding,
       )
     ).rows[0];
+    const commissioning = row
+      ? {
+          state: row.commissioning_state,
+          binding: row.commissioning_binding,
+          attended_until: row.attended_until,
+        }
+      : null;
+    const binding = commissioningBinding(row, row?.verification);
     if (
       !row ||
       (action === "disable"
@@ -196,6 +228,18 @@ export class ControlJournal {
           row.state === "cleanup-required")
     )
       throw new Error("Inverter write blocked by the current workspace state");
+    if (
+      action !== "disable" &&
+      !commissioningAllowed(commissioning, binding, "approved") &&
+      !(
+        row?.paused &&
+        row?.manual_topup &&
+        commissioningAllowed(commissioning, binding, "attended")
+      )
+    )
+      throw new Error(
+        "Inverter write requires current commissioning permission",
+      );
   }
 
   /** @param {string} id @returns {Promise<void>} */

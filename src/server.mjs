@@ -50,6 +50,7 @@ async function main() {
     hub.dataMaintenance.start();
     hub.offboarding.start();
     hub.policyObservations.start();
+    hub.commissioning.start();
     console.log(
       JSON.stringify({ event: "dashboard_started", port: config.port }),
     );

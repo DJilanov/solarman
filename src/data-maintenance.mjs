@@ -1,6 +1,8 @@
 const BATCH = 500;
 
 const PRUNE = {
+  commissioningEvents: `DELETE FROM commissioning_events WHERE id IN(SELECT e.id FROM commissioning_events e JOIN control_commissioning r ON r.id=e.run_id WHERE e.tenant_id=$1 AND r.state='invalidated' AND r.ended_at<clock_timestamp()-$2*interval '1 day' ORDER BY e.created_at,e.id LIMIT ${BATCH})`,
+  commissioning: `DELETE FROM control_commissioning WHERE id IN(SELECT r.id FROM control_commissioning r WHERE r.tenant_id=$1 AND r.state='invalidated' AND r.ended_at<clock_timestamp()-$2*interval '1 day' AND NOT EXISTS(SELECT 1 FROM commissioning_events e WHERE e.run_id=r.id) ORDER BY r.ended_at,r.id LIMIT ${BATCH})`,
   measurements: `DELETE FROM measurements WHERE id IN (SELECT m.id FROM measurements m WHERE m.tenant_id=$1 AND m.observed_at<clock_timestamp()-$2*interval '1 day'
     AND m.id IS DISTINCT FROM (SELECT x.id FROM measurements x JOIN solarman_accounts a ON a.tenant_id=x.tenant_id AND a.id=x.account_id AND a.device_sn=x.device WHERE x.tenant_id=$1 ORDER BY x.observed_at DESC,x.id DESC LIMIT 1)
     ORDER BY m.observed_at,m.id LIMIT ${BATCH})`,

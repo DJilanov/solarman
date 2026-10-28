@@ -179,7 +179,7 @@ export class ApiBudget {
     });
   }
 
-  /** @param {{appKey:string,tenantId:string,accountId:string,device:string,epoch:string}} request @returns {Promise<boolean>} */
+  /** @param {{appKey:string,tenantId:string,accountId:string,device:string,epoch:string,commissioningBinding?:string|null,commissioningMode?:'approved'|'attended'}} request @returns {Promise<boolean>} */
   async enableControl(request) {
     return this.capacityTask(request.appKey, async () => {
       const client = await this.pool.connect();
@@ -210,6 +210,8 @@ export class ApiBudget {
         const updated = await client.query(
           `UPDATE controller_state SET control_enabled=true,paused=true,manual_topup=false,topup_expires_at=null,updated_at=now()
           WHERE tenant_id=$1 AND control_epoch=$2 AND EXISTS (SELECT 1 FROM tenants t WHERE t.id=$1 AND t.lifecycle='active') AND EXISTS (SELECT 1 FROM solarman_accounts a WHERE a.tenant_id=$1 AND a.id=$3 AND a.device_sn=$4 AND a.api_app_key=$5 AND a.monitoring_admitted)
+          AND EXISTS(SELECT 1 FROM control_commissioning r WHERE r.tenant_id=$1 AND r.binding=$6 AND
+            (($7='attended' AND r.state='attending' AND r.attended_until>clock_timestamp()) OR ($7='approved' AND r.state='approved')))
           RETURNING tenant_id`,
           [
             request.tenantId,
@@ -217,6 +219,8 @@ export class ApiBudget {
             request.accountId,
             request.device,
             request.appKey,
+            request.commissioningBinding ?? null,
+            request.commissioningMode ?? "approved",
           ],
         );
         const result = await this.readCapacity(client, request.appKey);

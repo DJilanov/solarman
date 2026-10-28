@@ -34,6 +34,8 @@ function runLabel(state: ObservationState): string {
 }
 function invalidationLabel(reason: string | null): string {
   switch (reason) {
+    case "rollback":
+      return tr("This run was interrupted by an application rollback.");
     case "restore":
       return tr("This run was interrupted by a database restore.");
     case "connection_changed":

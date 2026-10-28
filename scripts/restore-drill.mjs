@@ -153,6 +153,7 @@ async function main() {
       report.workspaceExportVerified !== true ||
       report.erasureFencesVerified !== true ||
       report.observationsQuarantined !== true ||
+      report.commissioningQuarantined !== true ||
       report.recoveryQuarantined !== true ||
       report.schemaUpgradeVerified !== true ||
       report.credentialsVerified !== true ||

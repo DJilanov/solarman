@@ -13,6 +13,8 @@ import { unsigned32 } from "./modbus.mjs";
 
 const LIMIT = 500;
 const ERASE = {
+  commissioningEvents: `DELETE FROM commissioning_events WHERE id IN(SELECT id FROM commissioning_events WHERE tenant_id=$1 LIMIT ${LIMIT})`,
+  commissioning: `DELETE FROM control_commissioning WHERE id IN(SELECT r.id FROM control_commissioning r WHERE r.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM commissioning_events e WHERE e.run_id=r.id) LIMIT ${LIMIT})`,
   observations: `DELETE FROM policy_observation_runs WHERE id IN(SELECT id FROM policy_observation_runs WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   writes: `DELETE FROM inverter_write_intents WHERE id IN(SELECT id FROM inverter_write_intents WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   commands: `DELETE FROM command_executions WHERE id IN(SELECT c.id FROM command_executions c WHERE c.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM inverter_write_intents w WHERE w.tenant_id=$1 AND w.execution_id=c.id) LIMIT ${LIMIT})`,
@@ -728,7 +730,7 @@ export class WorkspaceOffboarding {
       if (!more) {
         const pending = (
           await client.query(
-            `SELECT EXISTS(SELECT 1 FROM inverter_write_intents WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM command_executions WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM measurements WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM device_control_state WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM api_requests WHERE tenant_id=$1) AS remains`,
+            `SELECT EXISTS(SELECT 1 FROM inverter_write_intents WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM command_executions WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM measurements WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM device_control_state WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM api_requests WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM control_commissioning WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM commissioning_events WHERE tenant_id=$1) AS remains`,
             [tenantId],
           )
         ).rows[0].remains;

@@ -645,6 +645,26 @@ export function createApp({ pool, hub, config }) {
       }
       const runtime = await hub.forTenant(session.tenant_id);
       if (
+        pathname === "/api/commissioning" &&
+        ["GET", "POST"].includes(request.method)
+      ) {
+        if (request.method === "POST") {
+          limitSecurity(response, session);
+          await hub.commissioning.change(
+            session,
+            runtime,
+            await bodyJson(request),
+          );
+          securityLimiter.clear(session.id);
+        }
+        json(
+          response,
+          200,
+          await hub.commissioning.status(session.tenant_id, runtime),
+        );
+        return;
+      }
+      if (
         pathname === "/api/policy-observations" &&
         ["GET", "POST"].includes(request.method)
       ) {
@@ -900,6 +920,8 @@ export function createApp({ pool, hub, config }) {
             "refresh",
             "verify",
             "enable_controls",
+            "commission_controls",
+            "commission_topup",
             "disable_controls",
             "retry_capacity",
             "topup",

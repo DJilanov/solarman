@@ -7,6 +7,8 @@ import { Operations } from "./operations.mjs";
 import { DataMaintenance } from "./data-maintenance.mjs";
 import { WorkspaceOffboarding } from "./workspace-offboarding.mjs";
 import { PolicyObservations } from "./policy-observations.mjs";
+import { Commissioning } from "./commissioning.mjs";
+import { invalidateCommissioning } from "./commissioning-state.mjs";
 import { SecurityError } from "./account-security.mjs";
 
 export class AccountHub {
@@ -31,6 +33,7 @@ export class AccountHub {
     this.operations = new Operations(pool, this);
     this.dataMaintenance = new DataMaintenance(pool);
     this.policyObservations = new PolicyObservations(pool);
+    this.commissioning = new Commissioning(pool, this);
     const requireErasureGuard =
       env.NODE_ENV === "production" ||
       env.PUBLIC_URL?.startsWith("https:") === true;
@@ -109,6 +112,19 @@ export class AccountHub {
       for (const runtime of this.runtimes.values()) void runtime.close();
     });
     await this.offboarding.initialize();
+    while (await this.commissioning.expire(true)) {
+      /* Restart never renews an attended session. */
+    }
+    if (
+      (
+        await this.pool.query(
+          "SELECT 1 FROM control_commissioning WHERE state='attending' LIMIT 1",
+        )
+      ).rowCount
+    )
+      throw new Error(
+        "Attended commissioning sessions must be paused before startup",
+      );
     await this.pool.query(
       "UPDATE command_executions SET status='interrupted',message='Service restarted before completion could be confirmed',completed_at=now() WHERE status IN ('queued','running')",
     );
@@ -281,6 +297,11 @@ export class AccountHub {
     runtime.inhibitStarts = true;
     runtime.enableEpoch++;
     await runtime.journal.requestCleanup({ pause: true, cancelStarts: true });
+    await invalidateCommissioning(
+      this.pool,
+      runtime.tenantId,
+      "connection_changed",
+    );
     await this.pool.query(
       "UPDATE policy_observation_runs SET state='invalidated',reason='connection_changed',ended_at=clock_timestamp() WHERE tenant_id=$1 AND state='observing'",
       [runtime.tenantId],
@@ -562,6 +583,7 @@ export class AccountHub {
     const maintenanceStopped = this.dataMaintenance.stop();
     const offboardingStopped = this.offboarding.stop();
     const observationsStopped = this.policyObservations.stop();
+    const commissioningStopped = this.commissioning.stop();
     await Promise.allSettled(
       [...this.runtimes.values()].map((runtime) => runtime.close()),
     );
@@ -569,6 +591,7 @@ export class AccountHub {
     await maintenanceStopped;
     await offboardingStopped;
     await observationsStopped;
+    await commissioningStopped;
     if (this.lock) {
       try {
         await this.lock.query("SELECT pg_advisory_unlock(193401,2)");

@@ -35,6 +35,10 @@ const EXPORT_SECTIONS = {
     "SELECT id,requested_at,erasure_authorized_at,offsite_acknowledged_at,erasure_started_at,completed_at,last_failed_at,removed_rows::text FROM workspace_offboarding WHERE tenant_id=$1",
   observations:
     "SELECT id,account_id,device,identity,verification,state,reason,started_at,ended_at,checked_at,failed_at,progress FROM policy_observation_runs WHERE tenant_id=$1 ORDER BY started_at,id",
+  commissioning:
+    "SELECT id,account_id,device,identity,verification,state,revision::text,attended_until,evidence,reason,created_at,updated_at,ended_at FROM control_commissioning WHERE tenant_id=$1 ORDER BY created_at,id",
+  commissioningEvents:
+    "SELECT id,run_id,revision::text,action,detail,created_at FROM commissioning_events WHERE tenant_id=$1 ORDER BY created_at,id",
   retention:
     "SELECT enabled,measurement_days,activity_days,revision::text,updated_at,last_run_at,last_failed_at,last_counts FROM workspace_retention WHERE tenant_id=$1",
   retentionChanges:

@@ -21,6 +21,7 @@ import { decide } from "../../src/controller.mjs";
 import { providerPayload } from "../fixtures/provider.mjs";
 import { ApiBudget, ApiBudgetError, apiAppKey } from "../../src/api-budget.mjs";
 import { ApiCapacityError } from "../../src/api-capacity.mjs";
+import { quarantineControlsForRollback } from "../../src/control-quarantine.mjs";
 import { ControlJournal } from "../../src/control-journal.mjs";
 import { parseFrame, frame } from "../../src/modbus.mjs";
 import { Operations } from "../../src/operations.mjs";
@@ -31,6 +32,8 @@ import { TenantLifecycle } from "../../src/tenant-lifecycle.mjs";
 import { WorkspaceOffboarding } from "../../src/workspace-offboarding.mjs";
 import {
   PolicyObservations,
+  observationIdentity,
+  observationBinding,
   emptyObservationProgress,
 } from "../../src/policy-observations.mjs";
 import { Invitations, lockInvitationEmail } from "../../src/invitations.mjs";
@@ -182,6 +185,7 @@ test("all data routes require a session", async () => {
   for (const path of [
     "/overview",
     "/policy-observations",
+    "/commissioning",
     "/analytics",
     "/activity",
     "/settings",
@@ -397,7 +401,48 @@ test("session identifiers are hashed in PostgreSQL and logout revokes them", asy
   assert.equal((await fetchApi("/overview", { auth: fresh })).status, 401);
 });
 
-async function controlFixture(writes = false, owner = ids.alpha) {
+async function seedCommissioning(owner, state = "approved") {
+  await pool.query("DELETE FROM commissioning_events WHERE tenant_id=$1", [
+    owner.tenant,
+  ]);
+  await pool.query("DELETE FROM control_commissioning WHERE tenant_id=$1", [
+    owner.tenant,
+  ]);
+  const identity = observationIdentity({
+    accountId: owner.account,
+    device: owner.device,
+    profile: "bluesun-bse20kh3",
+    timezone: "Europe/Sofia",
+    firmware: { protocol: "2.02", dsp: "1.57", hmi: "1.45" },
+  });
+  const binding = observationBinding(identity);
+  await pool.query(
+    "INSERT INTO control_commissioning(id,tenant_id,account_id,device,binding,identity,verification,state,attended_until) VALUES($1,$2,$3,$4,$5,$6,'{}',$7,CASE WHEN $7='attending' THEN clock_timestamp()+interval '30 minutes' ELSE null END)",
+    [
+      randomUUID(),
+      owner.tenant,
+      owner.account,
+      owner.device,
+      binding,
+      identity,
+      state,
+    ],
+  );
+  return binding;
+}
+
+async function controlFixture(
+  writes = false,
+  owner = ids.alpha,
+  commissioned = true,
+) {
+  await pool.query("DELETE FROM commissioning_events WHERE tenant_id=$1", [
+    owner.tenant,
+  ]);
+  await pool.query("DELETE FROM control_commissioning WHERE tenant_id=$1", [
+    owner.tenant,
+  ]);
+  if (commissioned) await seedCommissioning(owner);
   await pool.query("DELETE FROM operational_incidents WHERE tenant_id=$1", [
     owner.tenant,
   ]);
@@ -2733,6 +2778,7 @@ test("concurrent control activation reserves paused control capacity and a separ
       tenantId: owner.tenant,
       accountId: owner.account,
       device: owner.device,
+      commissioningBinding: await seedCommissioning(owner),
       epoch: (
         await pool.query(
           "SELECT control_epoch::text AS epoch FROM controller_state WHERE tenant_id=$1",
@@ -6819,6 +6865,379 @@ test("policy observations distinguish unavailable current identity from a change
     assert.equal(waiting.canStart, false);
     f.runtime.firmware = firmware;
     assert.equal((await f.state()).run.currentBinding, true);
+  } finally {
+    await f.dispose();
+  }
+});
+
+async function commissioningFixture(writes = false) {
+  const fixture = await lifecycleFixture();
+  const control = await controlFixture(writes, fixture.target, false);
+  await completeCommand(control.runtime, "verify", control.user);
+  hub.runtimes.set(fixture.target.tenant, control.runtime);
+  const state = async () =>
+    hub.commissioning.status(fixture.target.tenant, control.runtime);
+  const change = async (action, body = {}) => {
+    const current = await state();
+    return fetchApi("/commissioning", {
+      auth: fixture.member,
+      method: "POST",
+      body: {
+        action,
+        id: current.run?.id,
+        revision: current.run?.revision,
+        currentPassword: password,
+        ...body,
+      },
+    });
+  };
+  return {
+    ...fixture,
+    ...control,
+    state,
+    change,
+    dispose: async () => {
+      await control.runtime.close();
+      hub.runtimes.delete(fixture.target.tenant);
+    },
+  };
+}
+
+test("commissioning preparation requires reauthentication, CSRF, a fresh binding and tenant ownership without writes", async () => {
+  const f = await commissioningFixture();
+  try {
+    const before = f.calls.length;
+    assert.equal(
+      (
+        await fetchApi("/commissioning", {
+          auth: f.member,
+          method: "POST",
+          csrf: false,
+          body: { action: "create", currentPassword: password },
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (await f.change("create", { currentPassword: "wrong-password" })).status,
+      400,
+    );
+    assert.equal((await f.change("create")).status, 200);
+    const state = await f.state();
+    assert.equal(state.run.state, "preparing");
+    assert.equal(state.run.currentBinding, true);
+    assert.equal(state.run.requirements.length, 7);
+    assert.equal(
+      state.run.requirements.every((r) => !r.passed),
+      true,
+    );
+    assert.equal(f.runtime.status().control.canStart, false);
+    assert.equal(f.runtime.status().control.canEnable, false);
+    assert.equal(f.runtime.status().control.canVerify, true);
+    assert.equal(f.calls.length, before);
+    const other = await (
+      await fetchApi("/commissioning", { auth: f.admin })
+    ).json();
+    assert.equal(
+      other.history.some((r) => r.id === state.run.id),
+      false,
+    );
+    assert.equal((await f.change("attend", { attending: true })).status, 409);
+    assert.equal((await f.change("approve")).status, 409);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("commissioning revisions serialize concurrent changes and a lost old revision cannot reopen a session", async () => {
+  const f = await commissioningFixture(true);
+  try {
+    assert.equal((await f.change("create")).status, 200);
+    const run = (await f.state()).run;
+    const results = await Promise.all([
+      f.change("attend", { attending: true, revision: run.revision }),
+      f.change("attend", { attending: true, revision: run.revision }),
+    ]);
+    assert.deepEqual(results.map((r) => r.status).sort(), [200, 409]);
+    assert.equal(
+      (await f.state()).run.events.filter((e) => e.action === "attended")
+        .length,
+      1,
+    );
+    assert.equal((await f.change("end")).status, 200);
+    assert.equal(
+      (await f.change("attend", { attending: true, revision: run.revision }))
+        .status,
+      409,
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("attended commissioning enables only explicit test top-ups and never ordinary Resume", async () => {
+  const f = await commissioningFixture(true);
+  try {
+    assert.equal((await f.change("create")).status, 200);
+    assert.equal((await f.change("attend", { attending: true })).status, 200);
+    assert.equal(
+      (await completeCommand(f.runtime, "commission_controls", f.user)).status,
+      "succeeded",
+    );
+    assert.equal(f.runtime.controlEnabled, true);
+    assert.equal(f.runtime.paused, true);
+    assert.equal(f.runtime.status().control.canStart, false);
+    await assert.rejects(
+      f.runtime.submit("resume", f.user, randomUUID()),
+      /enabled, verified/,
+    );
+    await assert.rejects(
+      f.runtime.submit("topup", f.user, randomUUID()),
+      /enabled, verified/,
+    );
+    assert.equal(
+      (await completeCommand(f.runtime, "commission_topup", f.user)).status,
+      "succeeded",
+    );
+    assert.equal(f.runtime.paused, true);
+    assert.equal(f.runtime.manualTopup, true);
+    assert.equal(
+      new Date(f.runtime.topupExpiresAt).getTime(),
+      new Date((await f.state()).run.attendedUntil).getTime(),
+    );
+    assert.equal((await f.change("end")).status, 200);
+    const c = (
+      await pool.query("SELECT * FROM controller_state WHERE tenant_id=$1", [
+        f.target.tenant,
+      ])
+    ).rows[0];
+    assert.equal(c.paused, true);
+    assert.equal(c.control_enabled, false);
+    assert.equal(c.manual_topup, false);
+    assert.equal(f.runtime.journal.owned, false);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("commissioning dispatch rechecks expiry after a prepared write and preserves the disable recovery path", async () => {
+  const f = await commissioningFixture(true);
+  try {
+    await f.change("create");
+    await f.change("attend", { attending: true });
+    await completeCommand(f.runtime, "commission_controls", f.user);
+    await completeCommand(f.runtime, "commission_topup", f.user);
+    const id = await f.runtime.journal.prepare(206, [0, 25], null);
+    assert.ok(id);
+    await pool.query(
+      "UPDATE control_commissioning SET attended_until=clock_timestamp()-interval '1 second' WHERE tenant_id=$1 AND state='attending'",
+      [f.target.tenant],
+    );
+    await assert.rejects(
+      f.runtime.journal.authorizeDispatch("011000CE00020400000019BFB9"),
+      /commissioning permission/,
+    );
+    await f.runtime.journal.authorizeDispatch("011000CE00020400000009BE75");
+    const off = await f.runtime.journal.prepare(206, [0, 9], null);
+    await f.runtime.journal.verify(off);
+    assert.equal(f.runtime.journal.owned, false);
+    const original = (
+      await pool.query(
+        "SELECT status,reconciled_at FROM inverter_write_intents WHERE id=$1",
+        [id],
+      )
+    ).rows[0];
+    assert.equal(original.status, "uncertain");
+    assert.ok(original.reconciled_at);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("commissioning expiry persists pause and revokes starts before cleanup, and restart does not renew a live session", async () => {
+  const f = await commissioningFixture(true);
+  try {
+    await f.change("create");
+    await f.change("attend", { attending: true });
+    await completeCommand(f.runtime, "commission_controls", f.user);
+    await completeCommand(f.runtime, "commission_topup", f.user);
+    await hub.commissioning.expire(true);
+    const state = await f.state();
+    assert.equal(state.run.state, "preparing");
+    assert.equal(state.run.attendedUntil, null);
+    assert.equal(state.run.events[0].action, "expired");
+    assert.equal(f.runtime.controlEnabled, false);
+    assert.equal(f.runtime.manualTopup, false);
+    assert.equal(f.runtime.paused, true);
+    await assert.rejects(
+      f.runtime.submit("commission_topup", f.user, randomUUID()),
+      /attended commissioning/,
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("commissioning evidence rejects another tenant and unverified recovery, and snapshots survive observation pruning", async () => {
+  const f = await commissioningFixture();
+  try {
+    await f.change("create");
+    assert.equal(
+      (await f.change("evidence", { observationRunId: randomUUID() })).status,
+      409,
+    );
+    const id = randomUUID();
+    const saved = emptyObservationProgress();
+    await pool.query(
+      "INSERT INTO policy_observation_runs(id,tenant_id,account_id,device,binding,identity,verification,cursor_id,progress) VALUES($1,$2,$3,$4,$5,$6,$7,0,$8)",
+      [
+        id,
+        f.target.tenant,
+        f.target.account,
+        f.target.device,
+        f.runtime.controlBinding(),
+        (await f.state()).identity,
+        f.runtime.verification,
+        saved,
+      ],
+    );
+    assert.equal(
+      (
+        await f.change("evidence", {
+          observationRunId: id,
+          recoveryCommandId: randomUUID(),
+        })
+      ).status,
+      409,
+    );
+    assert.equal(
+      (await f.change("evidence", { observationRunId: id })).status,
+      200,
+    );
+    await pool.query("DELETE FROM policy_observation_runs WHERE id=$1", [id]);
+    assert.deepEqual(
+      (await f.state()).run.evidence.observation.progress,
+      saved,
+    );
+    await pool.query(
+      "UPDATE solarman_accounts SET timezone='UTC' WHERE tenant_id=$1",
+      [f.target.tenant],
+    );
+    assert.equal((await f.change("attend", { attending: true })).status, 409);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("commissioning expiry skips a locked workspace without stranding another attended session", async () => {
+  const first = await commissioningFixture(true);
+  const second = await commissioningFixture(true);
+  const lock = await pool.connect();
+  try {
+    await first.change("create");
+    await first.change("attend", { attending: true });
+    await second.change("create");
+    await second.change("attend", { attending: true });
+    await lock.query("BEGIN");
+    await lock.query(
+      "SELECT tenant_id FROM controller_state WHERE tenant_id=$1 FOR UPDATE",
+      [first.target.tenant],
+    );
+    await hub.commissioning.expire(true);
+    assert.equal((await first.state()).run.state, "attending");
+    assert.equal((await second.state()).run.state, "preparing");
+    await lock.query("ROLLBACK");
+    await hub.commissioning.expire(true);
+    assert.equal((await first.state()).run.state, "preparing");
+  } finally {
+    await lock.query("ROLLBACK");
+    lock.release();
+    await first.dispose();
+    await second.dispose();
+  }
+});
+
+test("commissioning startup expiration drains more than one bounded batch", async () => {
+  const owners = [];
+  for (let index = 0; index < 13; index++) {
+    const owner = {
+      tenant: randomUUID(),
+      account: randomUUID(),
+      device: `commissioning-batch-${index}`,
+    };
+    owners.push(owner);
+    await pool.query(
+      "INSERT INTO tenants(id,name) VALUES($1,'Commissioning batch fixture')",
+      [owner.tenant],
+    );
+    await pool.query("INSERT INTO controller_state(tenant_id) VALUES($1)", [
+      owner.tenant,
+    ]);
+    await pool.query(
+      "INSERT INTO solarman_accounts(id,tenant_id,email,credentials,device_sn) VALUES($1,$2,'batch@example.test',$3,$4)",
+      [
+        owner.account,
+        owner.tenant,
+        encryptCredentials(
+          { passwordSha256: "a".repeat(64) },
+          key,
+          owner.tenant,
+          owner.account,
+        ),
+        owner.device,
+      ],
+    );
+    await seedCommissioning(owner, "attending");
+  }
+  const batches = [];
+  let count;
+  while ((count = await hub.commissioning.expire(true))) batches.push(count);
+  assert.deepEqual(batches, [10, 3]);
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int AS n FROM control_commissioning WHERE tenant_id=ANY($1::uuid[]) AND state='attending'",
+        [owners.map((o) => o.tenant)],
+      )
+    ).rows[0].n,
+    0,
+  );
+});
+
+test("rollback quarantine revokes attended control and preserves physical cleanup before older software can start", async () => {
+  const f = await commissioningFixture(true);
+  try {
+    await f.change("create");
+    await f.change("attend", { attending: true });
+    await completeCommand(f.runtime, "commission_controls", f.user);
+    await completeCommand(f.runtime, "commission_topup", f.user);
+    await f.runtime.journal.prepare(206, [0, 25], null);
+    await quarantineControlsForRollback(pool);
+    const row = (
+      await pool.query("SELECT * FROM controller_state WHERE tenant_id=$1", [
+        f.target.tenant,
+      ])
+    ).rows[0];
+    assert.equal(row.control_enabled, false);
+    assert.equal(row.paused, true);
+    assert.equal(row.manual_topup, false);
+    assert.equal(row.verification, null);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT state,reason,attended_until FROM control_commissioning WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].reason,
+      "rollback",
+    );
+    await f.runtime.journal.load();
+    assert.equal(f.runtime.journal.pending, true);
+    await assert.rejects(
+      f.runtime.journal.authorizeDispatch("011000CE00020400000019BFB9"),
+      /blocked/,
+    );
+    await f.runtime.journal.authorizeDispatch("011000CE00020400000009BE75");
   } finally {
     await f.dispose();
   }
