@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { CheckCircle2, Clock, ShieldCheck } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Clock, ShieldCheck } from "lucide-react";
 import { useWorkspace } from "./context";
 import { useData, request, isUnconfirmedResponse } from "./api";
 import { tr } from "./i18n";
@@ -139,7 +139,7 @@ export default function CommissioningPage(): ReactNode {
         )}
         action={
           <Link className="button secondary" to="/controls">
-            {tr("Back to controls")}
+            <ArrowLeft size={16} /> {tr("Back to controls")}
           </Link>
         }
       />

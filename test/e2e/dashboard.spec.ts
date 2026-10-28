@@ -3982,6 +3982,7 @@ test("commissioning separates preparation from attended controls, keeps Stop ava
     }),
   ).toBeDisabled();
   await page.setViewportSize({ width: 320, height: 1100 });
+  await expect(page.getByRole("link", { name: "Обратно към управлението", exact: true }).locator("svg")).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
