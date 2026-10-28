@@ -548,7 +548,21 @@ test("read-only device verification explains locks and keeps Stop available afte
             passed: true,
             comparison: "at_most",
           },
+          {
+            label: "Firmware compatibility",
+            actual: 1,
+            expected: 1,
+            unit: "",
+            passed: true,
+          },
         ],
+        firmware: { protocol: "2.02", dsp: "1.57", hmi: "1.45" },
+      };
+      overview.controller.control.firmware = {
+        protocol: "2.02",
+        dsp: "1.57",
+        hmi: "1.45",
+        collectedAt: now,
       };
     }
     return route.fulfill({
@@ -582,11 +596,20 @@ test("read-only device verification explains locks and keeps Stop available afte
     .getByRole("button", { name: "Verify device settings", exact: true })
     .click();
   await expect(page.locator(".readiness-details summary")).toContainText(
-    "8 of 8 checks verified",
+    "9 of 9 checks verified",
   );
   await page.locator(".readiness-details summary").click();
-  await expect(page.locator(".readiness-check")).toHaveCount(8);
+  await expect(page.locator(".readiness-check")).toHaveCount(9);
   await expect(page.locator(".readiness-check").first()).toContainText("20 kW");
+  await expect(page.locator(".readiness-check").last()).toContainText(
+    "Validated firmware",
+  );
+  await expect(
+    page.getByText("Observed firmware: protocol 2.02, DSP 1.57, HMI 1.45"),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/native grid charging may still run below the reserve/),
+  ).toBeVisible();
   expect(lastAction).toBe("verify");
   await expect(
     page.getByText("Scheduled AC permission", { exact: true }).locator(".."),
@@ -600,7 +623,7 @@ test("read-only device verification explains locks and keeps Stop available afte
   overview.controller.control.canStart = false;
   await page.reload();
   await page
-    .getByRole("button", { name: "Stop scheduled top-up", exact: true })
+    .getByRole("button", { name: "Stop scheduled top-ups", exact: true })
     .click();
   await expect.poll(() => lastAction).toBe("stop");
   await expect(page.locator(".toast")).toContainText(
@@ -764,7 +787,7 @@ test("uncertain writes remain distinct from confirmed cleanup in English and Bul
     page.getByRole("button", { name: "Top up to 50%", exact: true }),
   ).toBeDisabled();
   await expect(
-    page.getByRole("button", { name: "Stop scheduled top-up", exact: true }),
+    page.getByRole("button", { name: "Stop scheduled top-ups", exact: true }),
   ).toBeEnabled();
   await panel.locator("summary").click();
   await expect(panel.locator("dl")).toContainText("Not recorded");
@@ -1342,27 +1365,23 @@ test("recovery health distinguishes a failed latest test from previous success i
     page.getByText("Backup and recovery need attention."),
   ).toBeVisible();
   await page.getByRole("link", { name: "Review recovery status" }).click();
-  const panel = page
-    .locator(".health-facts")
-    .filter({
-      has: page.getByRole("heading", {
-        name: "Backup and recovery",
-        exact: true,
-      }),
-    });
+  const panel = page.locator(".health-facts").filter({
+    has: page.getByRole("heading", {
+      name: "Backup and recovery",
+      exact: true,
+    }),
+  });
   await expect(panel).toContainText("The latest recovery test failed.");
   await expect(panel).toContainText("Last successful recovery test");
   await expect(panel).not.toContainText("Recovery verified database inventory");
   await page.getByLabel("Language").selectOption("bg");
   await page.setViewportSize({ width: 390, height: 844 });
-  const bulgarianPanel = page
-    .locator(".health-facts")
-    .filter({
-      has: page.getByRole("heading", {
-        name: "Архивиране и възстановяване",
-        exact: true,
-      }),
-    });
+  const bulgarianPanel = page.locator(".health-facts").filter({
+    has: page.getByRole("heading", {
+      name: "Архивиране и възстановяване",
+      exact: true,
+    }),
+  });
   await expect(bulgarianPanel).toContainText(
     "Последният тест за възстановяване е неуспешен.",
   );

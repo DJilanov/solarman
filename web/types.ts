@@ -99,6 +99,11 @@ export interface WriteRecord extends WriteSummary {
   address: number;
   registerValues: number[];
 }
+export interface FirmwareIdentity {
+  protocol: string | null;
+  dsp: string | null;
+  hmi: string | null;
+}
 export interface ControllerStatus {
   apiConfigured: boolean;
   writesEnabled: boolean;
@@ -119,6 +124,7 @@ export interface ControllerStatus {
       writes: WriteSummary[];
     };
     verification: {
+      firmware?: FirmwareIdentity | null;
       checkedAt: string;
       passed: boolean;
       checks: {
@@ -130,6 +136,7 @@ export interface ControllerStatus {
         comparison?: "at_most";
       }[];
     } | null;
+    firmware?: (FirmwareIdentity & { collectedAt: string }) | null;
   };
   mode: "setup" | "stopping" | "error" | "paused" | "active" | "read-only";
   paused: boolean;
@@ -246,7 +253,8 @@ export interface CommandDetails extends Command, WriteHistoryData {
         | "manual_topup_expired"
         | "ac_charge_changed"
         | "write_acknowledgement_audit_recovered"
-        | "write_journal_unavailable";
+        | "write_journal_unavailable"
+        | "firmware_verification_invalidated";
       enabled: boolean | null;
       reason:
         | "native_audit"

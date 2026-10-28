@@ -51,6 +51,8 @@ export function verificationValue(
 ): string {
   if (value === null) return tr("Unavailable");
   if (check.unit === "s") return tr("{{count}} seconds", { count: value });
+  if (check.label === "Firmware compatibility")
+    return tr(value === 1 ? "Validated firmware" : "Unvalidated firmware");
   if (check.label === "Operating mode")
     return tr(value === 0 ? "SelfUse" : "Other operating mode");
   if (check.label === "Run and backup flags")

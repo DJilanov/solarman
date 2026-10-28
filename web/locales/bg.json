@@ -766,5 +766,19 @@
   "Latest recovery attempt": "Последен опит за възстановяване",
   "Recovery verified database inventory, account decryption and sign-in, with restored controls disabled and no device access.": "Възстановяването провери съдържанието на базата, дешифрирането на профилите и входа в системата при изключено управление и без достъп до устройства.",
   "Daily encrypted offsite backups. Current objects expire after 30 days; older versions expire 30 days after replacement. Recovery tests require the separately held recovery key.": "Ежедневни шифровани архиви извън сървъра. Текущите обекти изтичат след 30 дни, а старите версии — 30 дни след замяната им. Тестовете за възстановяване изискват отделно съхранявания ключ.",
-  "No active workspace alerts recorded.": "Няма записани активни сигнали за пространството."
+  "No active workspace alerts recorded.": "Няма записани активни сигнали за пространството.",
+  "Verify the current firmware before enabling control": "Проверете текущия фърмуер, преди да включите управлението",
+  "Firmware compatibility": "Съвместимост на фърмуера",
+  "Validated firmware": "Потвърден фърмуер",
+  "Unvalidated firmware": "Непотвърден фърмуер",
+  "Observed firmware: protocol {{protocol}}, DSP {{dsp}}, HMI {{hmi}}": "Отчетен фърмуер: протокол {{protocol}}, DSP {{dsp}}, HMI {{hmi}}",
+  "Recorded firmware: protocol {{protocol}}, DSP {{dsp}}, HMI {{hmi}}": "Записан фърмуер: протокол {{protocol}}, DSP {{dsp}}, HMI {{hmi}}",
+  "Firmware verification changed; workspace control was revoked": "Проверката на фърмуера е променена; управлението за пространството е изключено",
+  "Firmware verification changed; automation was paused and workspace control was revoked": "Проверката на фърмуера е променена; автоматизацията е спряна и управлението за пространството е изключено",
+  "The firmware is not validated for this control profile": "Фърмуерът не е потвърден за този профил на управление",
+  "Stop scheduled top-ups": "Спри планираното зареждане",
+  "Pause app top-ups and clear scheduled permission": "Спри дозареждането от приложението и разрешението по график",
+  "Pause application top-ups and remove scheduled AC permission. Solar and the inverter's native reserve policy continue; native grid charging may still run below the reserve.": "Спира дозареждането от приложението и премахва разрешението за зареждане от мрежата по график. Соларът и собственият режим за резерв на инвертора продължават да работят; под резерва инверторът може да зарежда от мрежата самостоятелно.",
+  "Scheduled AC permission": "Разрешение за AC по график",
+  "Scheduled AC permission off could not be confirmed": "Изключването на разрешението за зареждане от мрежата по график не е потвърдено"
 }

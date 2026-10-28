@@ -217,8 +217,12 @@ export class ControlJournal {
     await this.load();
   }
 
-  /** @param {{pause?: boolean, cancelStarts?: boolean}} [options] @returns {Promise<void>} */
-  async requestCleanup({ pause = false, cancelStarts = false } = {}) {
+  /** @param {{pause?: boolean, cancelStarts?: boolean, revokeControl?: boolean}} [options] @returns {Promise<void>} */
+  async requestCleanup({
+    pause = false,
+    cancelStarts = false,
+    revokeControl = false,
+  } = {}) {
     const connection = await this.pool.connect();
     try {
       await connection.query("BEGIN");
@@ -230,11 +234,20 @@ export class ControlJournal {
           [this.context.tenantId],
         )
       ).rows[0];
-      if (pause)
+      const currentBinding =
+        control?.account_id === this.context.accountId &&
+        control?.device_sn === this.context.device;
+      if (revokeControl && !currentBinding)
+        throw new Error(
+          "The inverter binding changed before verification was revoked",
+        );
+      if (pause || revokeControl)
         await connection.query(
-          `UPDATE controller_state SET control_epoch=control_epoch+CASE WHEN $2 OR NOT paused OR manual_topup THEN 1 ELSE 0 END,
-          paused=true,manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1`,
-          [this.context.tenantId, cancelStarts],
+          `UPDATE controller_state SET control_epoch=control_epoch+CASE WHEN $2 OR $3 OR NOT paused OR manual_topup THEN 1 ELSE 0 END,
+          paused=true,manual_topup=false,topup_expires_at=null,
+          control_enabled=CASE WHEN $3 THEN false ELSE control_enabled END,
+          verification=CASE WHEN $3 THEN null ELSE verification END,updated_at=now() WHERE tenant_id=$1`,
+          [this.context.tenantId, cancelStarts, revokeControl],
         );
       if (this.context.accountId && this.context.device) {
         const lease = (
@@ -243,9 +256,6 @@ export class ControlJournal {
             this.binding,
           )
         ).rows[0];
-        const currentBinding =
-          control?.account_id === this.context.accountId &&
-          control?.device_sn === this.context.device;
         if (
           (currentBinding && control.control_enabled) ||
           (lease && lease.state !== "clear")

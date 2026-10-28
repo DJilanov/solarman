@@ -58,6 +58,12 @@ test("historical verification retains missing actual values and clock comparison
   const report = {
     checkedAt: "2026-10-28T12:17:42Z",
     passed: false,
+    firmware: {
+      protocol: "2.02",
+      dsp: "1.57",
+      hmi: "1.45",
+      password: "must-stay-private",
+    },
     checks: [
       {
         label: "Inverter clock difference",
@@ -84,6 +90,11 @@ test("historical verification retains missing actual values and clock comparison
   assert.equal(result.verification.checks[0].actual, null);
   assert.equal(result.verification.checks[0].comparison, "at_most");
   assert.equal(result.verification.passed, false);
+  assert.deepEqual(result.verification.firmware, {
+    protocol: "2.02",
+    dsp: "1.57",
+    hmi: "1.45",
+  });
   assert.equal(JSON.stringify(result).includes("must-stay-private"), false);
   report.checkedAt = "invalid";
   assert.equal(

@@ -766,5 +766,19 @@
   "Latest recovery attempt": "Latest recovery attempt",
   "Recovery verified database inventory, account decryption and sign-in, with restored controls disabled and no device access.": "Recovery verified database inventory, account decryption and sign-in, with restored controls disabled and no device access.",
   "Daily encrypted offsite backups. Current objects expire after 30 days; older versions expire 30 days after replacement. Recovery tests require the separately held recovery key.": "Daily encrypted offsite backups. Current objects expire after 30 days; older versions expire 30 days after replacement. Recovery tests require the separately held recovery key.",
-  "No active workspace alerts recorded.": "No active workspace alerts recorded."
+  "No active workspace alerts recorded.": "No active workspace alerts recorded.",
+  "Verify the current firmware before enabling control": "Verify the current firmware before enabling control",
+  "Firmware compatibility": "Firmware compatibility",
+  "Validated firmware": "Validated firmware",
+  "Unvalidated firmware": "Unvalidated firmware",
+  "Observed firmware: protocol {{protocol}}, DSP {{dsp}}, HMI {{hmi}}": "Observed firmware: protocol {{protocol}}, DSP {{dsp}}, HMI {{hmi}}",
+  "Recorded firmware: protocol {{protocol}}, DSP {{dsp}}, HMI {{hmi}}": "Recorded firmware: protocol {{protocol}}, DSP {{dsp}}, HMI {{hmi}}",
+  "Firmware verification changed; workspace control was revoked": "Firmware verification changed; workspace control was revoked",
+  "Firmware verification changed; automation was paused and workspace control was revoked": "Firmware verification changed; automation was paused and workspace control was revoked",
+  "The firmware is not validated for this control profile": "The firmware is not validated for this control profile",
+  "Stop scheduled top-ups": "Stop scheduled top-ups",
+  "Pause app top-ups and clear scheduled permission": "Pause app top-ups and clear scheduled permission",
+  "Pause application top-ups and remove scheduled AC permission. Solar and the inverter's native reserve policy continue; native grid charging may still run below the reserve.": "Pause application top-ups and remove scheduled AC permission. Solar and the inverter's native reserve policy continue; native grid charging may still run below the reserve.",
+  "Scheduled AC permission": "Scheduled AC permission",
+  "Scheduled AC permission off could not be confirmed": "Scheduled AC permission off could not be confirmed"
 }

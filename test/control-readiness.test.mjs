@@ -4,6 +4,9 @@ import { readFileSync } from "node:fs";
 import {
   CONTROL_REASONS,
   controlReadiness,
+  supportedControlFirmware,
+  matchingControlFirmware,
+  CONTROL_FIRMWARE,
 } from "../src/control-readiness.mjs";
 import { WorkQueue } from "../src/work-queue.mjs";
 
@@ -13,6 +16,7 @@ const ready = {
   serverAllowed: true,
   workspaceEnabled: true,
   verified: true,
+  firmwareVerified: true,
   settingsMatch: true,
   clockVerified: true,
   clockFresh: true,
@@ -26,6 +30,7 @@ test("each control requirement independently blocks starts without blocking a st
     "serverAllowed",
     "workspaceEnabled",
     "verified",
+    "firmwareVerified",
     "settingsMatch",
     "clockVerified",
     "clockFresh",
@@ -44,6 +49,24 @@ test("each control requirement independently blocks starts without blocking a st
     false,
   );
   assert.equal(controlReadiness({ ...ready, stopping: true }).canStart, false);
+});
+
+test("only the diagnosed complete firmware identity supports control", () => {
+  assert.equal(supportedControlFirmware({ ...CONTROL_FIRMWARE }), true);
+  assert.equal(
+    matchingControlFirmware(CONTROL_FIRMWARE, { ...CONTROL_FIRMWARE }),
+    true,
+  );
+  for (const value of [
+    null,
+    {},
+    { ...CONTROL_FIRMWARE, dsp: null },
+    { ...CONTROL_FIRMWARE, hmi: "1.46" },
+    { ...CONTROL_FIRMWARE, dsp: "1.570" },
+  ]) {
+    assert.equal(supportedControlFirmware(value), false);
+    assert.equal(matchingControlFirmware(CONTROL_FIRMWARE, value), false);
+  }
 });
 
 test("all readiness reasons have English and Bulgarian translations", () => {

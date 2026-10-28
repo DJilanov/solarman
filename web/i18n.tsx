@@ -88,6 +88,10 @@ export function tr(
         ),
       );
   }
+  const scheduledWarning =
+    "; scheduled AC permission off could not be confirmed";
+  if (message.endsWith(scheduledWarning))
+    return `${tr(message.slice(0, -scheduledWarning.length))}; ${tr("Scheduled AC permission off could not be confirmed")}`;
   const cleanupWarning = "; grid charging off could not be confirmed";
   if (message.endsWith(cleanupWarning))
     return `${tr(message.slice(0, -cleanupWarning.length))}; ${tr("Grid charging off could not be confirmed")}`;

@@ -149,3 +149,21 @@ test("clock checks detect timezone errors, invalid dates and missing clock value
   );
   assert.equal(checkInverterClock(summerReading, "Europe/Sofia").passed, true);
 });
+
+test("firmware fields are normalized without preventing monitoring of unvalidated firmware", () => {
+  for (const [raw, expected] of [
+    [" 1.57 ", "1.57"],
+    ["1.58", "1.58"],
+    ["", null],
+    ["N/A", null],
+    ["<bad>", null],
+  ]) {
+    const result = normalizeBluesun(
+      reading(payload({ values: { DSP_V_M: raw } })),
+      "Europe/Sofia",
+      now,
+    );
+    assert.equal(result.versions.dsp, expected);
+    assert.equal(result.snapshot.soc, 45);
+  }
+});

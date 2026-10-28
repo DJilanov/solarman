@@ -1,3 +1,5 @@
+import { firmwareVersion } from "./telemetry.mjs";
+
 /** @param {unknown} value @returns {Record<string, unknown>} */
 function record(value) {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -65,6 +67,7 @@ export function historyEvidence(value) {
     events.findLast((event) => event.event === "device_verification")?.report,
   );
   const checkedAt = timestamp(report.checkedAt);
+  const firmware = record(report.firmware);
   const checks = (Array.isArray(report.checks) ? report.checks : [])
     .map(record)
     .filter(
@@ -104,7 +107,18 @@ export function historyEvidence(value) {
         : null,
     verification:
       checkedAt && typeof report.passed === "boolean" && checks.length
-        ? { checkedAt, passed: report.passed, checks }
+        ? {
+            checkedAt,
+            passed: report.passed,
+            checks,
+            firmware: report.firmware
+              ? {
+                  protocol: firmwareVersion(firmware.protocol),
+                  dsp: firmwareVersion(firmware.dsp),
+                  hmi: firmwareVersion(firmware.hmi),
+                }
+              : null,
+          }
         : null,
     events: events
       .filter((event) =>
@@ -114,6 +128,7 @@ export function historyEvidence(value) {
           "ac_charge_changed",
           "write_acknowledgement_audit_recovered",
           "write_journal_unavailable",
+          "firmware_verification_invalidated",
         ].includes(event.event),
       )
       .map((event) => ({

@@ -5,7 +5,11 @@ import { BatteryController, decide } from "./controller.mjs";
 import { decryptCredentials } from "./credentials.mjs";
 import { saveMeasurement } from "./database.mjs";
 import { WorkQueue } from "./work-queue.mjs";
-import { controlReadiness } from "./control-readiness.mjs";
+import {
+  controlReadiness,
+  supportedControlFirmware,
+  matchingControlFirmware,
+} from "./control-readiness.mjs";
 import { apiAppKey, ApiBudgetError, YEAR_MS } from "./api-budget.mjs";
 import { ControlJournal } from "./control-journal.mjs";
 import { Supervision } from "./supervision.mjs";
@@ -15,6 +19,7 @@ import {
   TELEMETRY_MAX_AGE_MS,
   parseProviderReading,
   normalizeBluesun,
+  providerFirmware,
 } from "./telemetry.mjs";
 
 export class TenantRuntime {
@@ -55,6 +60,7 @@ export class TenantRuntime {
     });
     this.telemetry = null;
     this.clock = null;
+    this.firmware = null;
     this.initialized = false;
     this.cleanupRequired = false;
     this.appKey = null;
@@ -213,6 +219,7 @@ export class TenantRuntime {
     return Boolean(
       this.verification?.passed &&
         this.verification.mapping === BLUESUN_MAPPING &&
+        supportedControlFirmware(this.verification.firmware) &&
         this.verification.device === this.device &&
         this.verification.profile === this.account?.profile,
     );
@@ -230,6 +237,10 @@ export class TenantRuntime {
       verified:
         this.verifiedDevice() &&
         (this.controlEnabled || (age >= 0 && age <= 1800_000)),
+      firmwareVerified: matchingControlFirmware(
+        this.verification?.firmware,
+        this.firmware,
+      ),
       settingsMatch: this.profileVerified,
       cleanupVerified: !this.cleanupRequired && !this.journal.pending,
       clockVerified: Boolean(this.clock?.passed),
@@ -251,6 +262,7 @@ export class TenantRuntime {
         serverAllowed: this.hostWritesAllowed,
         workspaceEnabled: this.controlEnabled,
         verification: this.verification,
+        firmware: this.firmware,
         recovery: this.journal.status(this.executionId),
         ...readiness,
       },
@@ -395,16 +407,52 @@ export class TenantRuntime {
     return reading;
   }
 
-  /** @param {import('./telemetry.mjs').ProviderReading} reading @returns {ReturnType<typeof normalizeBluesun>} */
-  mapProvider(reading) {
+  /** @param {import('./telemetry.mjs').ProviderReading} reading @param {object | null} [verification] @returns {Promise<ReturnType<typeof normalizeBluesun> & {verificationInvalidated: boolean}>} */
+  async mapProvider(reading, verification = this.verification) {
     this.clock = null;
+    this.firmware = {
+      ...providerFirmware(reading),
+      collectedAt: reading.collectedAt.toISOString(),
+    };
+    const currentUpload =
+      reading.deviceState === 1 &&
+      Date.now() - reading.collectedAt.getTime() <= TELEMETRY_MAX_AGE_MS;
+    const modelMatches =
+      reading.points.find((point) => point.key === "MMN")?.value.trim() ===
+      "BSE20KH3";
+    const verificationInvalidated = Boolean(
+      currentUpload &&
+        (verification?.passed || this.controlEnabled) &&
+        (!modelMatches ||
+          !matchingControlFirmware(verification?.firmware, this.firmware)),
+    );
+    if (verificationInvalidated) {
+      // Revoke starts atomically without discarding the original device's cleanup obligation.
+      this.inhibitStarts = true;
+      this.enableEpoch++;
+      this.paused = true;
+      this.manualTopup = false;
+      this.topupExpiresAt = null;
+      await this.journal.requestCleanup({
+        pause: true,
+        cancelStarts: true,
+        revokeControl: true,
+      });
+      this.controlEnabled = false;
+      this.verification = null;
+      this.profileVerified = false;
+      this.ratedPowerChecked = false;
+      this.cleanupRequired = this.journal.pending;
+      this.events.push({ event: "firmware_verification_invalidated" });
+      if (this.cleanupRequired) await this.clearScheduledPermission();
+    }
     const mapped = normalizeBluesun(reading, this.timezone);
     this.clock = {
       ...mapped.clock,
       collectedAt: reading.collectedAt.toISOString(),
     };
     this.telemetry.clock = this.clock;
-    return mapped;
+    return { ...mapped, verificationInvalidated };
   }
 
   /** @param {import('./telemetry.mjs').ProviderReading | null} [reading] @param {{charge: boolean, reason: string} | null} [decision] @returns {Promise<object>} */
@@ -419,7 +467,7 @@ export class TenantRuntime {
           : "The inverter is offline or has stale readings";
       return { decision: { charge: false, reason: "monitor_only" } };
     }
-    const mapped = this.mapProvider(reading);
+    const mapped = await this.mapProvider(reading);
     this.supervision.observe(mapped.snapshot, reading.collectedAt);
     const inserted = await saveMeasurement(
       this.pool,
@@ -476,6 +524,7 @@ export class TenantRuntime {
 
   /** @returns {Promise<object>} */
   async verifyReadings() {
+    const previousVerification = this.verification;
     await this.q(
       "UPDATE controller_state SET verification=null,updated_at=now() WHERE tenant_id=$1",
     );
@@ -485,7 +534,10 @@ export class TenantRuntime {
     const rated = await this.inspector.read(4, 7, 2);
     const snapshot = await this.inspector.snapshot(false);
     const settings = await this.inspector.settings();
-    const mapped = this.mapProvider(await this.readProvider());
+    const mapped = await this.mapProvider(
+      await this.readProvider(),
+      previousVerification,
+    );
     if (Date.now() - startedAt > 120_000)
       throw new Error("Live readings are too old");
     if (await this.journal.confirmOff(snapshot.flags))
@@ -537,10 +589,18 @@ export class TenantRuntime {
       comparison: "at_most",
       passed: mapped.clock.passed,
     });
+    checks.push({
+      label: "Firmware compatibility",
+      actual: supportedControlFirmware(mapped.versions) ? 1 : 0,
+      expected: 1,
+      unit: "",
+      passed: supportedControlFirmware(mapped.versions),
+    });
     const verification = {
       device: this.device,
       profile: this.account.profile,
       mapping: BLUESUN_MAPPING,
+      firmware: mapped.versions,
       clock: this.clock,
       checkedAt: new Date().toISOString(),
       passed: checks.every((check) => check.passed),
@@ -555,7 +615,9 @@ export class TenantRuntime {
     this.profileVerified = checks.slice(1).every((check) => check.passed);
     this.profileError = this.profileVerified
       ? null
-      : "Device settings need attention";
+      : !supportedControlFirmware(mapped.versions)
+        ? "The firmware is not validated for this control profile"
+        : "Device settings need attention";
     await saveMeasurement(
       this.pool,
       this.tenantId,
@@ -629,7 +691,12 @@ export class TenantRuntime {
       return this.collectProvider();
     if (!inspectOnly) {
       const reading = await this.readProvider();
-      const mapped = this.mapProvider(reading);
+      const mapped = await this.mapProvider(reading);
+      if (mapped.verificationInvalidated)
+        return this.collectProvider(reading, {
+          charge: false,
+          reason: "firmware_verification_changed",
+        });
       if (!mapped.clock.passed)
         throw new Error("The inverter clock must match the workspace timezone");
       this.supervision.observe(mapped.snapshot, reading.collectedAt);
@@ -649,7 +716,7 @@ export class TenantRuntime {
       Date.now() - new Date(this.clock.collectedAt).getTime() >
         TELEMETRY_MAX_AGE_MS
     ) {
-      this.mapProvider(await this.readProvider());
+      await this.mapProvider(await this.readProvider());
     }
     const canWrite =
       this.writesEnabled && this.controlEnabled && this.verifiedDevice();
@@ -674,10 +741,13 @@ export class TenantRuntime {
         snapshot.acPowerRaw === 100 &&
         snapshot.acTargetRaw === 500 &&
         settings.maximumSoc === 100 &&
-        settings.reserveSoc === 50;
+        settings.reserveSoc === 50 &&
+        supportedControlFirmware(this.firmware);
       this.profileError = this.profileVerified
         ? null
-        : "Monitoring is available, but inverter settings differ from the supported 2 kW / 50% reserve policy. Hardware controls are blocked.";
+        : !supportedControlFirmware(this.firmware)
+          ? "The firmware is not validated for this control profile"
+          : "Monitoring is available, but inverter settings differ from the supported 2 kW / 50% reserve policy. Hardware controls are blocked.";
       result = {
         snapshot,
         decision: this.profileVerified
@@ -799,7 +869,8 @@ export class TenantRuntime {
         await this.clearScheduledPermission();
         pauseUnrecorded = false;
       } catch {
-        this.lastError += "; grid charging off could not be confirmed";
+        this.lastError +=
+          "; scheduled AC permission off could not be confirmed";
       }
     }
     if (pauseUnrecorded)
@@ -843,8 +914,8 @@ export class TenantRuntime {
   /** @param {string} jobId @returns {Promise<void>} */
   async cancelStart(jobId) {
     await this.q(
-      "UPDATE command_executions SET status='interrupted',message='Control request cancelled; workspace state changed',completed_at=now() WHERE tenant_id=$1 AND id=$2",
-      [jobId],
+      "UPDATE command_executions SET status='interrupted',message='Control request cancelled; workspace state changed',detail=$3,completed_at=now() WHERE tenant_id=$1 AND id=$2",
+      [jobId, { events: this.events }],
     );
   }
 
@@ -1019,6 +1090,13 @@ export class TenantRuntime {
                 action === "refresh",
                 ["topup", "resume"].includes(action),
               );
+              if (
+                ["topup", "resume"].includes(action) &&
+                enableEpoch !== this.enableEpoch
+              ) {
+                await this.cancelStart(job.id);
+                return;
+              }
               message = reasonLabel(result.decision.reason);
             } else
               message =
@@ -1104,6 +1182,8 @@ export function reasonLabel(reason) {
         "Device readings updated; control settings require configuration",
       midnight_boundary:
         "The scheduled top-up is waiting during the inverter midnight boundary",
+      firmware_verification_changed:
+        "Firmware verification changed; automation was paused and workspace control was revoked",
     }[reason] ?? reason
   );
 }

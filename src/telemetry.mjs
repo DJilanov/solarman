@@ -107,6 +107,24 @@ export function checkInverterClock(reading, timezone) {
   return { passed: skewSeconds <= 120, skewSeconds, reportedTime: time };
 }
 
+/** @param {unknown} value @returns {string | null} */
+export function firmwareVersion(value) {
+  return typeof value === "string" &&
+    /^\d{1,4}(?:\.\d{1,4}){1,3}$/.test(value.trim())
+    ? value.trim()
+    : null;
+}
+
+/** @param {ProviderReading} reading @returns {{protocol: string | null, dsp: string | null, hmi: string | null}} */
+export function providerFirmware(reading) {
+  const points = new Map(reading.points.map((point) => [point.key, point]));
+  return {
+    protocol: firmwareVersion(points.get("PTCv1")?.value),
+    dsp: firmwareVersion(points.get("DSP_V_M")?.value),
+    hmi: firmwareVersion(points.get("HMIVN")?.value),
+  };
+}
+
 /** @param {ProviderReading} reading @param {string} timezone @param {number} [now] @returns {{snapshot: {soc: number, temperatureC: number, pvW: number, loadW: number, gridW: number, batteryW: number}, clock: ReturnType<typeof checkInverterClock>, versions: {protocol: string, dsp: string | null, hmi: string | null}}} */
 export function normalizeBluesun(reading, timezone, now = Date.now()) {
   const points = new Map(reading.points.map((point) => [point.key, point]));
@@ -150,10 +168,6 @@ export function normalizeBluesun(reading, timezone, now = Date.now()) {
       temperatureC: number("B_T1", ["℃", "°C"], -50, 100),
     },
     clock: checkInverterClock(reading, timezone),
-    versions: {
-      protocol: "2.02",
-      dsp: points.get("DSP_V_M")?.value ?? null,
-      hmi: points.get("HMIVN")?.value ?? null,
-    },
+    versions: { ...providerFirmware(reading), protocol: "2.02" },
   };
 }

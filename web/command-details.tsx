@@ -181,6 +181,8 @@ export default function CommandDetailsPage(): ReactNode {
     write_acknowledgement_audit_recovered:
       "Device acknowledgment audit recovered",
     write_journal_unavailable: "Write journal was unavailable",
+    firmware_verification_invalidated:
+      "Firmware verification changed; workspace control was revoked",
   };
   const assessmentLabels = {
     native_audit: "Periodic or required native check",
@@ -330,6 +332,19 @@ export default function CommandDetailsPage(): ReactNode {
               <p className="fine-print">
                 {when(verification.checkedAt, timezone, "medium")}
               </p>
+              {verification.firmware && (
+                <p className="fine-print">
+                  {tr(
+                    "Recorded firmware: protocol {{protocol}}, DSP {{dsp}}, HMI {{hmi}}",
+                    {
+                      protocol:
+                        verification.firmware.protocol ?? tr("Unavailable"),
+                      dsp: verification.firmware.dsp ?? tr("Unavailable"),
+                      hmi: verification.firmware.hmi ?? tr("Unavailable"),
+                    },
+                  )}
+                </p>
+              )}
               <div className="readiness-checks" role="list">
                 {verification.checks.map((check) => (
                   <div

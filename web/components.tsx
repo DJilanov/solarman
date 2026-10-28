@@ -447,7 +447,7 @@ export function commandLabel(action: string): string {
     verify: "Verify device settings",
     enable_controls: "Enable workspace control",
     topup: "Top up to 50%",
-    stop: "Stop grid charging",
+    stop: "Stop scheduled top-ups",
     pause: "Pause automation",
     resume: "Resume automation",
   };

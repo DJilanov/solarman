@@ -675,6 +675,25 @@ export function Controls(): ReactNode {
             </strong>
           </span>
         </div>
+        {controller.control.firmware && (
+          <p className="fine-print">
+            {tr(
+              "Observed firmware: protocol {{protocol}}, DSP {{dsp}}, HMI {{hmi}}",
+              {
+                protocol:
+                  controller.control.firmware.protocol ?? tr("Unavailable"),
+                dsp: controller.control.firmware.dsp ?? tr("Unavailable"),
+                hmi: controller.control.firmware.hmi ?? tr("Unavailable"),
+              },
+            )}{" "}
+            {tr("Observed {{time}}", {
+              time: when(
+                controller.control.firmware.collectedAt,
+                controller.timezone,
+              ),
+            })}
+          </p>
+        )}
         {controller.control.verification && (
           <details
             className="readiness-details"
@@ -819,8 +838,8 @@ export function Controls(): ReactNode {
           </p>
         </Panel>
         <Panel
-          title={tr("Stop grid charging")}
-          subtitle={tr("Return to normal solar and battery use")}
+          title={tr("Stop scheduled top-ups")}
+          subtitle={tr("Pause app top-ups and clear scheduled permission")}
           action={
             <span className="small-symbol battery">
               <Unplug size={20} />
@@ -832,7 +851,7 @@ export function Controls(): ReactNode {
           </div>
           <p className="control-description">
             {tr(
-              "Stop the grid top-up and pause automatic top-ups. Solar can still charge the battery, and the configured on-grid reserve remains in place.",
+              "Pause application top-ups and remove scheduled AC permission. Solar and the inverter's native reserve policy continue; native grid charging may still run below the reserve.",
             )}
           </p>
           <button
@@ -843,7 +862,7 @@ export function Controls(): ReactNode {
             }}
           >
             <Pause size={17} />
-            {tr("Stop grid charging")}
+            {tr("Stop scheduled top-ups")}
           </button>
           <p className="button-helper">
             {tr("Stops are queued after an in-progress device operation.")}
@@ -934,7 +953,7 @@ export function Controls(): ReactNode {
               <strong>{age(latest?.at)}</strong>
             </div>
             <div>
-              <span>{tr("Grid charge permission")}</span>
+              <span>{tr("Scheduled AC permission")}</span>
               <strong>
                 {latest && latest.acEnabled !== null
                   ? latest.acEnabled

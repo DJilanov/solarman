@@ -429,6 +429,7 @@ async function controlFixture(writes = false) {
     gridVoltages: [230, 230, 230],
   };
   const calls = [];
+  const firmware = { DSP_V_M: "1.57", HMIVN: "1.45" };
   runtime.client.api = async (path, body) => {
     if (path === "/account/v1.0/balance")
       return { success: true, total: 200000 };
@@ -438,6 +439,7 @@ async function controlFixture(writes = false) {
     return providerPayload({
       device: runtime.device,
       values: {
+        ...firmware,
         PVTP: String(snapshot.pvW),
         EP: String(snapshot.loadW),
         PG_Pt1: String(snapshot.gridW),
@@ -468,6 +470,7 @@ async function controlFixture(writes = false) {
     runtime,
     snapshot,
     calls,
+    firmware,
     user: {
       tenant_id: ids.alpha.tenant,
       id: ids.alpha.user,
@@ -495,12 +498,17 @@ test("read-only verification persists checked values but cannot enable control w
     const history = await (
       await fetchApi(`/activity/${job.id}`, { auth: alpha })
     ).json();
-    assert.equal(history.evidence.verification.checks.length, 8);
+    assert.equal(history.evidence.verification.checks.length, 9);
+    assert.deepEqual(history.evidence.verification.firmware, {
+      protocol: "2.02",
+      dsp: "1.57",
+      hmi: "1.45",
+    });
     assert.equal(history.evidence.verification.passed, true);
     assert.equal(history.device, runtime.device);
     assert.deepEqual(history.writes, []);
     assert.equal(runtime.status().control.verification.passed, true);
-    assert.equal(runtime.status().control.verification.checks.length, 8);
+    assert.equal(runtime.status().control.verification.checks.length, 9);
     assert.equal(runtime.status().control.canEnable, false);
     assert.equal(
       (await completeCommand(runtime, "enable_controls", user)).status,
@@ -557,6 +565,212 @@ test("stale device verification cannot arm a workspace", async () => {
       "failed",
     );
     assert.equal(runtime.controlEnabled, false);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("unvalidated firmware permits monitoring but cannot pass control verification", async () => {
+  const { runtime, firmware, user, calls } = await controlFixture(true);
+  try {
+    firmware.DSP_V_M = "1.58";
+    assert.equal(
+      (await completeCommand(runtime, "verify", user)).status,
+      "succeeded",
+    );
+    assert.equal(runtime.verification.passed, false);
+    assert.equal(
+      runtime.verification.checks.at(-1).label,
+      "Firmware compatibility",
+    );
+    assert.equal(runtime.verification.checks.at(-1).passed, false);
+    assert.equal(
+      (await completeCommand(runtime, "enable_controls", user)).status,
+      "failed",
+    );
+    await runtime.collectProvider();
+    assert.equal(runtime.telemetry.source, "provider");
+    assert.equal(runtime.status().control.canStart, false);
+    assert.equal(calls.includes("tick"), false);
+    assert.equal(runtime.verification.passed, false);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a firmware change revokes activation atomically, preserves cleanup and cancels a queued start", async () => {
+  const { runtime, firmware, user, calls } = await armedFixture();
+  try {
+    const intent = await runtime.journal.prepare(206, [0, 25], null);
+    await runtime.journal.verify(intent);
+    runtime.controller.disable = async () => {
+      throw new Error("fixture unavailable cleanup");
+    };
+    firmware.HMIVN = "1.46";
+    const job = await completeCommand(runtime, "topup", user);
+    assert.equal(job.status, "failed");
+    const saved = (
+      await pool.query(
+        "SELECT paused,manual_topup,control_enabled,verification,control_epoch FROM controller_state WHERE tenant_id=$1",
+        [runtime.tenantId],
+      )
+    ).rows[0];
+    assert.equal(saved.paused, true);
+    assert.equal(saved.manual_topup, false);
+    assert.equal(saved.control_enabled, false);
+    assert.equal(saved.verification, null);
+    assert.equal(runtime.journal.pending, true);
+    const before = calls.filter((c) => c === "tick").length;
+    const epoch = saved.control_epoch;
+    runtime.controller.disable = async () => 9;
+    await runtime.collect();
+    assert.equal(runtime.journal.pending, false);
+    assert.equal(runtime.controlEnabled, false);
+    assert.equal(calls.filter((c) => c === "tick").length, before);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT control_epoch FROM controller_state WHERE tenant_id=$1",
+          [runtime.tenantId],
+        )
+      ).rows[0].control_epoch,
+      epoch,
+    );
+    assert.equal(runtime.status().control.canStart, false);
+  } finally {
+    runtime.controller.disable = async () => 9;
+    await runtime.close();
+  }
+});
+
+test("a successful firmware mismatch cleanup interrupts the requesting start and remains revoked after restart", async () => {
+  const { runtime, firmware, user, calls } = await armedFixture();
+  let restarted;
+  try {
+    const before = calls.filter((c) => c === "tick").length;
+    firmware.DSP_V_M = "1.58";
+    const job = await completeCommand(runtime, "topup", user);
+    assert.equal(job.status, "interrupted");
+    assert.equal(calls.filter((c) => c === "tick").length, before);
+    assert.equal(runtime.journal.pending, false);
+    const account = (
+      await pool.query("SELECT * FROM solarman_accounts WHERE tenant_id=$1", [
+        runtime.tenantId,
+      ])
+    ).rows[0];
+    restarted = new TenantRuntime(runtime.hub, runtime.tenantId, account);
+    await restarted.initialize();
+    assert.equal(restarted.controlEnabled, false);
+    assert.equal(restarted.paused, true);
+    assert.equal(restarted.verification, null);
+    assert.equal(restarted.readiness().canStart, false);
+  } finally {
+    await restarted?.close();
+    await runtime.close();
+  }
+});
+
+test("protocol or model changes revoke control before an unsupported telemetry mapping can throw", async () => {
+  for (const change of [{ PTCv1: "2.03" }, { MMN: "OTHER-MODEL" }]) {
+    const { runtime, firmware, calls } = await armedFixture();
+    try {
+      const before = calls.filter((c) => c === "tick").length;
+      Object.assign(firmware, change);
+      await assert.rejects(runtime.collect(), /mapping/);
+      const saved = (
+        await pool.query(
+          "SELECT control_enabled,paused,verification FROM controller_state WHERE tenant_id=$1",
+          [runtime.tenantId],
+        )
+      ).rows[0];
+      assert.equal(saved.control_enabled, false);
+      assert.equal(saved.paused, true);
+      assert.equal(saved.verification, null);
+      assert.equal(calls.filter((c) => c === "tick").length, before);
+    } finally {
+      await runtime.close();
+    }
+  }
+});
+
+test("legacy verification without firmware cannot retain activation after a fresh upload", async () => {
+  const { runtime } = await armedFixture();
+  let restarted;
+  try {
+    const legacy = { ...runtime.verification };
+    delete legacy.firmware;
+    await pool.query(
+      "UPDATE controller_state SET verification=$2 WHERE tenant_id=$1",
+      [runtime.tenantId, legacy],
+    );
+    const account = (
+      await pool.query("SELECT * FROM solarman_accounts WHERE tenant_id=$1", [
+        runtime.tenantId,
+      ])
+    ).rows[0];
+    restarted = new TenantRuntime(runtime.hub, runtime.tenantId, account);
+    await restarted.initialize();
+    restarted.client.api = async () =>
+      providerPayload({ device: restarted.device });
+    restarted.controller.disable = async () => 9;
+    assert.equal(restarted.readiness().canStart, false);
+    await restarted.collect();
+    assert.equal(restarted.controlEnabled, false);
+    assert.equal(restarted.paused, true);
+    assert.equal(restarted.verification, null);
+    assert.equal(restarted.journal.pending, false);
+  } finally {
+    await restarted?.close();
+    await runtime.close();
+  }
+});
+
+test("a failed settings report cannot retain old activation when firmware subsequently changes", async () => {
+  const { runtime, firmware, user } = await armedFixture();
+  try {
+    await completeCommand(runtime, "pause", user);
+    runtime.inspector.settings = async () => ({
+      maximumSoc: 90,
+      reserveSoc: 50,
+    });
+    await completeCommand(runtime, "verify", user);
+    assert.equal(runtime.verification.passed, false);
+    assert.equal(runtime.controlEnabled, true);
+    firmware.HMIVN = "1.46";
+    await runtime.collectProvider();
+    assert.equal(runtime.controlEnabled, false);
+    assert.equal(runtime.verification, null);
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.journal.pending, false);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("an old device binding cannot revoke the current device's verification or activation", async () => {
+  const { runtime } = await armedFixture();
+  try {
+    const old = new ControlJournal(pool, {
+      ...runtime.journal.context,
+      device: "retired-fixture-device",
+    });
+    await assert.rejects(
+      old.requestCleanup({
+        pause: true,
+        cancelStarts: true,
+        revokeControl: true,
+      }),
+      /binding changed/,
+    );
+    const row = (
+      await pool.query(
+        "SELECT control_enabled,verification FROM controller_state WHERE tenant_id=$1",
+        [runtime.tenantId],
+      )
+    ).rows[0];
+    assert.equal(row.control_enabled, true);
+    assert.equal(row.verification.passed, true);
+    assert.equal(row.verification.device, runtime.device);
   } finally {
     await runtime.close();
   }
