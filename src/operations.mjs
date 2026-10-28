@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ApiBudgetError } from "./api-budget.mjs";
+import { SolarmanAuthenticationError } from "./solarman.mjs";
 
 // Allow one five-minute logger upload cycle and three minutes of delivery jitter.
 const UPLOAD_GRACE_MS = 480000;
@@ -59,7 +60,7 @@ export class DeviceHealth {
     try {
       const result = await operation();
       await this.pool.query(
-        "UPDATE device_health SET succeeded_at=now(),failures=0,control_fault=$4,control_fault_at=CASE WHEN $4 THEN COALESCE(control_fault_at,now()) ELSE null END WHERE tenant_id=$1 AND account_id=$2 AND device=$3",
+        "UPDATE device_health SET succeeded_at=now(),failures=0,auth_fault=false,auth_fault_at=null,control_fault=$4,control_fault_at=CASE WHEN $4 THEN COALESCE(control_fault_at,now()) ELSE null END WHERE tenant_id=$1 AND account_id=$2 AND device=$3",
         [...this.values, fault()],
       );
       return result;
@@ -67,8 +68,12 @@ export class DeviceHealth {
       if (!(error instanceof ApiBudgetError)) {
         try {
           await this.pool.query(
-            "UPDATE device_health SET failed_at=now(),failures=LEAST(failures::bigint+1,2147483647),control_fault=$4,control_fault_at=CASE WHEN $4 THEN COALESCE(control_fault_at,now()) ELSE null END WHERE tenant_id=$1 AND account_id=$2 AND device=$3",
-            [...this.values, fault()],
+            "UPDATE device_health SET failed_at=now(),failures=LEAST(failures::bigint+1,2147483647),auth_fault=auth_fault OR $5,auth_fault_at=CASE WHEN $5 THEN COALESCE(auth_fault_at,now()) ELSE auth_fault_at END,control_fault=$4,control_fault_at=CASE WHEN $4 THEN COALESCE(control_fault_at,now()) ELSE null END WHERE tenant_id=$1 AND account_id=$2 AND device=$3",
+            [
+              ...this.values,
+              fault(),
+              error instanceof SolarmanAuthenticationError,
+            ],
           );
         } catch {
           console.error(
@@ -84,6 +89,12 @@ export class DeviceHealth {
 /** @param {object} row @param {number} now @param {number} pollMs @returns {object[]} */
 export function deviceIssues(row, now, pollMs) {
   const issues = [];
+  if (row.auth_fault)
+    issues.push({
+      kind: "auth_failure",
+      severity: "critical",
+      at: row.auth_fault_at ?? row.failed_at ?? row.created_at,
+    });
   const capacityWaiting =
     row.monitoring_eligible === true && row.monitoring_admitted === false;
   if (capacityWaiting)
@@ -215,7 +226,7 @@ export class Operations {
     const now = Date.now();
     const [accounts, debts, tenants] = await Promise.all([
       this.pool
-        .query(`SELECT a.tenant_id,a.id AS account_id,a.device_sn AS device,a.monitoring_admitted,h.created_at,h.attempted_at,h.succeeded_at,h.failed_at,h.uploaded_at,h.reported_at,h.device_state,h.failures,h.control_fault,h.control_fault_at
+        .query(`SELECT a.tenant_id,a.id AS account_id,a.device_sn AS device,a.monitoring_admitted,h.created_at,h.attempted_at,h.succeeded_at,h.failed_at,h.uploaded_at,h.reported_at,h.device_state,h.failures,h.control_fault,h.control_fault_at,h.auth_fault,h.auth_fault_at
         FROM solarman_accounts a JOIN tenants t ON t.id=a.tenant_id LEFT JOIN device_health h ON h.tenant_id=a.tenant_id AND h.account_id=a.id AND h.device=a.device_sn WHERE a.device_sn IS NOT NULL AND t.lifecycle IN('active','suspended')`),
       this.pool.query(
         "SELECT tenant_id,account_id,device,updated_at FROM device_control_state WHERE state IN ('uncertain','cleanup-required') AND updated_at<now()-interval '2 minutes'",
@@ -289,18 +300,18 @@ export class Operations {
         tenantId,
       ]);
       const active = await connection.query(
-        "SELECT id,binding,kind FROM operational_incidents WHERE tenant_id=$1 AND resolved_at IS NULL",
+        "SELECT id,binding,kind,revision FROM operational_incidents WHERE tenant_id=$1 AND resolved_at IS NULL",
         [tenantId],
       );
       for (const row of desired) {
-        await connection.query(
+        const saved = await connection.query(
           `INSERT INTO operational_incidents (id,tenant_id,account_id,device,binding,kind,severity,detail_code,first_seen_at,last_seen_at)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
           ON CONFLICT (tenant_id,binding,kind) WHERE resolved_at IS NULL DO UPDATE SET
           severity=EXCLUDED.severity,detail_code=EXCLUDED.detail_code,last_seen_at=GREATEST(operational_incidents.last_seen_at,EXCLUDED.last_seen_at),
           acknowledged_at=CASE WHEN (operational_incidents.severity='warning' AND EXCLUDED.severity='critical') OR (EXCLUDED.detail_code='exhausted' AND operational_incidents.detail_code IS DISTINCT FROM 'exhausted') THEN null ELSE operational_incidents.acknowledged_at END,
           acknowledged_by=CASE WHEN (operational_incidents.severity='warning' AND EXCLUDED.severity='critical') OR (EXCLUDED.detail_code='exhausted' AND operational_incidents.detail_code IS DISTINCT FROM 'exhausted') THEN null ELSE operational_incidents.acknowledged_by END,
-          revision=operational_incidents.revision+CASE WHEN (operational_incidents.severity='warning' AND EXCLUDED.severity='critical') OR (EXCLUDED.detail_code='exhausted' AND operational_incidents.detail_code IS DISTINCT FROM 'exhausted') THEN 1 ELSE 0 END`,
+          revision=operational_incidents.revision+CASE WHEN (operational_incidents.severity='warning' AND EXCLUDED.severity='critical') OR (EXCLUDED.detail_code='exhausted' AND operational_incidents.detail_code IS DISTINCT FROM 'exhausted') THEN 1 ELSE 0 END RETURNING *`,
           [
             randomUUID(),
             tenantId,
@@ -313,15 +324,22 @@ export class Operations {
             row.at,
           ],
         );
+        const before = active.rows.find((item) => item.id === saved.rows[0].id);
+        if (!before || before.revision !== saved.rows[0].revision)
+          await this.hub.notifications?.capture(
+            connection,
+            saved.rows[0],
+            before ? "escalated" : "opened",
+          );
       }
       for (const row of active.rows)
         if (
           !desired.some(
             (entry) => entry.binding === row.binding && entry.kind === row.kind,
           )
-        )
-          await connection.query(
-            "UPDATE operational_incidents SET resolved_at=$3,resolution_reason=$4 WHERE tenant_id=$1 AND id=$2",
+        ) {
+          const resolved = await connection.query(
+            "UPDATE operational_incidents SET resolved_at=$3,resolution_reason=$4 WHERE tenant_id=$1 AND id=$2 RETURNING *",
             [
               tenantId,
               row.id,
@@ -331,6 +349,12 @@ export class Operations {
                 : "binding_changed",
             ],
           );
+          await this.hub.notifications?.capture(
+            connection,
+            resolved.rows[0],
+            "resolved",
+          );
+        }
       await connection.query("COMMIT");
     } catch (error) {
       await connection.query("ROLLBACK");

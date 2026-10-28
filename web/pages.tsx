@@ -1160,6 +1160,12 @@ export function SettingsPage(): ReactNode {
             <Link className="button secondary small" to="/settings/health">
               {tr("System health")}
             </Link>
+            <Link
+              className="button secondary small"
+              to="/settings/notifications"
+            >
+              {tr("External notifications")}
+            </Link>
             <Link className="button secondary small" to="/settings/data">
               {tr("Data and privacy")}
             </Link>

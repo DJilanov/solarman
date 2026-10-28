@@ -8,6 +8,7 @@ import { DataMaintenance } from "./data-maintenance.mjs";
 import { WorkspaceOffboarding } from "./workspace-offboarding.mjs";
 import { PolicyObservations } from "./policy-observations.mjs";
 import { Commissioning } from "./commissioning.mjs";
+import { Notifications } from "./notifications.mjs";
 import { invalidateCommissioning } from "./commissioning-state.mjs";
 import { SecurityError } from "./account-security.mjs";
 
@@ -34,6 +35,7 @@ export class AccountHub {
     this.dataMaintenance = new DataMaintenance(pool);
     this.policyObservations = new PolicyObservations(pool);
     this.commissioning = new Commissioning(pool, this);
+    this.notifications = new Notifications(pool, this);
     const requireErasureGuard =
       env.NODE_ENV === "production" ||
       env.PUBLIC_URL?.startsWith("https:") === true;
@@ -109,9 +111,13 @@ export class AccountHub {
     }
     this.lock.on("error", () => {
       this.stopping = true;
+      void this.notifications.stop();
       for (const runtime of this.runtimes.values()) void runtime.close();
     });
     await this.offboarding.initialize();
+    while (await this.notifications.recoverSending(true)) {
+      /* No delivery starts during recovery. */
+    }
     while (await this.commissioning.expire(true)) {
       /* Restart never renews an attended session. */
     }
@@ -221,6 +227,15 @@ export class AccountHub {
 
   /** @param {string} tenantId @param {string|null} appKey @returns {Promise<void>} */
   async lifecycleChanged(tenantId, appKey) {
+    if (this.notifications?.inFlight?.tenantId === tenantId) {
+      const lifecycle = (
+        await this.pool.query("SELECT lifecycle FROM tenants WHERE id=$1", [
+          tenantId,
+        ])
+      ).rows[0]?.lifecycle;
+      if (lifecycle === "offboarding")
+        await this.notifications.cancelTenant(tenantId);
+    }
     const runtime = this.runtimes.get(tenantId);
     if (runtime) {
       const previousLifecycle = runtime.lifecycle;
@@ -584,6 +599,7 @@ export class AccountHub {
     const offboardingStopped = this.offboarding.stop();
     const observationsStopped = this.policyObservations.stop();
     const commissioningStopped = this.commissioning.stop();
+    const notificationsStopped = this.notifications.stop();
     await Promise.allSettled(
       [...this.runtimes.values()].map((runtime) => runtime.close()),
     );
@@ -592,6 +608,7 @@ export class AccountHub {
     await offboardingStopped;
     await observationsStopped;
     await commissioningStopped;
+    await notificationsStopped;
     if (this.lock) {
       try {
         await this.lock.query("SELECT pg_advisory_unlock(193401,2)");

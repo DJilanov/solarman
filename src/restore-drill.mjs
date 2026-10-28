@@ -6,6 +6,12 @@ import { createApp } from "./http-app.mjs";
 import { WorkspaceOffboarding } from "./workspace-offboarding.mjs";
 import { erasureReceipt } from "./erasure-guard.mjs";
 import { invalidateCommissioning } from "./commissioning-state.mjs";
+import { Notifications } from "./notifications.mjs";
+import {
+  encryptNotificationSecret,
+  verifyStoredNotificationSecrets,
+} from "./notification-secrets.mjs";
+import { quarantineNotifications } from "./notification-lifecycle.mjs";
 import { hashPassword, validPasswordHash } from "./auth.mjs";
 import {
   verifyStoredCredentials,
@@ -134,18 +140,73 @@ async function createAuthenticationFixture(
       commissioningState,
     ],
   );
+  const channel = randomUUID();
+  await pool.query(
+    "INSERT INTO notification_channels(id,tenant_id,chat_id,secret,language,enabled,verified_at) VALUES($1,$2,'-10000001',$3,'bg',true,clock_timestamp())",
+    [
+      channel,
+      tenant,
+      encryptNotificationSecret(
+        "123456789:" + randomBytes(32).toString("base64url"),
+        key,
+        tenant,
+        channel,
+      ),
+    ],
+  );
+  for (const state of ["queued", "sending"]) {
+    const id = randomUUID();
+    await pool.query(
+      "INSERT INTO notification_outbox(id,tenant_id,channel_id,channel_revision,event_key,kind,payload,state,attempts) VALUES($1,$2,$3,1,$4,'test',$5,$6,$7)",
+      [
+        id,
+        tenant,
+        channel,
+        `restore:${state}`,
+        {
+          title: "Isolated recovery fixture",
+          text: "Restore must never send this fixture.",
+        },
+        state,
+        state === "sending" ? 1 : 0,
+      ],
+    );
+    if (state === "sending")
+      await pool.query(
+        "INSERT INTO notification_attempts(id,tenant_id,job_id,number) VALUES($1,$2,$3,1)",
+        [randomUUID(), tenant, id],
+      );
+  }
   return { password, user, email };
 }
 
-/** @param {import('pg').Pool} pool @param {AuthenticationFixture} fixture @param {{user:string,email:string,password:string,token:string,recoveryKey:string}} erased @returns {Promise<void>} */
-async function verifyAuthentication(pool, { password, user, email }, erased) {
+/** @param {import('pg').Pool} pool @param {AuthenticationFixture} fixture @param {{user:string,email:string,password:string,token:string,recoveryKey:string}} erased @param {Buffer} key @returns {Promise<void>} */
+async function verifyAuthentication(
+  pool,
+  { password, user, email },
+  erased,
+  key,
+) {
   let accessAttempts = 0;
   const hub = {
+    env: { PUBLIC_URL: "http://localhost" },
+    key,
+    operations: { status: () => ({ state: "current" }) },
+    offboarding: { serviceStatus: async () => ({ state: "not-configured" }) },
     forTenant: async () => {
       accessAttempts++;
       throw new BackupError("device_access_forbidden");
     },
   };
+  let notificationAttempts = 0;
+  hub.notifications = new Notifications(pool, hub, {
+    send: async () => {
+      notificationAttempts++;
+      throw new BackupError("notification_access_forbidden");
+    },
+  });
+  await hub.notifications.runOnce();
+  assert.equal(notificationAttempts, 0);
   const app = createApp({
     pool,
     hub,
@@ -225,6 +286,18 @@ async function verifyAuthentication(pool, { password, user, email }, erased) {
     });
     assert.equal(authenticated.status, 200);
     assert.equal((await authenticated.json()).user.id, user);
+    const notificationSettings = await fetch(origin + "/api/notifications", {
+      headers: { cookie },
+    });
+    assert.equal(notificationSettings.status, 200);
+    const notifications = await notificationSettings.json();
+    assert.equal(notifications.channel.enabled, false);
+    assert.equal(notifications.channel.quarantined, true);
+    assert.equal(notifications.channel.verifiedAt, null);
+    assert.equal(notifications.deliveries.length, 2);
+    assert.ok(
+      notifications.deliveries.every((job) => job.state === "cancelled"),
+    );
     const second = await fetch(origin + "/api/auth/login", {
       method: "POST",
       headers: {
@@ -361,6 +434,9 @@ async function verifyAuthentication(pool, { password, user, email }, erased) {
     assert.equal(observation.data.state, "invalidated");
     assert.equal(observation.data.reason, "restore");
     assert.equal(complete.counts.commissioning, 1);
+    assert.equal(complete.counts.notificationChannels, 1);
+    assert.equal(complete.counts.notifications, 2);
+    assert.equal(complete.counts.notificationAttempts, 1);
     const commissioning = lines
       .map((line) => JSON.parse(line))
       .find(
@@ -509,6 +585,10 @@ export async function restoreDrill(header, dump) {
         ),
         header.accountCount,
       );
+      await verifyStoredNotificationSecrets(
+        connection,
+        encryptionKey(header.credentialKey),
+      );
       await connection.query("COMMIT");
     } finally {
       connection.release();
@@ -600,6 +680,38 @@ export async function restoreDrill(header, dump) {
         ).rows[0].n > 0,
       );
     await invalidateCommissioning(pool, null, "restore");
+    assert.ok(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM notification_channels WHERE enabled",
+        )
+      ).rows[0].n >= 2,
+    );
+    await quarantineNotifications(pool, null, "restore");
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM notification_channels WHERE enabled OR NOT quarantined OR verified_at IS NOT NULL",
+        )
+      ).rows[0].n,
+      0,
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM notification_outbox WHERE state IN('queued','retry','sending')",
+        )
+      ).rows[0].n,
+      0,
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM notification_attempts WHERE state='sending'",
+        )
+      ).rows[0].n,
+      0,
+    );
     assert.equal(
       (
         await pool.query(
@@ -687,7 +799,12 @@ export async function restoreDrill(header, dump) {
       0,
     );
     stage = "authentication";
-    await verifyAuthentication(pool, authenticationFixture, erased);
+    await verifyAuthentication(
+      pool,
+      authenticationFixture,
+      erased,
+      encryptionKey(header.credentialKey),
+    );
     Object.assign(report, {
       state: "verified",
       inventoryVerified: true,
@@ -701,6 +818,8 @@ export async function restoreDrill(header, dump) {
       erasureFencesVerified: true,
       observationsQuarantined: true,
       commissioningQuarantined: true,
+      notificationsQuarantined: true,
+      notificationAccessAttempts: 0,
       recoveryQuarantined: true,
       schemaUpgradeVerified: true,
       controlQuarantined: true,

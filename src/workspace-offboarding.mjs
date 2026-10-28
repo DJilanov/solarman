@@ -10,9 +10,14 @@ import {
 } from "./erasure-guard.mjs";
 import { randomUUID } from "node:crypto";
 import { unsigned32 } from "./modbus.mjs";
+import { quarantineNotifications } from "./notification-lifecycle.mjs";
 
 const LIMIT = 500;
 const ERASE = {
+  notificationAttempts: `DELETE FROM notification_attempts WHERE id IN(SELECT id FROM notification_attempts WHERE tenant_id=$1 LIMIT ${LIMIT})`,
+  notificationChanges: `DELETE FROM notification_events WHERE id IN(SELECT id FROM notification_events WHERE tenant_id=$1 LIMIT ${LIMIT})`,
+  notifications: `DELETE FROM notification_outbox WHERE id IN(SELECT j.id FROM notification_outbox j WHERE j.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM notification_attempts a WHERE a.job_id=j.id) LIMIT ${LIMIT})`,
+  notificationChannels: `DELETE FROM notification_channels WHERE id IN(SELECT c.id FROM notification_channels c WHERE c.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM notification_outbox j WHERE j.channel_id=c.id) AND NOT EXISTS(SELECT 1 FROM notification_events e WHERE e.channel_id=c.id) LIMIT ${LIMIT})`,
   commissioningEvents: `DELETE FROM commissioning_events WHERE id IN(SELECT id FROM commissioning_events WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   commissioning: `DELETE FROM control_commissioning WHERE id IN(SELECT r.id FROM control_commissioning r WHERE r.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM commissioning_events e WHERE e.run_id=r.id) LIMIT ${LIMIT})`,
   observations: `DELETE FROM policy_observation_runs WHERE id IN(SELECT id FROM policy_observation_runs WHERE tenant_id=$1 LIMIT ${LIMIT})`,
@@ -20,7 +25,7 @@ const ERASE = {
   commands: `DELETE FROM command_executions WHERE id IN(SELECT c.id FROM command_executions c WHERE c.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM inverter_write_intents w WHERE w.tenant_id=$1 AND w.execution_id=c.id) LIMIT ${LIMIT})`,
   measurements: `DELETE FROM measurements WHERE id IN(SELECT id FROM measurements WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   provider: `DELETE FROM provider_readings WHERE id IN(SELECT id FROM provider_readings WHERE tenant_id=$1 LIMIT ${LIMIT})`,
-  incidents: `DELETE FROM operational_incidents WHERE id IN(SELECT id FROM operational_incidents WHERE tenant_id=$1 LIMIT ${LIMIT})`,
+  incidents: `DELETE FROM operational_incidents WHERE id IN(SELECT i.id FROM operational_incidents i WHERE i.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM notification_outbox j WHERE j.incident_id=i.id) LIMIT ${LIMIT})`,
   health: `DELETE FROM device_health WHERE (tenant_id,account_id,device) IN(SELECT tenant_id,account_id,device FROM device_health WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   security: `DELETE FROM account_security_events WHERE id IN(SELECT id FROM account_security_events WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   recovery: `DELETE FROM account_recovery_tokens WHERE id IN(SELECT r.id FROM account_recovery_tokens r JOIN users u ON u.id=r.user_id WHERE u.tenant_id=$1 LIMIT ${LIMIT})`,
@@ -44,6 +49,7 @@ export async function unresolvedCleanup(client, tenantId) {
 
 /** @param {import('pg').PoolClient} client @param {string} tenantId @returns {Promise<void>} */
 async function revokeAccess(client, tenantId) {
+  await quarantineNotifications(client, tenantId, "closed");
   await client.query(
     "UPDATE solarman_accounts SET monitoring_admitted=false WHERE tenant_id=$1",
     [tenantId],
@@ -409,6 +415,18 @@ export class WorkspaceOffboarding {
             409,
             "Resolve pending inverter cleanup and commands before authorizing erasure",
           );
+        if (
+          (
+            await client.query(
+              "SELECT 1 FROM notification_outbox WHERE tenant_id=$1 AND state='sending' LIMIT 1",
+              [tenantId],
+            )
+          ).rowCount
+        )
+          throw new SecurityError(
+            409,
+            "Notification delivery is still finishing. Refresh before authorizing erasure.",
+          );
         await client.query(
           "UPDATE workspace_offboarding SET erasure_authorized_at=date_trunc('milliseconds',clock_timestamp()) WHERE tenant_id=$1",
           [tenantId],
@@ -588,6 +606,7 @@ export class WorkspaceOffboarding {
     )
       return false;
     if (await unresolvedCleanup(this.pool, row.tenant_id)) return false;
+    await this.hub.notifications?.cancelTenant(row.tenant_id);
     if (this.hub.accountUpdates?.has(row.tenant_id)) return false;
     this.hub.erasingTenants.add(row.tenant_id);
     this.hub.accountUpdates.add(row.tenant_id);
@@ -678,7 +697,13 @@ export class WorkspaceOffboarding {
         intent.id !== receipt.id ||
         intent.erasure_authorized_at?.toISOString() !== receipt.authorizedAt ||
         intent.completed_at ||
-        (await unresolvedCleanup(client, tenantId))
+        (await unresolvedCleanup(client, tenantId)) ||
+        (
+          await client.query(
+            "SELECT 1 FROM notification_outbox WHERE tenant_id=$1 AND state='sending' LIMIT 1",
+            [tenantId],
+          )
+        ).rowCount
       ) {
         await client.query("ROLLBACK");
         return false;
@@ -690,6 +715,10 @@ export class WorkspaceOffboarding {
       );
       await client.query(
         "UPDATE solarman_accounts SET credentials=null,email='',validated_at=null,monitoring_admitted=false,connection_status='removed',connection_message=null,discovered_devices='[]',station_id=null WHERE tenant_id=$1",
+        [tenantId],
+      );
+      await client.query(
+        "UPDATE notification_channels SET secret=null WHERE tenant_id=$1",
         [tenantId],
       );
       await client.query(
@@ -730,7 +759,7 @@ export class WorkspaceOffboarding {
       if (!more) {
         const pending = (
           await client.query(
-            `SELECT EXISTS(SELECT 1 FROM inverter_write_intents WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM command_executions WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM measurements WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM device_control_state WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM api_requests WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM control_commissioning WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM commissioning_events WHERE tenant_id=$1) AS remains`,
+            `SELECT EXISTS(SELECT 1 FROM inverter_write_intents WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM command_executions WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM measurements WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM device_control_state WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM api_requests WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM control_commissioning WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM commissioning_events WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM notification_channels WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM notification_outbox WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM notification_attempts WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM notification_events WHERE tenant_id=$1) AS remains`,
             [tenantId],
           )
         ).rows[0].remains;

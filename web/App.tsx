@@ -56,6 +56,7 @@ const CommandDetailsPage = lazy(() => import("./command-details"));
 const SystemHealthPage = lazy(() => import("./system-health"));
 const PolicyObservationsPage = lazy(() => import("./policy-observations"));
 const CommissioningPage = lazy(() => import("./commissioning"));
+const NotificationsPage = lazy(() => import("./notifications"));
 const AccountSecurityPage = lazy(() => import("./account-security"));
 const WorkspaceDataPage = lazy(() => import("./workspace-data"));
 const RecoverAccountPage = lazy(() => import("./account-recovery"));
@@ -680,6 +681,14 @@ function Dashboard({
                 }
               />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route
+                path="/settings/notifications"
+                element={
+                  <Suspense fallback={<Loading />}>
+                    <NotificationsPage />
+                  </Suspense>
+                }
+              />
               <Route
                 path="/settings/data"
                 element={

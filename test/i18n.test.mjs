@@ -45,6 +45,7 @@ test("every literal translation used by the interface exists in both catalogues"
     "control-readiness.tsx",
     "policy-observations.tsx",
     "commissioning.tsx",
+    "notifications.tsx",
   ]) {
     const source = readFileSync(
       new URL(`../web/${file}`, import.meta.url),
@@ -69,6 +70,7 @@ test("account security errors and event labels have English and Bulgarian transl
     "account-hub.mjs",
     "policy-observations.mjs",
     "commissioning.mjs",
+    "notifications.mjs",
   ]
     .map((file) =>
       readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"),
@@ -166,5 +168,23 @@ test("recovery state and issue messages have English and Bulgarian translations"
     const key = JSON.parse(match[1]);
     assert.ok(Object.hasOwn(english, key), key);
     assert.ok(Object.hasOwn(bulgarian, key), key);
+  }
+});
+
+test("notification delivery states, reasons and audit actions are translated", () => {
+  const source = readFileSync(
+    new URL("../web/notifications.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const name of ["stateLabels", "kindLabels", "codes", "eventLabels"]) {
+    const section = source.match(
+      new RegExp(`const ${name}[^=]*= \\{([\\s\\S]*?)\\n\\};`),
+    )?.[1];
+    assert.ok(section, name);
+    for (const match of section.matchAll(/:\s*("(?:[^"\\]|\\.)*")/g)) {
+      const key = JSON.parse(match[1]);
+      assert.ok(Object.hasOwn(english, key), key);
+      assert.ok(Object.hasOwn(bulgarian, key), key);
+    }
   }
 });

@@ -1,6 +1,9 @@
 const BATCH = 500;
 
 const PRUNE = {
+  notificationAttempts: `DELETE FROM notification_attempts WHERE id IN(SELECT a.id FROM notification_attempts a JOIN notification_outbox j ON j.id=a.job_id WHERE a.tenant_id=$1 AND j.state IN('delivered','failed','unconfirmed','cancelled') AND j.completed_at<clock_timestamp()-$2*interval '1 day' ORDER BY a.started_at,a.id LIMIT ${BATCH})`,
+  notifications: `DELETE FROM notification_outbox WHERE id IN(SELECT j.id FROM notification_outbox j WHERE j.tenant_id=$1 AND j.state IN('delivered','failed','unconfirmed','cancelled') AND j.completed_at<clock_timestamp()-$2*interval '1 day' AND NOT EXISTS(SELECT 1 FROM notification_attempts a WHERE a.job_id=j.id) ORDER BY j.completed_at,j.id LIMIT ${BATCH})`,
+  notificationChanges: `DELETE FROM notification_events WHERE id IN(SELECT id FROM notification_events WHERE tenant_id=$1 AND created_at<clock_timestamp()-$2*interval '1 day' ORDER BY created_at,id LIMIT ${BATCH})`,
   commissioningEvents: `DELETE FROM commissioning_events WHERE id IN(SELECT e.id FROM commissioning_events e JOIN control_commissioning r ON r.id=e.run_id WHERE e.tenant_id=$1 AND r.state='invalidated' AND r.ended_at<clock_timestamp()-$2*interval '1 day' ORDER BY e.created_at,e.id LIMIT ${BATCH})`,
   commissioning: `DELETE FROM control_commissioning WHERE id IN(SELECT r.id FROM control_commissioning r WHERE r.tenant_id=$1 AND r.state='invalidated' AND r.ended_at<clock_timestamp()-$2*interval '1 day' AND NOT EXISTS(SELECT 1 FROM commissioning_events e WHERE e.run_id=r.id) ORDER BY r.ended_at,r.id LIMIT ${BATCH})`,
   measurements: `DELETE FROM measurements WHERE id IN (SELECT m.id FROM measurements m WHERE m.tenant_id=$1 AND m.observed_at<clock_timestamp()-$2*interval '1 day'
@@ -18,7 +21,7 @@ const PRUNE = {
       SELECT tenant_id,user_id,idempotency_key,action,completed_at FROM candidates WHERE user_id IS NOT NULL AND idempotency_key IS NOT NULL
       ON CONFLICT DO NOTHING RETURNING idempotency_key)
     DELETE FROM command_executions c USING candidates d WHERE c.id=d.id AND (SELECT count(*) FROM receipts)>=0`,
-  incidents: `DELETE FROM operational_incidents WHERE id IN (SELECT id FROM operational_incidents WHERE tenant_id=$1 AND resolved_at<clock_timestamp()-$2*interval '1 day' ORDER BY resolved_at,id LIMIT ${BATCH})`,
+  incidents: `DELETE FROM operational_incidents WHERE id IN (SELECT i.id FROM operational_incidents i WHERE i.tenant_id=$1 AND i.resolved_at<clock_timestamp()-$2*interval '1 day' AND NOT EXISTS(SELECT 1 FROM notification_outbox j WHERE j.tenant_id=$1 AND j.incident_id=i.id) ORDER BY i.resolved_at,i.id LIMIT ${BATCH})`,
   usage: `DELETE FROM api_requests WHERE id IN (SELECT id FROM api_requests WHERE tenant_id=$1 AND created_at<clock_timestamp()-GREATEST($2,366)*interval '1 day' ORDER BY created_at,id LIMIT ${BATCH})`,
   security: `DELETE FROM account_security_events WHERE id IN (SELECT id FROM account_security_events WHERE tenant_id=$1 AND occurred_at<clock_timestamp()-$2*interval '1 day' ORDER BY occurred_at,id LIMIT ${BATCH})`,
   recovery: `DELETE FROM account_recovery_tokens WHERE id IN (SELECT r.id FROM account_recovery_tokens r JOIN users u ON u.id=r.user_id WHERE u.tenant_id=$1

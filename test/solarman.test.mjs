@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { SolarmanClient } from "../src/solarman.mjs";
+import {
+  SolarmanClient,
+  SolarmanAuthenticationError,
+} from "../src/solarman.mjs";
 import { readCommand } from "../src/modbus.mjs";
 
 const command = readCommand(3, 206, 2);
@@ -272,4 +275,26 @@ test("the documented balance endpoint uses its distinct bounded probe allowance"
     { kind: "token", purpose: "balance" },
     { kind: "read", purpose: "balance" },
   ]);
+});
+
+test("authentication incidents require an explicit provider rejection rather than a malformed response", async (t) => {
+  const { client } = await fixture(t);
+  for (const [body, status, rejected] of [
+    [{ success: false, code: "2101003" }, 200, true],
+    [{ code: "2101003" }, 200, false],
+    [null, 200, false],
+    [{}, 401, true],
+    [{}, 503, false],
+  ]) {
+    t.mock.method(
+      globalThis,
+      "fetch",
+      async () => new Response(JSON.stringify(body), { status }),
+    );
+    await assert.rejects(client.post("/account/v1.0/token", {}), (error) => {
+      assert.equal(error instanceof SolarmanAuthenticationError, rejected);
+      return true;
+    });
+    t.mock.restoreAll();
+  }
 });

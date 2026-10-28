@@ -1,6 +1,6 @@
 # Solarman completion plan
 
-Updated 2026-10-28, from source release `a843cbd8e3afa337b091ec4457002caab4f18a03` and read-only production inspection at 20:41–20:42 UTC (22:41–22:42 Europe/Sofia). This is the current finish plan; [dashboard-plan.md](dashboard-plan.md) retains the original requirements and historical implementation notes.
+Updated 2026-10-29. Commissioning is deployed through release `9ef343eaabdb01bbf3971d624b2f133f943eb145`; the notification increment described below is undergoing release verification. This is the current finish plan; [dashboard-plan.md](dashboard-plan.md) retains the original requirements and historical implementation notes.
 
 ## What is actually locked
 
@@ -8,13 +8,13 @@ The quoted Bulgarian monitoring-only notice is an unused translation entry. The 
 
 | Area | Verified state | Remaining work |
 | --- | --- | --- |
-| Native diagnostics | All nine checks passed at 20:21:25 UTC. Earlier successful checks include a process restart. The report expires at 20:51:25 UTC while control is inactive. | Refresh before activation; retain explicit failure/late-response states. Earlier 530/timeout causes remain undiagnosed. |
-| Activation | Current blocker codes are `server` and `workspace`: host writes off and workspace control off. Automation is paused; manual top-up is off. | Implement commissioning permission and approval before exposing unattended activation. |
+| Native diagnostics | All nine checks passed at 21:14:30 UTC on October 28 after the commissioning deployment. Reports expire after 30 minutes while control is inactive. | Refresh before activation; retain explicit failure/late-response states. Earlier 530/timeout causes remain undiagnosed. |
+| Activation | Host writes and workspace control are off. Automation is paused; manual top-up is off. Device-bound commissioning is also required. | Commissioning software is deployed; physical acceptance and the independent source-limit contract remain open. |
 | Physical changes | Zero application inverter-write intents and zero unresolved bindings; scheduled permission is confirmed off. | Attended write/recovery tests have not been performed. |
-| Policy observations | A real, device-bound run is collecting existing readings: three accepted samples, no collector failure, ten minutes of covered intervals. | Above-50% solar charging/discharging, the reserve transition and a full day/night cycle remain unproven. |
-| Alerts | Operational monitor current; zero active incidents. Durable in-app incident history exists. | External delivery and an independent host-outage check are missing. |
-| Hosted tenants | Isolation, private invitations, account security/recovery, suspension, export, retention and closure/erasure are implemented. Production has migrations 001–019. | Complete a disposable-tenant rehearsal including future commissioning and notifications. |
-| Recovery | Backup healthy; last verified backup 20:23:16 UTC and isolated restore 20:24:11 UTC. Erasure-receipt service verified. | Maintain old/fresh-backup upgrade proofs for subsequent schema changes and a recurring recovery-drill procedure. |
+| Policy observations | A real, device-bound run had ten accepted samples and no collector failure at 21:14 UTC on October 28, surviving the commissioning deployments. | Above-50% solar charging/discharging, the reserve transition and a full day/night cycle remain unproven. |
+| Alerts | Durable in-app incidents exist. Tenant-configured Telegram delivery, explicit verification, outbox/retry history and EN/BG settings are implemented in the notification increment. | Finish release checks, select a real destination and prove delivery; independent host-outage detection remains open. |
+| Hosted tenants | Isolation, private invitations, account security/recovery, suspension, export, retention and closure/erasure are implemented. The commissioning baseline has migrations 001–020. | Complete a disposable-tenant rehearsal including commissioning and notifications. |
+| Recovery | The commissioning release passed both a schema-019 upgrade restore and a fresh schema-020 restore, with no device calls. Erasure-receipt service verified. | Notification release must prove schema-020 upgrade and fresh schema-021 restores, including zero delivery calls. Maintain recurring recovery drills. |
 
 **Baseline audit finding:** the inspected release gated starts on settings, firmware, clock, capacity and permissions without a physical-commissioning approval gate. Observation runs deliberately grant no control permission. The implementation below adds the missing gate; hardware acceptance and independent source-limit verification remain open.
 
@@ -24,7 +24,13 @@ The commissioning increment implements durable device-bound runs/events, current
 
 The EN/BG commissioning page is linked from Controls. Preparation requires fresh settings checks but works with host writes off. Source-limit verification remains a blocking checklist item: neither measured low power nor a saved settings report supplies the missing firmware contract. No physical inverter write or unattended activation was performed while implementing this increment.
 
-Software checks passed: type/syntax checks, production build, 129 local unit tests with one Linux-only skip, 143 PostgreSQL integration tests and all 33 browser tests. The browser case covers lost responses, explicit attendance, Stop during pending work, EN/BG and 320 px layout. Recovery tools add attended/approved canaries, quarantine and archive checks; matching old/fresh offsite restore proofs are required for release.
+Commissioning checks passed: type/syntax checks, production build, 129 local unit tests with one Linux-only skip, 143 PostgreSQL integration tests and all 33 browser tests. The browser case covers lost responses, explicit attendance, Stop during pending work, EN/BG and 320 px layout. Both old/fresh offsite restore proofs passed, including attended/approved canaries, quarantine and archive checks. No production commissioning session or approval has been fabricated.
+
+## Notification implementation
+
+The notification increment adds an encrypted Telegram destination per tenant, password-confirmed save/test/enable/disable actions, optimistic revisions, transactional incident capture and durable delivery attempts. Retries retain ambiguity and one event reference, respect rate limits and stop at four attempts or 24 hours. Rejection disables the affected channel. Closure drains in-flight delivery; export excludes tokens; retention preserves pending work; restore quarantines every destination and proves zero external calls. The EN/BG page includes initial failures, empty state, configuration conflicts, uncertain responses, pagination and phone layouts. See [notifications.md](notifications.md) for setup and operational limits.
+
+This implements the delivery software, not real-destination acceptance or independent outage detection. No production bot/chat has been configured and no real external message has been sent.
 
 ## Required home behavior
 
@@ -71,7 +77,7 @@ Primary files: `src/controller.mjs`, `src/telemetry.mjs`, `src/supervision.mjs`,
 
 Primary files: `src/operations.mjs`, `src/account-hub.mjs`, `src/http-app.mjs`, `web/system-health.tsx`, plus notification storage/transport and settings UI.
 
-- Implement one tenant-configured private channel first, with encrypted credentials, a verified destination and an explicit test. Channel selection remains open; no recipient is inferred from login/provider emails.
+- Telegram is the first implemented tenant-configured channel, with encrypted credentials, a verified destination and an explicit test. No recipient is inferred from login/provider emails.
 - Add a transactional notification outbox tied to incident opening, escalation and recovery. Preserve pending work across restarts, deduplicate incident revisions and bound retries. Show pending, confirmed, rejected and unconfirmed outcomes honestly.
 - Cover stale/offline readings, repeated native failures, authentication/control faults, unresolved cleanup and API exhaustion. Backup, recovery and erasure-service alerts are administrator-scoped.
 - Cancel future delivery when a destination changes or a workspace closes; drain in-flight work before erasure. Export metadata without secrets, prune terminal history safely and disable all delivery on restore.
@@ -105,9 +111,10 @@ Start with **commissioning/activation**, while continuing passive observations. 
 
 The software can be completed without manufacturing physical evidence. Daylight/SOC conditions, the independent 5 kW mapping, a chosen notification destination, an independent monitoring location and the real provider entitlement are explicit external dependencies. The full home requirement remains open until these are resolved.
 
-## Checks performed for this planning update
+## Verification record
 
-- `npm run check`: passed.
-- Focused control-readiness, controller, supervision, policy-observation and translation tests: 45 passed.
-- Native Chrome authenticated GET inspection and read-only PostgreSQL audit: current release, 19 migrations, two activation blockers, no application inverter writes or unresolved bindings, healthy backup and verified receipt service.
-- No source behavior, inverter settings, permissions, migrations or production processes changed. Integration/browser suites were not rerun for this documentation-only update.
+The initial planning audit used type/syntax checks, 45 focused tests, authenticated native Chrome and read-only PostgreSQL inspection. Commissioning was subsequently implemented, tested and deployed with the old/fresh restore proofs described above.
+
+The notification increment passed type/syntax checks, the production build, 139 local unit tests with one Linux-only skip, 163 PostgreSQL integration tests and all 36 EN/BG browser tests. Old/fresh backup proofs remain release gates. The browser audit also found an older analytics fixture that crossed local midnight while exporting only Today; its explicit date range now covers every seeded reading. The notification phone layout was visually inspected at 320 px; the source and built files passed a scan against configured local secret values.
+
+The latest read-only production audit before notification deployment found 20 migrations, host/workspace writes disabled, paused intent, no manual top-up, zero inverter-write intents, zero unresolved bindings and zero commissioning runs. The continuing observation run had 20 accepted samples and no collector failure. No inverter settings or permissions were changed during this increment.

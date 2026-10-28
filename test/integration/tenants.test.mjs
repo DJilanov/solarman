@@ -22,9 +22,13 @@ import { providerPayload } from "../fixtures/provider.mjs";
 import { ApiBudget, ApiBudgetError, apiAppKey } from "../../src/api-budget.mjs";
 import { ApiCapacityError } from "../../src/api-capacity.mjs";
 import { quarantineControlsForRollback } from "../../src/control-quarantine.mjs";
+import { Notifications } from "../../src/notifications.mjs";
+import { quarantineNotifications } from "../../src/notification-lifecycle.mjs";
+import { verifyStoredNotificationSecrets } from "../../src/notification-secrets.mjs";
 import { ControlJournal } from "../../src/control-journal.mjs";
 import { parseFrame, frame } from "../../src/modbus.mjs";
-import { Operations } from "../../src/operations.mjs";
+import { Operations, DeviceHealth } from "../../src/operations.mjs";
+import { SolarmanAuthenticationError } from "../../src/solarman.mjs";
 import { AccountRecovery } from "../../src/account-recovery.mjs";
 import { WorkspaceData } from "../../src/workspace-data.mjs";
 import { DataMaintenance } from "../../src/data-maintenance.mjs";
@@ -186,6 +190,7 @@ test("all data routes require a session", async () => {
     "/overview",
     "/policy-observations",
     "/commissioning",
+    "/notifications",
     "/analytics",
     "/activity",
     "/settings",
@@ -7238,6 +7243,855 @@ test("rollback quarantine revokes attended control and preserves physical cleanu
       /blocked/,
     );
     await f.runtime.journal.authorizeDispatch("011000CE00020400000009BE75");
+  } finally {
+    await f.dispose();
+  }
+});
+
+async function notificationFixture(base) {
+  const f = base ?? (await lifecycleFixture());
+  const previous = hub.notifications;
+  const sent = [];
+  const service = new Notifications(pool, hub, {
+    send: async (input) => {
+      sent.push(input);
+      return { state: "delivered", code: "delivered", messageId: sent.length };
+    },
+  });
+  service.platformAt = Date.now();
+  hub.notifications = service;
+  const botToken = "123456789:" + "n".repeat(35);
+  const state = () => service.settings(f.target.tenant);
+  const change = async (action, patch = {}) => {
+    const channel = (await state()).channel;
+    return fetchApi("/notifications", {
+      auth: f.member,
+      method: "POST",
+      body: {
+        action,
+        revision: channel?.revision ?? "0",
+        currentPassword: password,
+        ...(action === "save"
+          ? { botToken, chatId: "-1001234567890", language: "bg" }
+          : {}),
+        ...(action === "test" ? { requestId: randomUUID() } : {}),
+        ...patch,
+      },
+    });
+  };
+  const configure = async (enable = true) => {
+    assert.equal((await change("save")).status, 200);
+    assert.equal((await change("test")).status, 200);
+    await service.runOnce();
+    if (enable) assert.equal((await change("enable")).status, 200);
+  };
+  const issue = async (severity = "warning") =>
+    hub.operations.reconcile(
+      f.target.tenant,
+      [
+        {
+          account_id: f.target.account,
+          device: f.target.device,
+          binding: `${f.target.account}:${f.target.device}`,
+          kind: "telemetry_stale",
+          severity,
+          at: new Date(),
+        },
+      ],
+      new Set([`${f.target.account}:${f.target.device}`]),
+    );
+  return {
+    ...f,
+    service,
+    sent,
+    botToken,
+    state,
+    change,
+    configure,
+    issue,
+    dispose: async () => {
+      await quarantineNotifications(pool, f.target.tenant, "closed");
+      await service.cancelTenant(f.target.tenant);
+      await service.stop();
+      hub.notifications = previous;
+      await f.dispose?.();
+    },
+  };
+}
+
+test("notification settings require reauthentication, CSRF and tenant ownership and never return the bot credential", async () => {
+  const f = await notificationFixture();
+  try {
+    assert.equal((await f.state()).channel, null);
+    assert.equal(
+      (
+        await fetchApi("/notifications", {
+          auth: f.member,
+          method: "POST",
+          csrf: false,
+          body: { action: "save", revision: "0", currentPassword: password },
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (await f.change("save", { currentPassword: "wrong-password" })).status,
+      400,
+    );
+    assert.equal((await f.change("save", { chatId: "@alias" })).status, 400);
+    assert.equal((await f.change("save")).status, 200);
+    const channel = (await f.state()).channel;
+    assert.equal(channel.enabled, false);
+    assert.equal(channel.configured, true);
+    assert.equal(JSON.stringify(await f.state()).includes(f.botToken), false);
+    assert.equal(
+      (await (await fetchApi("/notifications", { auth: f.admin })).json())
+        .channel,
+      null,
+    );
+    assert.equal((await f.change("enable")).status, 409);
+    assert.equal(f.sent.length, 0);
+    await verifyStoredNotificationSecrets(pool, key);
+    await assert.rejects(
+      verifyStoredNotificationSecrets(pool, randomBytes(32)),
+      /could not be decrypted/,
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("notification destination tests are durable and idempotent, and enabling requires a confirmed matching revision", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.change("save");
+    const requestId = randomUUID();
+    assert.equal((await f.change("test", { requestId })).status, 200);
+    assert.equal((await f.change("test", { requestId })).status, 200);
+    assert.equal((await f.state()).deliveries.length, 1);
+    assert.equal((await f.state()).channel.verifiedAt, null);
+    assert.equal((await f.change("enable")).status, 409);
+    await f.service.runOnce();
+    const result = await f.state();
+    assert.equal(result.deliveries[0].state, "delivered");
+    assert.equal(result.deliveries[0].history.length, 1);
+    assert.ok(result.channel.verifiedAt);
+    assert.equal((await f.change("enable")).status, 200);
+    assert.equal((await f.state()).channel.enabled, true);
+    assert.equal(f.sent.length, 1);
+    assert.match(f.sent[0].text, /Проверка на известията/);
+    assert.equal(f.sent[0].chatId, "-1001234567890");
+    assert.equal((await f.change("test")).status, 429);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("notification configuration changes serialize revisions and preserve the stored token when the field is blank", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.configure();
+    const revision = (await f.state()).channel.revision;
+    const responses = await Promise.all([
+      f.change("save", { revision, botToken: "", chatId: "111111" }),
+      f.change("save", { revision, botToken: "", chatId: "222222" }),
+    ]);
+    assert.deepEqual(responses.map((r) => r.status).sort(), [200, 409]);
+    const state = await f.state();
+    assert.equal(state.channel.enabled, false);
+    assert.equal(state.channel.verifiedAt, null);
+    assert.equal(state.channel.configured, true);
+    await verifyStoredNotificationSecrets(pool, key);
+    assert.equal(state.events.filter((e) => e.action === "saved").length, 2);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("incident notifications enqueue atomically once per episode revision and include escalation and recovery", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.configure();
+    await f.issue();
+    await f.issue();
+    assert.deepEqual(
+      (await f.state()).deliveries
+        .filter((j) => j.kind !== "test")
+        .map((j) => j.kind),
+      ["opened"],
+    );
+    await f.issue("critical");
+    await f.issue("critical");
+    await hub.operations.reconcile(
+      f.target.tenant,
+      [],
+      new Set([`${f.target.account}:${f.target.device}`]),
+    );
+    const jobs = (await f.state()).deliveries.filter((j) => j.kind !== "test");
+    assert.deepEqual(
+      jobs.map((j) => j.kind),
+      ["resolved", "escalated", "opened"],
+    );
+    for (let index = 0; index < 3; index++) await f.service.runOnce();
+    assert.ok(
+      (await f.state()).deliveries.every((j) => j.state === "delivered"),
+    );
+    assert.equal(f.sent.length, 4);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("notification enqueue failures roll back the incident change instead of losing its delivery event", async () => {
+  const f = await notificationFixture();
+  const capture = f.service.capture;
+  try {
+    await f.configure();
+    f.service.capture = async () => {
+      throw new Error("Injected outbox failure");
+    };
+    await assert.rejects(f.issue(), /Injected outbox/);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM operational_incidents WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].n,
+      0,
+    );
+    f.service.capture = capture;
+    await f.issue();
+    assert.equal(
+      (await f.state()).deliveries.filter((j) => j.kind === "opened").length,
+      1,
+    );
+  } finally {
+    f.service.capture = capture;
+    await f.dispose();
+  }
+});
+
+test("notification retries retain uncertainty, honor the provider delay and keep the same event reference", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.change("save");
+    await f.change("test");
+    const texts = [];
+    const responses = [
+      { state: "unconfirmed", code: "delivery_timeout" },
+      { state: "retry", code: "rate_limited", retryAfter: 735 },
+      { state: "delivered", code: "delivered", messageId: 72 },
+    ];
+    f.service.send = async (input) => {
+      texts.push(input.text);
+      return responses.shift();
+    };
+    await f.service.runOnce();
+    let job = (await f.state()).deliveries[0];
+    assert.equal(job.state, "retry");
+    assert.equal(job.hadUnconfirmed, true);
+    assert.equal((await f.state()).channel.verifiedAt, null);
+    await pool.query(
+      "UPDATE notification_outbox SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE id=$1",
+      [job.id],
+    );
+    await f.service.runOnce();
+    job = (await f.state()).deliveries[0];
+    assert.ok(Date.parse(job.nextAttemptAt) - Date.now() > 730000);
+    await pool.query(
+      "UPDATE notification_outbox SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE id=$1",
+      [job.id],
+    );
+    await f.service.runOnce();
+    job = (await f.state()).deliveries[0];
+    assert.equal(job.state, "delivered");
+    assert.equal(job.hadUnconfirmed, true);
+    assert.equal(job.attempts, 3);
+    assert.equal(new Set(texts).size, 1);
+    assert.equal(job.history[0].state, "unconfirmed");
+    assert.ok((await f.state()).channel.verifiedAt);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("notification retries stop after four uncertain attempts and never pretend delivery succeeded", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.change("save");
+    await f.change("test");
+    let calls = 0;
+    f.service.send = async () => {
+      calls++;
+      return { state: "unconfirmed", code: "transport_unconfirmed" };
+    };
+    for (let index = 0; index < 4; index++) {
+      await pool.query(
+        "UPDATE notification_outbox SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1",
+        [f.target.tenant],
+      );
+      await f.service.runOnce();
+    }
+    await f.service.runOnce();
+    const job = (await f.state()).deliveries[0];
+    assert.equal(calls, 4);
+    assert.equal(job.state, "unconfirmed");
+    assert.equal(job.history.length, 4);
+    assert.equal((await f.state()).channel.verifiedAt, null);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("notification authentication rejection disables the channel and cancels future delivery until another test", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.configure();
+    await f.issue();
+    await f.issue("critical");
+    f.service.send = async () => ({
+      state: "rejected",
+      code: "bot_unauthorized",
+    });
+    await f.service.runOnce();
+    const state = await f.state();
+    assert.equal(state.channel.enabled, false);
+    assert.equal(state.channel.verifiedAt, null);
+    assert.equal(state.channel.blockedCode, "bot_unauthorized");
+    assert.equal(
+      state.deliveries.find((j) => j.kind === "escalated").state,
+      "cancelled",
+    );
+    assert.equal(
+      state.deliveries.find((j) => j.kind === "opened").state,
+      "failed",
+    );
+    assert.equal((await f.change("enable")).status, 409);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("notification recovery after a service restart records uncertainty before retrying an interrupted attempt", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.change("save");
+    await f.change("test");
+    const claimed = await f.service.claim();
+    assert.ok(claimed);
+    const restarted = new Notifications(pool, hub, {
+      send: async () => ({
+        state: "delivered",
+        code: "delivered",
+        messageId: 90,
+      }),
+    });
+    restarted.platformAt = Date.now();
+    assert.equal(await restarted.recoverSending(true), 1);
+    const job = (await f.state()).deliveries[0];
+    assert.equal(job.state, "retry");
+    assert.equal(job.hadUnconfirmed, true);
+    assert.equal(job.history[0].state, "unconfirmed");
+    assert.equal(job.history[0].code, "service_restarted");
+    await pool.query(
+      "UPDATE notification_outbox SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE id=$1",
+      [job.id],
+    );
+    await restarted.runOnce();
+    assert.equal((await f.state()).deliveries[0].state, "delivered");
+    assert.equal((await f.state()).deliveries[0].attempts, 2);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("notification completion failure retains uncertainty and the event reference before retrying", async () => {
+  const f = await notificationFixture();
+  const finish = f.service.finish;
+  try {
+    await f.change("save");
+    await f.change("test");
+    f.service.finish = async () => {
+      throw new Error("Injected completion persistence failure");
+    };
+    await assert.rejects(f.service.runOnce(), /completion persistence/);
+    assert.equal(f.sent.length, 1);
+    assert.equal((await f.state()).deliveries[0].state, "sending");
+    f.service.finish = finish;
+    await f.service.runOnce();
+    let job = (await f.state()).deliveries[0];
+    assert.equal(job.state, "retry");
+    assert.equal(job.history[0].code, "result_not_saved");
+    assert.equal(job.hadUnconfirmed, true);
+    assert.equal(f.sent.length, 1);
+    await pool.query(
+      "UPDATE notification_outbox SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE id=$1",
+      [job.id],
+    );
+    await f.service.runOnce();
+    job = (await f.state()).deliveries[0];
+    assert.equal(job.state, "delivered");
+    assert.equal(job.hadUnconfirmed, true);
+    assert.equal(job.history.length, 2);
+    assert.equal(f.sent[0].text, f.sent[1].text);
+  } finally {
+    f.service.finish = finish;
+    await f.dispose();
+  }
+});
+
+test("notification provider delays beyond the message deadline finish without another attempt", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.change("save");
+    await f.change("test");
+    let calls = 0;
+    f.service.send = async () => {
+      calls++;
+      return { state: "retry", code: "rate_limited", retryAfter: 90000 };
+    };
+    await f.service.runOnce();
+    await f.service.runOnce();
+    const job = (await f.state()).deliveries[0];
+    assert.equal(calls, 1);
+    assert.equal(job.state, "failed");
+    assert.equal(job.lastCode, "retry_after_deadline");
+    assert.equal(job.history[0].code, "rate_limited");
+    assert.ok(job.completedAt);
+    assert.equal((await f.state()).channel.verifiedAt, null);
+  } finally {
+    await f.dispose();
+  }
+});
+
+for (const lateResult of [
+  { state: "unconfirmed", code: "transport_unconfirmed" },
+  { state: "delivered", code: "delivered", messageId: 92 },
+])
+  test(`notification rotation cancels in-flight work and preserves an honest late ${lateResult.state} result`, async () => {
+    const f = await notificationFixture();
+    try {
+      await f.change("save");
+      await f.change("test");
+      let started;
+      const dispatched = new Promise((resolve) => {
+        started = resolve;
+      });
+      f.service.send = async (input) => {
+        started();
+        return new Promise((resolve) =>
+          input.signal.addEventListener("abort", () => resolve(lateResult), {
+            once: true,
+          }),
+        );
+      };
+      const sending = f.service.runOnce();
+      await dispatched;
+      assert.equal(
+        (await f.change("save", { botToken: "123456789:" + "z".repeat(35) }))
+          .status,
+        200,
+      );
+      await sending;
+      const state = await f.state();
+      assert.equal(state.channel.enabled, false);
+      assert.equal(state.channel.verifiedAt, null);
+      assert.equal(
+        state.deliveries[0].state,
+        lateResult.state === "delivered" ? "delivered" : "cancelled",
+      );
+      assert.equal(
+        state.deliveries[0].hadUnconfirmed,
+        lateResult.state === "unconfirmed",
+      );
+    } finally {
+      await f.dispose();
+    }
+  });
+
+test("notification archive export excludes credentials and erasure removes them before bounded history batches", async () => {
+  const base = await erasureFixture();
+  const f = await notificationFixture(base);
+  try {
+    await f.change("save");
+    await f.change("test");
+    const archive = await fetchApi("/workspace/archive", {
+      auth: f.member,
+      method: "POST",
+      body: { currentPassword: password },
+    });
+    assert.equal(archive.status, 200);
+    const text = await archive.text();
+    assert.equal(text.includes(f.botToken), false);
+    assert.equal(text.includes('"ciphertext"'), false);
+    const complete = JSON.parse(text.trimEnd().split("\n").at(-1));
+    assert.equal(complete.counts.notificationChannels, 1);
+    assert.equal(complete.counts.notifications, 1);
+    const channel = (await f.state()).channel;
+    await pool.query(
+      "INSERT INTO notification_events(id,tenant_id,channel_id,revision,actor,action) SELECT gen_random_uuid(),$1,$2,1,'Batch fixture','disabled' FROM generate_series(1,601)",
+      [f.target.tenant, channel.id],
+    );
+    await readyForErasure(base);
+    await base.closure.runOnce();
+    const secret = (
+      await pool.query(
+        "SELECT secret FROM notification_channels WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    assert.equal(secret.secret, null);
+    await verifyStoredNotificationSecrets(pool, key);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM notification_events WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].n,
+      104,
+    );
+    await base.closure.runOnce();
+    assert.equal((await base.status()).phase, "removed");
+    for (const table of [
+      "notification_channels",
+      "notification_events",
+      "notification_outbox",
+      "notification_attempts",
+    ])
+      assert.equal(
+        (
+          await pool.query(
+            `SELECT count(*)::int AS n FROM ${table} WHERE tenant_id=$1`,
+            [f.target.tenant],
+          )
+        ).rows[0].n,
+        0,
+      );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("notification closure drains in-flight delivery before erasure can remove credentials", async () => {
+  const base = await erasureFixture();
+  const f = await notificationFixture(base);
+  try {
+    await f.change("save");
+    await f.change("test");
+    let started;
+    const dispatched = new Promise((resolve) => {
+      started = resolve;
+    });
+    f.service.send = async (input) => {
+      started();
+      return new Promise((resolve) =>
+        input.signal.addEventListener(
+          "abort",
+          () =>
+            resolve({ state: "unconfirmed", code: "transport_unconfirmed" }),
+          { once: true },
+        ),
+      );
+    };
+    const sending = f.service.runOnce();
+    await dispatched;
+    assert.equal((await base.change("close")).status, 200);
+    await sending;
+    const state = await f.state();
+    assert.equal(state.channel.quarantined, true);
+    assert.equal(state.channel.enabled, false);
+    assert.equal(state.deliveries[0].state, "cancelled");
+    assert.equal(state.deliveries[0].hadUnconfirmed, true);
+    assert.equal((await base.change("erase")).status, 200);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("notification retention preserves pending deliveries and their incidents, then removes terminal history in dependency order", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.configure();
+    await f.issue();
+    await hub.operations.reconcile(
+      f.target.tenant,
+      [],
+      new Set([`${f.target.account}:${f.target.device}`]),
+    );
+    await pool.query(
+      "UPDATE operational_incidents SET first_seen_at=clock_timestamp()-interval '92 days',last_seen_at=clock_timestamp()-interval '91 days',resolved_at=clock_timestamp()-interval '90 days' WHERE tenant_id=$1",
+      [f.target.tenant],
+    );
+    await pool.query(
+      "INSERT INTO workspace_retention(tenant_id,enabled,measurement_days,activity_days) VALUES($1,true,30,30) ON CONFLICT(tenant_id) DO UPDATE SET enabled=true,measurement_days=30,activity_days=30,next_run_at=clock_timestamp()",
+      [f.target.tenant],
+    );
+    const maintenance = new DataMaintenance(pool);
+    await maintenance.runOnce(f.target.tenant);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM operational_incidents WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].n,
+      1,
+    );
+    await pool.query(
+      "UPDATE notification_outbox SET state='failed',completed_at=clock_timestamp()-interval '90 days' WHERE tenant_id=$1",
+      [f.target.tenant],
+    );
+    await pool.query(
+      "UPDATE workspace_retention SET next_run_at=clock_timestamp() WHERE tenant_id=$1",
+      [f.target.tenant],
+    );
+    await maintenance.runOnce(f.target.tenant);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM notification_outbox WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].n,
+      0,
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM notification_attempts WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].n,
+      0,
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM operational_incidents WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].n,
+      0,
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("notification queue overflow remains a visible failed delivery without rolling back its incident", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.configure();
+    const channel = (await f.state()).channel;
+    await pool.query(
+      "INSERT INTO notification_outbox(id,tenant_id,channel_id,channel_revision,event_key,kind,payload) SELECT gen_random_uuid(),$1,$2,$3,'bulk:'||n,'test',$4 FROM generate_series(1,100)n",
+      [
+        f.target.tenant,
+        channel.id,
+        channel.revision,
+        { title: "Queue fixture", text: "Never send this fixture." },
+      ],
+    );
+    await f.issue();
+    const row = (
+      await pool.query(
+        "SELECT state,last_code,completed_at FROM notification_outbox WHERE tenant_id=$1 AND kind='opened'",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    assert.equal(row.state, "failed");
+    assert.equal(row.last_code, "queue_limit");
+    assert.ok(row.completed_at);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM operational_incidents WHERE tenant_id=$1 AND resolved_at IS NULL",
+          [f.target.tenant],
+        )
+      ).rows[0].n,
+      1,
+    );
+    assert.equal(f.sent.length, 1);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("notification worker heartbeat participates in process health without revealing credentials", async () => {
+  const f = await notificationFixture();
+  const previousStatus = hub.operations.status;
+  hub.operations.status = () => ({
+    state: "current",
+    checkedAt: new Date().toISOString(),
+  });
+  try {
+    f.service.checkedAt = Date.now() - 61000;
+    const response = await fetch(origin + "/healthz");
+    assert.equal(response.status, 503);
+    const status = await response.json();
+    assert.equal(status.notifications, "delayed");
+    assert.equal(JSON.stringify(status).includes(f.botToken), false);
+    f.service.checkedAt = Date.now();
+    assert.equal((await fetch(origin + "/healthz")).status, 200);
+  } finally {
+    hub.operations.status = previousStatus;
+    await f.dispose();
+  }
+});
+
+test("notification platform incidents and recovery are scoped to a configured administrator destination", async () => {
+  const f = await notificationFixture();
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "solarman-notification-health-"),
+  );
+  const file = path.join(directory, "status.json");
+  const previousFile = hub.env.BACKUP_STATUS_FILE;
+  const previousErasure = hub.offboarding.serviceStatus;
+  const previousOperationsStatus = hub.operations.status;
+  hub.operations.status = () => ({ state: "current" });
+  hub.env.BACKUP_STATUS_FILE = file;
+  hub.offboarding.serviceStatus = async () => ({
+    state: "verified",
+    checkedAt: new Date().toISOString(),
+  });
+  const completedAt = new Date(Date.now() - 1000).toISOString();
+  const healthy = {
+    version: 1,
+    retentionDays: 30,
+    lastBackupAt: completedAt,
+    lastRestoreAt: completedAt,
+    backup: { state: "verified", completedAt, offsiteVerified: true },
+    restore: {
+      state: "verified",
+      completedAt,
+      inventoryVerified: true,
+      credentialsVerified: true,
+      authenticationVerified: true,
+      controlQuarantined: true,
+      deviceAccessAttempts: 0,
+    },
+  };
+  try {
+    await f.configure();
+    await writeFile(
+      file,
+      JSON.stringify({ ...healthy, backup: { state: "failed", completedAt } }),
+      { mode: 0o600 },
+    );
+    await f.service.capturePlatform();
+    assert.equal(
+      (await f.state()).deliveries.filter((j) => j.kind === "platform").length,
+      0,
+    );
+    await pool.query("UPDATE users SET platform_admin=true WHERE id=$1", [
+      f.target.user,
+    ]);
+    await f.service.capturePlatform();
+    await f.service.capturePlatform();
+    assert.equal(
+      (await f.state()).deliveries.filter((j) => j.kind === "platform").length,
+      1,
+    );
+    await f.service.runOnce();
+    await writeFile(file, JSON.stringify(healthy), { mode: 0o600 });
+    await f.service.capturePlatform();
+    await f.service.capturePlatform();
+    await f.service.runOnce();
+    const jobs = (await f.state()).deliveries.filter(
+      (j) => j.kind === "platform",
+    );
+    assert.equal(jobs.length, 2);
+    assert.ok(jobs.every((j) => j.state === "delivered"));
+    assert.match(jobs[0].payload.title, /възстановена/);
+    assert.equal(f.sent.length, 3);
+  } finally {
+    await pool.query("UPDATE users SET platform_admin=false WHERE id=$1", [
+      f.target.user,
+    ]);
+    hub.offboarding.serviceStatus = previousErasure;
+    hub.operations.status = previousOperationsStatus;
+    if (previousFile === undefined) delete hub.env.BACKUP_STATUS_FILE;
+    else hub.env.BACKUP_STATUS_FILE = previousFile;
+    await f.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("notification authentication incidents distinguish an explicit provider rejection and clear only after successful communication", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.configure();
+    const health = new DeviceHealth(pool, {
+      tenantId: f.target.tenant,
+      accountId: f.target.account,
+      device: f.target.device,
+    });
+    await health.initialize();
+    await assert.rejects(
+      health.run(
+        async () => {
+          throw new SolarmanAuthenticationError("SOLARMAN HTTP status 401");
+        },
+        () => false,
+      ),
+      SolarmanAuthenticationError,
+    );
+    await hub.operations.inspect();
+    const incident = (
+      await pool.query(
+        "SELECT kind,severity FROM operational_incidents WHERE tenant_id=$1 AND resolved_at IS NULL AND kind='auth_failure'",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    assert.deepEqual(incident, { kind: "auth_failure", severity: "critical" });
+    await assert.rejects(
+      health.run(
+        async () => {
+          throw new Error("Temporary network failure");
+        },
+        () => false,
+      ),
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT auth_fault FROM device_health WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].auth_fault,
+      true,
+    );
+    await health.run(
+      async () => {},
+      () => false,
+    );
+    await hub.operations.inspect();
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT auth_fault FROM device_health WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].auth_fault,
+      false,
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM operational_incidents WHERE tenant_id=$1 AND resolved_at IS NULL AND kind='auth_failure'",
+          [f.target.tenant],
+        )
+      ).rows[0].n,
+      0,
+    );
+    assert.deepEqual(
+      (await f.state()).deliveries
+        .filter((j) => j.kind !== "test")
+        .map((j) => j.kind),
+      ["resolved", "opened"],
+    );
   } finally {
     await f.dispose();
   }

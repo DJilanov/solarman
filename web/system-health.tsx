@@ -151,9 +151,9 @@ export default function SystemHealthPage(): ReactNode {
               )}
             </p>
             <p className="fine-print">
-              {tr(
-                "Alerts are shown in this dashboard. External notification delivery is not configured.",
-              )}
+              <Link className="text-link" to="/settings/notifications">
+                {tr("Review notification delivery and settings")}
+              </Link>
             </p>
           </Panel>
           {session.user.platformAdmin && data.backup && (

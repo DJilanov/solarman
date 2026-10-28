@@ -106,6 +106,7 @@ export interface Incident {
     | "telemetry_stale"
     | "device_offline"
     | "request_failures"
+    | "auth_failure"
     | "control_fault"
     | "cleanup_pending"
     | "api_quota"
@@ -598,4 +599,60 @@ export interface CommissioningData {
     created_at: string;
     ended_at: string | null;
   }[];
+}
+
+export interface NotificationChannel {
+  id: string;
+  kind: "telegram";
+  chatId: string;
+  language: "en" | "bg";
+  enabled: boolean;
+  quarantined: boolean;
+  revision: string;
+  verifiedAt: string | null;
+  lastTestAt: string | null;
+  configured: boolean;
+  blockedCode: string | null;
+}
+export interface NotificationAttempt {
+  number: number;
+  state: "sending" | "delivered" | "rejected" | "unconfirmed" | "cancelled";
+  code: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  messageId: string | null;
+}
+export interface NotificationDelivery {
+  id: string;
+  kind: "opened" | "escalated" | "resolved" | "test" | "platform";
+  state:
+    | "queued"
+    | "sending"
+    | "retry"
+    | "delivered"
+    | "failed"
+    | "unconfirmed"
+    | "cancelled";
+  attempts: number;
+  hadUnconfirmed: boolean;
+  createdAt: string;
+  nextAttemptAt: string;
+  completedAt: string | null;
+  cancelRequestedAt: string | null;
+  lastCode: string | null;
+  messageId: string | null;
+  payload: { title: string; text: string };
+  history: NotificationAttempt[];
+}
+export interface NotificationSettingsData {
+  channel: NotificationChannel | null;
+  deliveries: NotificationDelivery[];
+  events: { actor: string; action: string; revision: string; at: string }[];
+  offset: number;
+  hasMore: boolean;
+  lifecycle: TenantLifecycleStatus["state"];
+  worker: {
+    state: "starting" | "current" | "delayed";
+    checkedAt: string | null;
+  };
 }

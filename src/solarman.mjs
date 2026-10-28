@@ -3,6 +3,14 @@ import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { decodeReply, parseFrame } from "./modbus.mjs";
 
+export class SolarmanAuthenticationError extends Error {
+  /** @param {string} message */
+  constructor(message) {
+    super(message);
+    this.name = "SolarmanAuthenticationError";
+  }
+}
+
 const CALLBACK_PREFIX = "/solarman/callback/";
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
@@ -218,6 +226,10 @@ export class SolarmanClient {
     }
     if (!response.ok) {
       if (response.status === 401) this.token = null;
+      if (response.status === 401)
+        throw new SolarmanAuthenticationError(
+          `SOLARMAN HTTP status ${response.status}`,
+        );
       throw new Error(`SOLARMAN HTTP status ${response.status}`);
     }
     let result;
@@ -232,7 +244,13 @@ export class SolarmanClient {
         ["2101017", "2101019"].includes(String(result.code))
       )
         this.token = null;
-      throw new Error(
+      const Rejection =
+        path === "/account/v1.0/token" &&
+        isObject(result) &&
+        result.success === false
+          ? SolarmanAuthenticationError
+          : Error;
+      throw new Rejection(
         `SOLARMAN rejected request (code ${safeCode(isObject(result) ? result.code : null)})`,
       );
     }

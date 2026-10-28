@@ -11,6 +11,7 @@ export function incidentTitle(item: Incident): string {
     telemetry_stale: "Device readings are overdue",
     device_offline: "Provider reports the inverter offline or in alarm",
     request_failures: "Repeated device checks have failed",
+    auth_failure: "Provider authentication was rejected",
     control_fault: "A control check needs attention",
     cleanup_pending: "Scheduled charging cleanup is unconfirmed",
     api_quota: "API capacity needs attention",
@@ -35,6 +36,8 @@ export function incidentDescription(item: Incident): string {
       "Check the logger, inverter and provider connection. This is the provider's reported status.",
     request_failures:
       "At least three consecutive device assessments failed. A successful assessment clears this condition.",
+    auth_failure:
+      "The provider rejected authentication. Check this workspace's SOLARMAN account and OpenAPI credentials. A successful assessment clears this condition.",
     control_fault:
       "Refresh native diagnostics and review the control settings before resuming. Monitoring alone does not clear this fault.",
     cleanup_pending:

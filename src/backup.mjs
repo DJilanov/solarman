@@ -23,6 +23,7 @@ import {
 import { createPool } from "./database.mjs";
 import { dashboardConfig } from "./dashboard-config.mjs";
 import { verifyStoredCredentials, encryptionKey } from "./credentials.mjs";
+import { verifyStoredNotificationSecrets } from "./notification-secrets.mjs";
 import {
   atomicJson,
   BackupError,
@@ -268,6 +269,7 @@ export async function runBackup(client, config) {
       throw new BackupError("database_identity");
     const contents = await inventory(connection);
     const accountCount = await verifyStoredCredentials(connection, key);
+    await verifyStoredNotificationSecrets(connection, key);
     const snapshot = (
       await connection.query("SELECT pg_export_snapshot() AS id")
     ).rows[0].id;

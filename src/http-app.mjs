@@ -232,14 +232,13 @@ export function createApp({ pool, hub, config }) {
       if (pathname === "/healthz" && request.method === "GET") {
         await pool.query("SELECT 1");
         const monitoring = hub.operations.status().state;
-        json(response, hub.stopping || monitoring === "delayed" ? 503 : 200, {
-          status: hub.stopping
-            ? "stopping"
-            : monitoring === "delayed"
-              ? "degraded"
-              : "ok",
+        const notifications = hub.notifications?.status().state ?? "starting";
+        const delayed = monitoring === "delayed" || notifications === "delayed";
+        json(response, hub.stopping || delayed ? 503 : 200, {
+          status: hub.stopping ? "stopping" : delayed ? "degraded" : "ok",
           release: process.env.RELEASE_SHA ?? "development",
           monitoring,
+          notifications,
         });
         return;
       }
@@ -640,6 +639,25 @@ export function createApp({ pool, hub, config }) {
                 expiresAt: result.expiresAt,
               }
             : result,
+        );
+        return;
+      }
+      if (
+        pathname === "/api/notifications" &&
+        ["GET", "POST"].includes(request.method)
+      ) {
+        if (request.method === "POST") {
+          limitSecurity(response, session);
+          await hub.notifications.change(session, await bodyJson(request));
+          securityLimiter.clear(session.id);
+        }
+        json(
+          response,
+          200,
+          await hub.notifications.settings(
+            session.tenant_id,
+            Number(url.searchParams.get("offset") ?? 0),
+          ),
         );
         return;
       }

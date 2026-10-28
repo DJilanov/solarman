@@ -22,7 +22,7 @@ const EXPORT_SECTIONS = {
   cleanup:
     "SELECT account_id,device,state,confirmed_off_at,updated_at FROM device_control_state WHERE tenant_id=$1 ORDER BY account_id,device",
   deviceHealth:
-    "SELECT account_id,device,created_at,attempted_at,succeeded_at,failed_at,uploaded_at,reported_at,device_state,failures,control_fault,control_fault_at FROM device_health WHERE tenant_id=$1 ORDER BY account_id,device",
+    "SELECT account_id,device,created_at,attempted_at,succeeded_at,failed_at,uploaded_at,reported_at,device_state,failures,control_fault,control_fault_at,auth_fault,auth_fault_at FROM device_health WHERE tenant_id=$1 ORDER BY account_id,device",
   controller:
     "SELECT paused,manual_topup,control_enabled,verification,topup_expires_at,control_epoch::text,updated_at FROM controller_state WHERE tenant_id=$1",
   incidents:
@@ -35,6 +35,14 @@ const EXPORT_SECTIONS = {
     "SELECT id,requested_at,erasure_authorized_at,offsite_acknowledged_at,erasure_started_at,completed_at,last_failed_at,removed_rows::text FROM workspace_offboarding WHERE tenant_id=$1",
   observations:
     "SELECT id,account_id,device,identity,verification,state,reason,started_at,ended_at,checked_at,failed_at,progress FROM policy_observation_runs WHERE tenant_id=$1 ORDER BY started_at,id",
+  notificationChannels:
+    "SELECT id,kind,chat_id,language,enabled,quarantined,revision::text,verified_at,last_test_at,created_at,updated_at FROM notification_channels WHERE tenant_id=$1",
+  notifications:
+    "SELECT id,channel_id,channel_revision::text,event_key,incident_id,kind,payload,state,attempts,had_unconfirmed,next_attempt_at,created_at,completed_at,cancel_requested_at,last_code,message_id::text FROM notification_outbox WHERE tenant_id=$1 ORDER BY created_at,id",
+  notificationAttempts:
+    "SELECT id,job_id,number,state,code,started_at,completed_at,message_id::text FROM notification_attempts WHERE tenant_id=$1 ORDER BY started_at,id",
+  notificationChanges:
+    "SELECT id,channel_id,revision::text,actor,action,created_at FROM notification_events WHERE tenant_id=$1 ORDER BY created_at,id",
   commissioning:
     "SELECT id,account_id,device,identity,verification,state,revision::text,attended_until,evidence,reason,created_at,updated_at,ended_at FROM control_commissioning WHERE tenant_id=$1 ORDER BY created_at,id",
   commissioningEvents:

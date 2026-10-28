@@ -19,6 +19,8 @@ import type {
   PolicyObservationData,
   PolicyObservationRun,
   CommissioningData,
+  NotificationSettingsData,
+  NotificationDelivery,
 } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
@@ -289,11 +291,16 @@ test("stored measurements render charts, legends and a full CSV download", async
   });
   const account = (
     await pool.query(
-      `SELECT a.id,a.tenant_id,a.device_sn FROM solarman_accounts a
+      `SELECT a.id,a.tenant_id,a.device_sn,a.timezone FROM solarman_accounts a
     JOIN users u ON u.tenant_id=a.tenant_id WHERE lower(u.email)=$1`,
       [process.env.E2E_EMAIL?.toLowerCase()],
     )
-  ).rows[0] as { id: string; tenant_id: string; device_sn: string | null };
+  ).rows[0] as {
+    id: string;
+    tenant_id: string;
+    device_sn: string | null;
+    timezone: string;
+  };
   const device = account.device_sn ?? "e2e-chart-fixture";
   const times = [30, 15, 0].map(
     (minutes) => new Date(Date.now() - minutes * 60_000 - 1000),
@@ -319,6 +326,13 @@ test("stored measurements render charts, legends and a full CSV download", async
       );
     await signIn(page);
     await page.getByRole("link", { name: "Analytics", exact: true }).click();
+    const day = new Intl.DateTimeFormat("en-CA", {
+      timeZone: account.timezone,
+    });
+    await page
+      .getByLabel("From date", { exact: true })
+      .fill(day.format(times[0]));
+    await page.getByLabel("To date", { exact: true }).fill(day.format(times[2]));
     await expect(page.locator(".recharts-surface")).toHaveCount(2);
     await expect(page.locator(".recharts-surface").last()).toBeVisible();
     const legend = page.getByRole("button", {
@@ -3995,4 +4009,399 @@ test("commissioning separates preparation from attended controls, keeps Stop ava
   expect(pageErrors).toEqual([]);
   expect(mutations).toEqual(["create", "attend"]);
   expect(commands).toEqual(["commission_controls", "commission_topup", "stop"]);
+});
+
+test("notifications explain the real empty state and never infer a destination from the login email", async ({
+  page,
+}) => {
+  await signIn(page);
+  await page.goto("/settings/notifications");
+  await expect(
+    page.getByRole("heading", { name: "External notifications", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Numeric chat ID", { exact: true })).toHaveValue(
+    "",
+  );
+  await expect(
+    page.getByLabel("Telegram bot token", { exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByRole("button", { name: "Send destination test", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByText("No notification deliveries have been requested.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(
+    page.getByRole("heading", { name: "Външни известия", exact: true }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 1100 });
+  await expect(
+    page
+      .getByRole("link", { name: "Към настройките", exact: true })
+      .locator("svg"),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+});
+
+test("notifications preserve configuration drafts across language changes, distinguish queued and confirmed tests, and report a lost response", async ({
+  page,
+}) => {
+  await signIn(page);
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  const now = new Date().toISOString();
+  const botToken = "123456789:" + "b".repeat(35);
+  const data: NotificationSettingsData = {
+    channel: null,
+    deliveries: [],
+    events: [],
+    offset: 0,
+    hasMore: false,
+    lifecycle: "active",
+    worker: { state: "current", checkedAt: now },
+  };
+  let loseSave = true;
+  const actions: string[] = [];
+  await page.route("**/api/notifications*", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as {
+        action: string;
+        botToken?: string;
+        chatId?: string;
+        language?: "bg" | "en";
+        currentPassword: string;
+        revision: string;
+        requestId?: string;
+      };
+      actions.push(body.action);
+      expect(body.currentPassword).toBe("notification-browser-fixture");
+      data.events.unshift({
+        actor: "notification-owner-with-a-long-address@example.test",
+        action:
+          body.action === "save"
+            ? "saved"
+            : body.action === "enable"
+              ? "enabled"
+              : body.action === "disable"
+                ? "disabled"
+                : "test",
+        revision: body.revision,
+        at: now,
+      });
+      expect(route.request().headers()["x-csrf-token"]).toBeTruthy();
+      if (body.action === "save") {
+        expect(body.botToken).toBe(botToken);
+        expect(body.chatId).toBe("-1001234567890");
+        expect(body.language).toBe("en");
+        data.channel = {
+          id: randomUUID(),
+          kind: "telegram",
+          chatId: "-1001234567890",
+          language: "en",
+          revision: "1",
+          enabled: false,
+          quarantined: false,
+          configured: true,
+          verifiedAt: null,
+          lastTestAt: null,
+          blockedCode: null,
+        };
+        if (loseSave) {
+          loseSave = false;
+          return route.abort("failed");
+        }
+      } else if (body.action === "test" && data.channel) {
+        expect(body.botToken).toBeUndefined();
+        expect(body.requestId).toMatch(/^[a-f0-9-]{36}$/);
+        data.channel.lastTestAt = now;
+        data.deliveries = [
+          {
+            id: randomUUID(),
+            kind: "test",
+            state: "queued",
+            attempts: 0,
+            hadUnconfirmed: false,
+            createdAt: now,
+            nextAttemptAt: now,
+            completedAt: null,
+            cancelRequestedAt: null,
+            lastCode: null,
+            messageId: null,
+            payload: {
+              title: "Notification test",
+              text: "Fixture destination test",
+            },
+            history: [],
+          },
+        ];
+      } else if (body.action === "enable" && data.channel) {
+        expect(data.channel.verifiedAt).not.toBeNull();
+        data.channel.enabled = true;
+        data.channel.revision = "2";
+      } else if (body.action === "disable" && data.channel) {
+        data.channel.enabled = false;
+        data.channel.revision = "3";
+      }
+    }
+    return route.fulfill({ json: data });
+  });
+  await page.goto("/settings/notifications");
+  await page.getByLabel("Telegram bot token", { exact: true }).fill(botToken);
+  await page
+    .getByLabel("Numeric chat ID", { exact: true })
+    .fill("-1001234567890");
+  await page
+    .getByLabel("Notification language", { exact: true })
+    .selectOption("en");
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(
+    page.getByLabel("Токен за бот в Telegram", { exact: true }),
+  ).toHaveValue(botToken);
+  await page
+    .getByLabel("Текуща парола за таблото", { exact: true })
+    .fill("notification-browser-fixture");
+  await page
+    .getByRole("button", { name: "Запази дестинацията", exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      "Заявката за известие не е потвърдена. Обновете историята на доставянето, преди да опитате отново.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("Токен за бот в Telegram", { exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByLabel("Текуща парола за таблото", { exact: true }),
+  ).toHaveValue("");
+  await expect(
+    page.getByRole("button", {
+      name: "Изпрати тест до дестинацията",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await page
+    .getByRole("button", {
+      name: "Обнови състоянието на доставянето",
+      exact: true,
+    })
+    .click();
+  await page
+    .getByLabel("Текуща парола за таблото", { exact: true })
+    .fill("notification-browser-fixture");
+  await page
+    .getByRole("button", { name: "Изпрати тест до дестинацията", exact: true })
+    .click();
+  await expect(
+    page.getByText("Изчаква изпращане", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Включи известията", exact: true }),
+  ).toBeDisabled();
+  const channel = data.channel!;
+  channel.verifiedAt = now;
+  const job = data.deliveries[0]!;
+  job.state = "delivered";
+  job.messageId = "14";
+  job.attempts = 1;
+  job.completedAt = now;
+  job.lastCode = "delivered";
+  job.history = [
+    {
+      number: 1,
+      state: "delivered",
+      code: "delivered",
+      startedAt: now,
+      completedAt: now,
+      messageId: "14",
+    },
+  ];
+  await page
+    .getByRole("button", {
+      name: "Обнови състоянието на доставянето",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page
+      .locator(".notification-delivery-heading")
+      .getByText("Доставянето е потвърдено", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByLabel("Текуща парола за таблото", { exact: true })
+    .fill("notification-browser-fixture");
+  await page
+    .getByRole("button", { name: "Включи известията", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Известията са включени", exact: true }),
+  ).toBeVisible();
+  const incident: NotificationDelivery = {
+    ...job,
+    id: randomUUID(),
+    kind: "opened",
+    attempts: 2,
+    hadUnconfirmed: true,
+    messageId: "16",
+    payload: {
+      title: "Fixture incident",
+      text: "Fixture incident with two delivery attempts",
+    },
+    history: [
+      {
+        number: 1,
+        state: "unconfirmed",
+        code: "transport_unconfirmed",
+        startedAt: now,
+        completedAt: now,
+        messageId: null,
+      },
+      {
+        number: 2,
+        state: "delivered",
+        code: "delivered",
+        startedAt: now,
+        completedAt: now,
+        messageId: "16",
+      },
+    ],
+  };
+  data.deliveries.unshift(incident);
+  await page
+    .getByRole("button", {
+      name: "Обнови състоянието на доставянето",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByText(
+      "По-ранен опит не е потвърден. Възможни са дублирани съобщения дори ако следващ опит е успешен.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await page
+    .getByText("Преглед на съобщението и опитите", { exact: true })
+    .first()
+    .click();
+  await expect(
+    page
+      .locator(".notification-delivery")
+      .filter({ hasText: "Fixture incident" })
+      .locator("tbody tr"),
+  ).toHaveCount(2);
+  await page
+    .getByLabel("Текуща парола за таблото", { exact: true })
+    .fill("notification-browser-fixture");
+  await page
+    .getByRole("button", {
+      name: "Изключи известията и отмени чакащото доставяне",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Известията са изключени", exact: true }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 1100 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "test-results/notifications-mobile-bg.png",
+    fullPage: true,
+  });
+  expect(await page.locator("body").innerText()).not.toContain(botToken);
+  expect(actions).toEqual(["save", "test", "enable", "disable"]);
+  expect(pageErrors).toEqual([]);
+});
+
+test("notifications retry a failed page load and paginate history without dispatching messages", async ({
+  page,
+}) => {
+  await signIn(page);
+  const now = new Date().toISOString();
+  const jobs = Array.from(
+    { length: 26 },
+    (_, index): NotificationDelivery => ({
+      id: randomUUID(),
+      kind: "opened",
+      state: "retry",
+      attempts: 1,
+      hadUnconfirmed: false,
+      createdAt: now,
+      nextAttemptAt: new Date(Date.now() + 300000).toISOString(),
+      completedAt: null,
+      cancelRequestedAt: null,
+      lastCode: "rate_limited",
+      messageId: null,
+      payload: {
+        title: `History fixture ${index + 1}`,
+        text: "Private fixture message",
+      },
+      history: [
+        {
+          number: 1,
+          state: "rejected",
+          code: "rate_limited",
+          startedAt: now,
+          completedAt: now,
+          messageId: null,
+        },
+      ],
+    }),
+  );
+  let failFirst = true;
+  const offsets: number[] = [];
+  await page.route("**/api/notifications*", async (route) => {
+    expect(route.request().method()).toBe("GET");
+    if (failFirst) {
+      failFirst = false;
+      return route.fulfill({
+        status: 503,
+        json: { error: "Unable to update notifications" },
+      });
+    }
+    const offset = Number(
+      new URL(route.request().url()).searchParams.get("offset") ?? 0,
+    );
+    offsets.push(offset);
+    const data: NotificationSettingsData = {
+      channel: null,
+      deliveries: jobs.slice(offset, offset + 25),
+      hasMore: offset === 0,
+      offset,
+      events: [],
+      lifecycle: "active",
+      worker: { state: "current", checkedAt: now },
+    };
+    return route.fulfill({ json: data });
+  });
+  await page.goto("/settings/notifications");
+  await expect(
+    page.getByText("Unable to update notifications", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Refresh delivery status", exact: true })
+    .click();
+  await expect(page.locator(".notification-delivery")).toHaveCount(25);
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(page.locator(".notification-delivery")).toHaveCount(1);
+  await expect(
+    page.getByText("History fixture 26", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Next", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "Previous", exact: true }).click();
+  await expect(page.locator(".notification-delivery")).toHaveCount(25);
+  expect(offsets).toContain(25);
 });
