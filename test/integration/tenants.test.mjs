@@ -13,6 +13,8 @@ import { TenantRuntime } from "../../src/tenant-runtime.mjs";
 import { decide } from "../../src/controller.mjs";
 import { providerPayload } from "../fixtures/provider.mjs";
 import { ApiBudget, ApiBudgetError, apiAppKey } from "../../src/api-budget.mjs";
+import { ControlJournal } from "../../src/control-journal.mjs";
+import { parseFrame, frame } from "../../src/modbus.mjs";
 
 let pool;
 let hub;
@@ -350,6 +352,16 @@ test("session identifiers are hashed in PostgreSQL and logout revokes them", asy
 });
 
 async function controlFixture(writes = false) {
+  await pool.query("DELETE FROM inverter_write_intents WHERE tenant_id=$1", [
+    ids.alpha.tenant,
+  ]);
+  await pool.query("DELETE FROM device_control_state WHERE tenant_id=$1", [
+    ids.alpha.tenant,
+  ]);
+  await pool.query(
+    "UPDATE solarman_accounts SET profile='bluesun-bse20kh3' WHERE tenant_id=$1",
+    [ids.alpha.tenant],
+  );
   await pool.query(
     "UPDATE controller_state SET paused=true,manual_topup=false,control_enabled=false,verification=null,topup_expires_at=null WHERE tenant_id=$1",
     [ids.alpha.tenant],
@@ -424,6 +436,7 @@ async function controlFixture(writes = false) {
   };
   runtime.controller.disable = async () => {
     calls.push("disable");
+    return 9;
   };
   runtime.controller.tick = async () => {
     calls.push("tick");
@@ -704,6 +717,7 @@ test("paused monitoring retries an unconfirmed stop before fetching new uploads"
     assert.equal(runtime.status().control.canStop, true);
     runtime.controller.disable = async () => {
       calls.push("cleanup-recovered");
+      return 9;
     };
     await runtime.collect();
     assert.equal(runtime.cleanupRequired, false);
@@ -1035,6 +1049,293 @@ test("a diagnostic request that reaches the budget limit also cleans up active a
     assert.equal(runtime.paused, true);
     assert.equal(runtime.cleanupRequired, false);
     assert.equal(calls.filter((call) => call === "disable").length, 1);
+  } finally {
+    await runtime.close();
+  }
+});
+
+async function armedFixture() {
+  const fixture = await controlFixture(true);
+  await completeCommand(fixture.runtime, "verify", fixture.user);
+  await completeCommand(fixture.runtime, "enable_controls", fixture.user);
+  await completeCommand(fixture.runtime, "resume", fixture.user);
+  return fixture;
+}
+
+test("prepared writes survive a crash and cleanup never invents a successful original readback", async () => {
+  const { runtime } = await armedFixture();
+  try {
+    const id = await runtime.journal.prepare(206, [0, 25], null);
+    const restarted = new ControlJournal(pool, runtime.journal.context);
+    await restarted.load(true);
+    assert.equal(restarted.pending, true);
+    assert.equal(restarted.status().writes[0].status, "prepared");
+    assert.equal(await restarted.confirmOff(25), false);
+    assert.equal(restarted.pending, true);
+    assert.equal(await restarted.confirmOff(9), true);
+    const row = (
+      await pool.query(
+        "SELECT status,verified_at,reconciled_at FROM inverter_write_intents WHERE id=$1",
+        [id],
+      )
+    ).rows[0];
+    assert.equal(row.status, "uncertain");
+    assert.equal(row.verified_at, null);
+    assert.ok(row.reconciled_at);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a stop arriving during a window write remains pending after its late confirmation", async () => {
+  const { runtime } = await armedFixture();
+  try {
+    const id = await runtime.journal.prepare(
+      2509,
+      [0x1000, 0x1019, 0, 0, 0, 0, 0, 0],
+      null,
+    );
+    await runtime.journal.acknowledge(id);
+    await runtime.journal.requestCleanup({ pause: true });
+    await runtime.journal.verify(id);
+    assert.equal(runtime.journal.pending, true);
+    await assert.rejects(
+      runtime.journal.prepare(206, [0, 25], null),
+      /current workspace state/,
+    );
+    const row = (
+      await pool.query(
+        "SELECT status,acknowledged_at,verified_at FROM inverter_write_intents WHERE id=$1",
+        [id],
+      )
+    ).rows[0];
+    assert.equal(row.status, "verified");
+    assert.ok(row.acknowledged_at && row.verified_at);
+    await runtime.journal.confirmOff(9);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("revoking activation retains recovery authority for the same inverter only", async () => {
+  const { runtime } = await armedFixture();
+  let restarted;
+  try {
+    await runtime.journal.prepare(206, [0, 25], null);
+    await pool.query(
+      "UPDATE controller_state SET paused=true,control_enabled=false,verification=null WHERE tenant_id=$1",
+      [runtime.tenantId],
+    );
+    const account = (
+      await pool.query("SELECT * FROM solarman_accounts WHERE tenant_id=$1", [
+        runtime.tenantId,
+      ])
+    ).rows[0];
+    restarted = new TenantRuntime(runtime.hub, runtime.tenantId, account);
+    await restarted.initialize();
+    assert.equal(restarted.journal.pending, true);
+    assert.equal(restarted.controller.options.writesEnabled, true);
+    assert.equal(restarted.status().control.canStart, false);
+    restarted.controller.disable = async () => 9;
+    restarted.client.api = async () =>
+      providerPayload({ device: restarted.device });
+    await restarted.collect();
+    assert.equal(restarted.journal.pending, false);
+    assert.equal(restarted.controlEnabled, false);
+    assert.equal(restarted.status().control.canStart, false);
+  } finally {
+    await restarted?.close();
+    await runtime.close();
+  }
+});
+
+test("credential repair preserves the cleanup target through discovery without rearming controls", async (t) => {
+  t.mock.method(TenantRuntime.prototype, "start", () => {});
+  const { runtime } = await armedFixture();
+  const maintenance = new AccountHub(pool, runtime.hub.env, key);
+  maintenance.runtimes.set(runtime.tenantId, runtime);
+  try {
+    const id = await runtime.journal.prepare(206, [0, 25], null);
+    runtime.controller.disable = async () => {
+      throw new Error("Previous credentials no longer work");
+    };
+    const linked = await maintenance.updateAccount(runtime.tenantId, () =>
+      maintenance.connect(runtime.tenantId, {
+        email: runtime.account.email,
+        password: "fixture-updated-password",
+        appId: "fixture-app",
+        appSecret: "fixture-secret",
+      }),
+    );
+    assert.equal(linked.ready, false);
+    assert.equal(linked.controlEnabled, false);
+    assert.equal(linked.journal.pending, true);
+    assert.equal(linked.device, runtime.device);
+    linked.client.api = async (path) =>
+      path === "/station/v1.0/list"
+        ? { total: 1, stationList: [{ id: 1, name: "Fixture plant" }] }
+        : {
+            total: 1,
+            deviceListItems: [
+              { deviceSn: runtime.device, deviceType: "INVERTER" },
+            ],
+          };
+    await maintenance.discover(runtime.tenantId);
+    const recovered = await maintenance.reload(runtime.tenantId);
+    assert.equal(recovered.ready, true);
+    assert.equal(recovered.journal.pending, true);
+    recovered.controller.disable = async () => 9;
+    recovered.client.api = async () =>
+      providerPayload({ device: recovered.device });
+    await recovered.collect();
+    assert.equal(recovered.journal.pending, false);
+    assert.equal(recovered.controlEnabled, false);
+    assert.equal(recovered.verification, null);
+    const row = (
+      await pool.query(
+        "SELECT status,verified_at,reconciled_at FROM inverter_write_intents WHERE id=$1",
+        [id],
+      )
+    ).rows[0];
+    assert.equal(row.status, "uncertain");
+    assert.equal(row.verified_at, null);
+    assert.ok(row.reconciled_at);
+  } finally {
+    await maintenance.close();
+  }
+});
+
+test("changing inverter or profile cannot abandon unconfirmed charging permission", async (t) => {
+  t.mock.method(TenantRuntime.prototype, "start", () => {});
+  const { runtime } = await armedFixture();
+  const maintenance = new AccountHub(pool, runtime.hub.env, key);
+  maintenance.runtimes.set(runtime.tenantId, runtime);
+  try {
+    await runtime.journal.prepare(206, [0, 25], null);
+    runtime.controller.disable = async () => {
+      throw new Error("Inverter unreachable");
+    };
+    await assert.rejects(
+      maintenance.updateAccount(runtime.tenantId, () =>
+        maintenance.bind(runtime.tenantId, {
+          deviceSn: runtime.device,
+          profile: "monitor-only",
+          timezone: "Europe/Sofia",
+        }),
+      ),
+      /Confirm scheduled charging is off/,
+    );
+    const row = (
+      await pool.query(
+        "SELECT device_sn,profile FROM solarman_accounts WHERE tenant_id=$1",
+        [runtime.tenantId],
+      )
+    ).rows[0];
+    assert.equal(row.device_sn, runtime.device);
+    assert.equal(row.profile, "bluesun-bse20kh3");
+    const current = await maintenance.forTenant(runtime.tenantId);
+    assert.equal(current.journal.pending, true);
+    current.controller.disable = async () => 9;
+    await current.clearScheduledPermission();
+    await maintenance.updateAccount(runtime.tenantId, () =>
+      maintenance.bind(runtime.tenantId, {
+        deviceSn: runtime.device,
+        profile: "monitor-only",
+        timezone: "Europe/Sofia",
+      }),
+    );
+    assert.equal(
+      (await maintenance.forTenant(runtime.tenantId)).account.profile,
+      "monitor-only",
+    );
+  } finally {
+    await maintenance.close();
+  }
+});
+
+test("a cached selected serial cannot become ready when discovery no longer returns it", async () => {
+  const { runtime } = await controlFixture(true);
+  let missing;
+  try {
+    missing = new TenantRuntime(runtime.hub, runtime.tenantId, {
+      ...runtime.account,
+      discovered_devices: [],
+    });
+    await missing.initialize();
+    assert.equal(missing.ready, false);
+    assert.equal(missing.writesEnabled, false);
+    assert.match(missing.setupError, /not returned/);
+  } finally {
+    await missing?.close();
+    await runtime.close();
+  }
+});
+
+test("control journals cannot read or reconcile another workspace binding", async () => {
+  const { runtime } = await armedFixture();
+  try {
+    await runtime.journal.prepare(206, [0, 25], null);
+    const other = new ControlJournal(pool, {
+      tenantId: ids.beta.tenant,
+      accountId: ids.alpha.account,
+      device: runtime.device,
+    });
+    await other.load();
+    assert.deepEqual(other.status().writes, []);
+    assert.equal(other.pending, false);
+    await assert.rejects(other.confirmOff(9), { code: "23503" });
+    assert.equal(runtime.journal.pending, true);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a queued hardware action records its job and intent before dispatch, then verifies readback", async () => {
+  const { runtime, user, snapshot } = await controlFixture(true);
+  let hardwareFlags = 9;
+  try {
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    runtime.client.command = async (hex) => {
+      const request = parseFrame(hex);
+      assert.equal(request.readUInt16BE(2), 206);
+      if (request[1] === 3)
+        return frame(Buffer.from([1, 3, 4, 0, 0, 0, hardwareFlags]));
+      assert.equal(request[1], 16);
+      const recorded = (
+        await pool.query(
+          "SELECT status,execution_id FROM inverter_write_intents WHERE tenant_id=$1 AND device=$2 ORDER BY created_at DESC LIMIT 1",
+          [runtime.tenantId, runtime.device],
+        )
+      ).rows[0];
+      assert.equal(recorded.status, "prepared");
+      assert.equal(recorded.execution_id, runtime.executionId);
+      assert.ok(recorded.execution_id);
+      assert.equal(runtime.status().control.recovery.inFlight, true);
+      hardwareFlags = request.readUInt16BE(9);
+      return frame(request.subarray(0, 6));
+    };
+    runtime.controller.tick = async () => {
+      const flags = await runtime.controller.setAc(true);
+      return {
+        snapshot: { ...snapshot, flags },
+        decision: { charge: true, reason: "below_reserve" },
+      };
+    };
+    const job = await completeCommand(runtime, "resume", user);
+    assert.equal(job.status, "succeeded");
+    const row = (
+      await pool.query(
+        "SELECT status,acknowledged_at,verified_at FROM inverter_write_intents WHERE execution_id=$1",
+        [job.id],
+      )
+    ).rows[0];
+    assert.equal(row.status, "verified");
+    assert.ok(row.acknowledged_at && row.verified_at);
+    assert.equal(runtime.journal.status().state, "owned");
+    assert.equal(runtime.status().control.recovery.inFlight, false);
+    assert.equal(hardwareFlags, 25);
+    runtime.controller.disable = async () => 9;
   } finally {
     await runtime.close();
   }

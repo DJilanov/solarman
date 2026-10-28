@@ -27,6 +27,16 @@ These windows are **daily schedules, not an expiring watchdog**. Process failure
 
 On errors and graceful shutdown, live mode attempts to remove timed AC permission while preserving all other flags. An API outage can prevent confirmation. Paused monitoring retries an unconfirmed stop before fetching telemetry; starting remains blocked until cleanup succeeds. An armed runtime also reconciles scheduled permission once after restarting. Ambiguous submissions are not automatically retried as though nothing happened.
 
+## Durable recovery
+
+`device_control_state` retains ownership of possible scheduled permission for each tenant/account/inverter binding. `inverter_write_intents` stores the requested register values and originating command job before dispatch, followed by separate acknowledgment and readback timestamps. The write guard checks the current database activation, pause intent and discovered device immediately before preparing a change. A stop arriving during an in-flight write keeps cleanup pending even when that write's late readback succeeds. Unknown outcomes are retained until reconciliation and are never relabeled as verified original writes.
+
+On restart, owned permission becomes cleanup-required before evaluation. A successful off read/modify/write and readback, or a fresh diagnostic flags read showing permission off, confirms its observed state and resolves the cleanup obligation. The original uncertain write remains marked uncertain, with a separate reconciliation timestamp. This is a point-in-time observation, not proof that a delayed vendor command can never arrive later; interruption and late-command behavior still require physical commissioning.
+
+Credential repair preserves the original cleanup target while pausing and revoking normal control. Once discovery with the new credentials confirms ownership of that same inverter, recovery can remove scheduled permission under the existing host permission without rearming the workspace. Normal starts remain disabled until fresh verification and activation. Changing the selected inverter, compatibility profile or timezone cannot abandon an unresolved binding. Host write permission, valid account access and the recovery API budget remain necessary for physical changes.
+
+Controls displays the five latest write records with intent, acknowledgment, readback and reconciliation times. In-flight writes display a waiting state; an interrupted or failed write displays an unknown outcome until its cleanup is observed. The full journal remains in PostgreSQL and is linked to each command's audit ID.
+
 ## Commissioning
 
 1. Obtain App ID / App Secret and custom-command permission, with a licence appropriate for hosted users.

@@ -269,3 +269,71 @@ test("clears charging permission during grid loss without changing EPS permissio
   assert.equal(inverter.holding.get(207), 9);
   assert.deepEqual(inverter.writes, [{ address: 206, values: [0, 9] }]);
 });
+
+test("write intent must persist before any inverter mutation", async () => {
+  const inverter = new Inverter(30, 9);
+  const controller = new BatteryController(inverter, {
+    ...options,
+    writeAudit: {
+      prepare: async () => {
+        throw new Error("Journal unavailable");
+      },
+    },
+  });
+  await assert.rejects(controller.setAc(true), /Journal unavailable/);
+  assert.equal(inverter.writes.length, 0);
+  assert.equal(inverter.holding.get(207), 9);
+});
+
+test("acknowledgment persistence failure does not skip physical readback", async () => {
+  const inverter = new Inverter(30, 9);
+  const stages = [];
+  const controller = new BatteryController(inverter, {
+    ...options,
+    writeAudit: {
+      prepare: async () => {
+        stages.push("prepared");
+        return "fixture-write";
+      },
+      acknowledge: async () => {
+        throw new Error("Temporary database failure");
+      },
+      verify: async () => {
+        assert.equal(inverter.holding.get(207), 25);
+        stages.push("verified");
+      },
+      uncertain: async () => {
+        stages.push("uncertain");
+      },
+    },
+  });
+  assert.equal(await controller.setAc(true), 25);
+  assert.deepEqual(stages, ["prepared", "verified"]);
+});
+
+test("readback mismatch records uncertainty while keeping the original failure", async () => {
+  const inverter = new Inverter(30, 9);
+  inverter.ignoreWrites = true;
+  const stages = [];
+  const controller = new BatteryController(inverter, {
+    ...options,
+    writeAudit: {
+      prepare: async () => {
+        stages.push("prepared");
+        return "fixture-write";
+      },
+      acknowledge: async () => {
+        stages.push("acknowledged");
+      },
+      verify: async () => {
+        stages.push("verified");
+      },
+      uncertain: async () => {
+        stages.push("uncertain");
+        throw new Error("Audit storage unavailable");
+      },
+    },
+  });
+  await assert.rejects(controller.setAc(true), /readback mismatch/);
+  assert.deepEqual(stages, ["prepared", "acknowledged", "uncertain"]);
+});

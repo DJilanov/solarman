@@ -534,6 +534,111 @@ export function AnalyticsPage(): ReactNode {
   );
 }
 
+interface ControlRecoveryProps {
+  recovery: ControllerStatus["control"]["recovery"];
+  timezone: string;
+}
+
+function ControlRecovery({
+  recovery,
+  timezone,
+}: ControlRecoveryProps): ReactNode {
+  const states: Record<typeof recovery.state, string> = {
+    none: "No pending app changes",
+    clear: "Scheduled charging confirmed off",
+    owned: "App control session recorded",
+    uncertain: "Write outcome unknown",
+    "cleanup-required": "Cleanup pending",
+  };
+  const operations: Record<"enable" | "disable" | "window", string> = {
+    enable: "Enable scheduled charging",
+    disable: "Disable scheduled charging",
+    window: "Update charging window",
+  };
+  return (
+    <Panel
+      title={tr("Recovery and write history")}
+      subtitle={tr(
+        "Intent, device acknowledgment and readback are recorded separately",
+      )}
+      className="write-recovery"
+    >
+      <div className="diagnostic-values">
+        <div>
+          <span>{tr("Recovery status")}</span>
+          <strong>{tr(states[recovery.state])}</strong>
+        </div>
+        <div>
+          <span>{tr("Last off confirmation")}</span>
+          <strong>
+            {recovery.confirmedOffAt
+              ? when(recovery.confirmedOffAt, timezone)
+              : tr("Not checked yet")}
+          </strong>
+        </div>
+      </div>
+      {recovery.writes.length ? (
+        <ol className="write-history">
+          {recovery.writes.map((write) => (
+            <li key={write.id}>
+              <details>
+                <summary>
+                  <strong>{tr(operations[write.operation])}</strong>
+                  <span>
+                    {tr(
+                      write.status === "verified"
+                        ? "Readback verified"
+                        : write.inFlight
+                          ? "Waiting for device confirmation"
+                          : write.reconciledAt
+                            ? "Cleanup confirmed; original write outcome unknown"
+                            : write.status === "acknowledged"
+                              ? "Acknowledged; readback unconfirmed"
+                              : "Write outcome unknown",
+                    )}
+                  </span>
+                </summary>
+                <dl>
+                  <div>
+                    <dt>{tr("Intent recorded")}</dt>
+                    <dd>{when(write.createdAt, timezone)}</dd>
+                  </div>
+                  <div>
+                    <dt>{tr("Device acknowledgment")}</dt>
+                    <dd>
+                      {write.acknowledgedAt
+                        ? when(write.acknowledgedAt, timezone)
+                        : tr("Not recorded")}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{tr("Readback verified")}</dt>
+                    <dd>
+                      {write.verifiedAt
+                        ? when(write.verifiedAt, timezone)
+                        : tr("Not recorded")}
+                    </dd>
+                  </div>
+                  {write.reconciledAt && (
+                    <div>
+                      <dt>{tr("Cleanup confirmed")}</dt>
+                      <dd>{when(write.reconciledAt, timezone)}</dd>
+                    </div>
+                  )}
+                </dl>
+              </details>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="fine-print">
+          {tr("No inverter writes have been recorded for this binding.")}
+        </p>
+      )}
+    </Panel>
+  );
+}
+
 export function Controls(): ReactNode {
   const {
     overview: data,
@@ -566,6 +671,21 @@ export function Controls(): ReactNode {
         subtitle={tr("Verify the device without changing inverter settings")}
         action={<ShieldCheck size={22} />}
       >
+        {controller.control.recovery.inFlight && (
+          <Notice>
+            {tr(
+              "Waiting for device acknowledgment and readback before confirming the change.",
+            )}
+          </Notice>
+        )}
+        {controller.control.recovery.pending &&
+          !controller.control.recovery.inFlight && (
+            <Notice tone="danger">
+              {tr(
+                "An earlier inverter change needs recovery. Confirm scheduled charging is off before starting again. Updated credentials can recover the same inverter after connection discovery.",
+              )}
+            </Notice>
+          )}
         <div className="readiness-status">
           <span>
             {tr("Supported profile")}{" "}
@@ -866,6 +986,10 @@ export function Controls(): ReactNode {
           </p>
         </Panel>
       </div>
+      <ControlRecovery
+        recovery={controller.control.recovery}
+        timezone={controller.timezone}
+      />
       {controller.manualTopup && (
         <Notice>
           {tr(

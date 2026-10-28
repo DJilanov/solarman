@@ -7,6 +7,7 @@ import { saveMeasurement } from "./database.mjs";
 import { WorkQueue } from "./work-queue.mjs";
 import { controlReadiness } from "./control-readiness.mjs";
 import { apiAppKey, ApiBudgetError } from "./api-budget.mjs";
+import { ControlJournal } from "./control-journal.mjs";
 import {
   BLUESUN_MAPPING,
   TELEMETRY_MAX_AGE_MS,
@@ -21,6 +22,12 @@ export class TenantRuntime {
     this.pool = hub.pool;
     this.tenantId = tenantId;
     this.account = account;
+    this.executionId = null;
+    this.journal = new ControlJournal(hub.pool, {
+      tenantId,
+      accountId: account?.id ?? null,
+      device: account?.device_sn ?? null,
+    });
     this.work = new WorkQueue();
     this.closePromise = null;
     this.stopping = false;
@@ -79,7 +86,13 @@ export class TenantRuntime {
       this.controlPollMs = config.pollMs;
       this.monitorPollMs = config.telemetryPollMs;
       this.hostWritesAllowed = config.writesEnabled;
-      this.ready = Boolean(account.validated_at && account.device_sn);
+      this.ready = Boolean(
+        account.validated_at &&
+          account.device_sn &&
+          account.discovered_devices.some(
+            (device) => device.deviceSn === account.device_sn,
+          ),
+      );
       this.writesEnabled =
         config.writesEnabled &&
         this.ready &&
@@ -104,6 +117,13 @@ export class TenantRuntime {
         writesEnabled: false,
         log,
         isStopping: () => this.stopping || hub.stopping || this.inhibitStarts,
+        writeAudit: {
+          prepare: (address, values) =>
+            this.journal.prepare(address, values, this.executionId),
+          acknowledge: (id) => this.journal.acknowledge(id),
+          verify: (id) => this.journal.verify(id),
+          uncertain: (id) => this.journal.uncertain(id),
+        },
       });
       this.inspector = new BatteryController(this.client, {
         ...config,
@@ -116,6 +136,9 @@ export class TenantRuntime {
       else if (!account.device_sn)
         this.setupError =
           "Choose an inverter from your connected SOLARMAN account";
+      else if (!this.ready)
+        this.setupError =
+          "The selected inverter was not returned for this provider account";
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
       this.setupError = /SOLARMAN_APP_/.test(message)
@@ -140,6 +163,7 @@ export class TenantRuntime {
     this.controlEnabled = result.rows[0].control_enabled;
     this.verification = result.rows[0].verification;
     this.topupExpiresAt = result.rows[0].topup_expires_at;
+    await this.journal.load(!this.initialized);
     if (!this.initialized) {
       if (this.appKey)
         await this.hub.budget.register(
@@ -149,12 +173,12 @@ export class TenantRuntime {
         );
       this.profileVerified = this.verifiedDevice();
       this.ratedPowerChecked = this.verifiedDevice();
-      this.cleanupRequired = this.controlEnabled;
+      this.cleanupRequired = this.journal.pending;
       this.initialized = true;
     }
     if (this.controller)
       this.controller.options.writesEnabled =
-        this.writesEnabled && this.controlEnabled;
+        this.writesEnabled && (this.controlEnabled || this.journal.owned);
   }
 
   /** @returns {boolean} */
@@ -180,7 +204,7 @@ export class TenantRuntime {
         this.verifiedDevice() &&
         (this.controlEnabled || (age >= 0 && age <= 1800_000)),
       settingsMatch: this.profileVerified,
-      cleanupVerified: !this.cleanupRequired,
+      cleanupVerified: !this.cleanupRequired && !this.journal.pending,
       clockVerified: Boolean(
         this.clock?.passed &&
           Date.now() - new Date(this.clock.collectedAt).getTime() <=
@@ -199,6 +223,7 @@ export class TenantRuntime {
         serverAllowed: this.hostWritesAllowed,
         workspaceEnabled: this.controlEnabled,
         verification: this.verification,
+        recovery: this.journal.status(this.executionId),
         ...readiness,
       },
       mode: this.setupError
@@ -251,12 +276,22 @@ export class TenantRuntime {
       : this.hub.monitorPollMs(this);
   }
 
-  /** @returns {Promise<void>} */
+  /** @returns {Promise<boolean>} */
   async clearScheduledPermission() {
-    if (!this.writesEnabled || !this.controlEnabled) return;
-    this.cleanupRequired = true;
-    await this.controller.disable();
+    await this.journal.requestCleanup();
+    this.cleanupRequired = this.journal.pending;
+    if (!this.writesEnabled || (!this.controlEnabled && !this.journal.owned))
+      return false;
+    this.controller.options.writesEnabled = true;
+    const flags = await this.controller.disable();
+    if (
+      flags === null ||
+      flags === undefined ||
+      !(await this.journal.confirmOff(flags))
+    )
+      throw new Error("Scheduled charging off could not be confirmed");
     this.cleanupRequired = false;
+    return true;
   }
 
   /** @param {number} soc @returns {Promise<void>} */
@@ -386,6 +421,8 @@ export class TenantRuntime {
     const mapped = this.mapProvider(await this.readProvider());
     if (Date.now() - startedAt > 120_000)
       throw new Error("Live readings are too old");
+    if (await this.journal.confirmOff(snapshot.flags))
+      this.cleanupRequired = false;
     const checks = [
       {
         label: "Inverter rating",
@@ -487,7 +524,7 @@ export class TenantRuntime {
     if (!this.client || !this.ready)
       throw new Error("Connect your account and choose an inverter first");
     this.events = [];
-    if (!inspectOnly && this.cleanupRequired)
+    if (!inspectOnly && (this.cleanupRequired || this.journal.pending))
       await this.clearScheduledPermission();
     if (
       this.account.profile === "monitor-only" ||
@@ -537,6 +574,8 @@ export class TenantRuntime {
       this.profileVerified = true;
       this.profileError = null;
     }
+    if (await this.journal.confirmOff(result.snapshot.flags))
+      this.cleanupRequired = false;
     if (
       !inspectOnly &&
       this.paused &&
@@ -572,6 +611,7 @@ export class TenantRuntime {
   async evaluate() {
     if (this.stopping || this.hub.stopping) return;
     const id = randomUUID();
+    this.executionId = id;
     try {
       await this.q(
         "INSERT INTO command_executions (tenant_id,id,account_id,actor,action,status) VALUES ($1,$2,$3,'Automation','evaluate','running')",
@@ -604,6 +644,8 @@ export class TenantRuntime {
       );
     } catch (error) {
       await this.fail(id, error);
+    } finally {
+      this.executionId = null;
     }
   }
 
@@ -618,9 +660,7 @@ export class TenantRuntime {
       this.enableEpoch++;
       this.cleanupRequired = true;
       try {
-        await this.q(
-          "UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
-        );
+        await this.journal.requestCleanup({ pause: true });
       } catch {
         pauseUnrecorded = true;
       }
@@ -710,9 +750,7 @@ export class TenantRuntime {
       this.inhibitStarts = true;
       this.enableEpoch++;
       try {
-        await this.q(
-          "UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
-        );
+        await this.journal.requestCleanup({ pause: true });
       } catch (error) {
         this.scheduled.delete(job.id);
         await this.fail(job.id, error, false);
@@ -725,6 +763,7 @@ export class TenantRuntime {
     const enableEpoch = requestedEpoch;
     this.queue(
       async () => {
+        this.executionId = job.id;
         try {
           if (this.stopping || this.hub.stopping) {
             await this.q(
@@ -777,11 +816,10 @@ export class TenantRuntime {
             this.paused = true;
             this.manualTopup = false;
             this.topupExpiresAt = null;
-            await this.clearScheduledPermission();
-            message =
-              this.writesEnabled && this.controlEnabled
-                ? "Scheduled AC charging permission cleared; automation paused. Native inverter settings still apply."
-                : "Automation paused; hardware writes are unavailable in the current setup";
+            const cleared = await this.clearScheduledPermission();
+            message = cleared
+              ? "Scheduled AC charging permission cleared; automation paused. Native inverter settings still apply."
+              : "Automation paused; hardware writes are unavailable in the current setup";
           } else {
             if (["topup", "resume"].includes(action)) {
               if (!this.readiness().canStart)
@@ -832,6 +870,7 @@ export class TenantRuntime {
             !["refresh", "verify", "enable_controls"].includes(action),
           );
         } finally {
+          this.executionId = null;
           this.scheduled.delete(job.id);
         }
       },
@@ -854,7 +893,11 @@ export class TenantRuntime {
     this.closePromise = (async () => {
       await this.work.idle();
       try {
-        await this.clearScheduledPermission();
+        if (this.cleanupRequired || this.journal.owned) {
+          const cleared = await this.clearScheduledPermission();
+          if (!cleared && this.journal.pending)
+            throw new Error("Cleanup pending");
+        }
       } catch {
         console.error(
           JSON.stringify({ event: "shutdown_grid_disable_unconfirmed" }),

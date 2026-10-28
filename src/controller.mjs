@@ -112,7 +112,8 @@ export class BatteryController {
   /**
    * @param {{ command: (command: string, options?: {purpose: 'routine' | 'recovery'}) => Promise<string> }} client
    * @param {{ writesEnabled: boolean, timezone: string, chargeWindowMinutes: number,
-   *   log?: (event: object) => void, isStopping?: () => boolean, now?: () => Date }} options
+   *   log?: (event: object) => void, isStopping?: () => boolean, now?: () => Date,
+   *   writeAudit?: {prepare: (address: number, values: number[]) => Promise<string>, acknowledge: (id: string) => Promise<void>, verify: (id: string) => Promise<void>, uncertain: (id: string) => Promise<void>} }} options
    */
   constructor(client, options) {
     this.client = client;
@@ -134,10 +135,35 @@ export class BatteryController {
   async writeVerified(address, values, purpose = "routine") {
     if (!this.options.writesEnabled) throw new Error("Writes are disabled");
     const command = writeCommand(address, values);
-    decodeReply(command, await this.client.command(command, { purpose }));
-    const actual = await this.read(3, address, values.length, purpose);
-    if (actual.some((v, i) => v !== values[i]))
-      throw new Error("Inverter write readback mismatch");
+    const audit = this.options.writeAudit;
+    const intent = audit ? await audit.prepare(address, values) : null;
+    try {
+      decodeReply(command, await this.client.command(command, { purpose }));
+      let acknowledgementUnrecorded = false;
+      if (intent) {
+        try {
+          await audit.acknowledge(intent);
+        } catch {
+          acknowledgementUnrecorded = true;
+        }
+      }
+      // Still attempt readback if acknowledgement persistence failed after the physical write.
+      const actual = await this.read(3, address, values.length, purpose);
+      if (actual.some((v, i) => v !== values[i]))
+        throw new Error("Inverter write readback mismatch");
+      if (intent) await audit.verify(intent);
+      if (acknowledgementUnrecorded)
+        this.log({ event: "write_acknowledgement_audit_recovered" });
+    } catch (error) {
+      if (intent) {
+        try {
+          await audit.uncertain(intent);
+        } catch {
+          this.log({ event: "write_journal_unavailable" });
+        }
+      }
+      throw error;
+    }
   }
 
   /** @returns {Promise<void>} */
@@ -206,7 +232,7 @@ export class BatteryController {
     return snapshot;
   }
 
-  /** @param {boolean} enabled @returns {Promise<void>} */
+  /** @param {boolean} enabled @returns {Promise<number>} */
   async setAc(enabled) {
     const purpose = enabled ? "routine" : "recovery";
     const flags = unsigned32(await this.read(3, 206, 2, purpose));
@@ -219,9 +245,10 @@ export class BatteryController {
       );
     }
     const next = enabled ? (flags | AC_BIT) >>> 0 : (flags & ~AC_BIT) >>> 0;
-    if (flags === next) return;
+    if (flags === next) return flags;
     await this.writeVerified(206, flagRegisters(next), purpose);
     this.log({ event: "ac_charge_changed", enabled });
+    return next;
   }
 
   /** @returns {Promise<{ snapshot: Snapshot, decision: ReturnType<typeof decide> }>} */
@@ -283,9 +310,9 @@ export class BatteryController {
     return { snapshot, decision };
   }
 
-  /** @returns {Promise<void>} */
+  /** @returns {Promise<number | null>} */
   async disable() {
-    if (!this.options.writesEnabled) return;
-    await this.setAc(false);
+    if (!this.options.writesEnabled) return null;
+    return this.setAc(false);
   }
 }

@@ -454,6 +454,7 @@ test("read-only device verification explains locks and keeps Stop available afte
     error: null,
     setupError: null,
     control: {
+      recovery: overview.controller.control.recovery,
       serverAllowed: false,
       workspaceEnabled: false,
       canVerify: true,
@@ -704,6 +705,101 @@ test("shared API budgets explain remaining capacity and recovery limits in both 
   ).toBe(false);
   await page.screenshot({
     path: "test-results/api-budget-mobile-bg.png",
+    fullPage: true,
+  });
+});
+
+test("uncertain writes remain distinct from confirmed cleanup in English and Bulgarian", async ({
+  page,
+}) => {
+  await signIn(page);
+  const overview = (await (
+    await page.request.get("/api/overview")
+  ).json()) as OverviewData;
+  const now = new Date().toISOString();
+  overview.controller.control.recovery = {
+    state: "uncertain",
+    pending: true,
+    inFlight: false,
+    confirmedOffAt: null,
+    updatedAt: now,
+    writes: [
+      {
+        id: "4d2ace90-639a-4d0a-b640-c760ef93ff13",
+        operation: "enable",
+        status: "uncertain",
+        inFlight: false,
+        createdAt: now,
+        acknowledgedAt: now,
+        verifiedAt: null,
+        reconciledAt: null,
+      },
+    ],
+  };
+  overview.controller.control.canStart = false;
+  overview.controller.control.canStop = true;
+  overview.controller.control.reasons = [
+    {
+      code: "cleanup",
+      message: "Scheduled charging has not been confirmed off",
+    },
+  ];
+  await page.route("**/api/overview", (route) =>
+    route.fulfill({ json: overview }),
+  );
+  await page.goto("/controls");
+  const panel = page.locator(".write-recovery");
+  await expect(panel).toContainText("Write outcome unknown");
+  await expect(
+    page.getByRole("button", { name: "Top up to 50%", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Stop scheduled top-up", exact: true }),
+  ).toBeEnabled();
+  await panel.locator("summary").click();
+  await expect(panel.locator("dl")).toContainText("Not recorded");
+  overview.controller.control.recovery.inFlight = true;
+  overview.controller.control.recovery.writes[0].inFlight = true;
+  overview.controller.control.recovery.writes[0].status = "acknowledged";
+  await page.reload();
+  await expect(
+    page.getByText(
+      "Waiting for device acknowledgment and readback before confirming the change.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(panel.locator("summary")).toContainText(
+    "Waiting for device confirmation",
+  );
+  overview.controller.control.recovery.inFlight = false;
+  overview.controller.control.recovery.writes[0].inFlight = false;
+  overview.controller.control.recovery.writes[0].status = "uncertain";
+  await page.reload();
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(panel).toContainText("Резултатът от промяната е неизвестен");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+  overview.controller.control.recovery.pending = false;
+  overview.controller.control.recovery.state = "clear";
+  overview.controller.control.recovery.confirmedOffAt = now;
+  overview.controller.control.recovery.writes[0].reconciledAt = now;
+  await page.reload();
+  await expect(panel).toContainText(
+    "Изключването е потвърдено; резултатът от първоначалната промяна е неизвестен",
+  );
+  await panel.locator("summary").click();
+  await expect(panel.locator("dl")).toContainText("Няма запис");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+  await page.screenshot({
+    path: "test-results/write-recovery-mobile-bg.png",
     fullPage: true,
   });
 });

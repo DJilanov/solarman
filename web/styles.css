@@ -2818,3 +2818,41 @@ html[lang="bg"] .segmented button {
 .reading-source.register {
   color: var(--battery);
 }
+.write-history {
+  list-style: none;
+  padding: 0;
+  margin: 18px 0 0;
+}
+.write-history li {
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+.write-history summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+.write-history summary span {
+  display: block;
+  color: var(--muted);
+  margin: 8px 0 0 14px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.write-history dl {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 0 14px;
+  font-size: 11px;
+}
+.write-history dl > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 18px;
+}
+.write-history dt {
+  color: var(--muted);
+}
+.write-history dd {
+  margin: 0;
+}

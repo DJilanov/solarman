@@ -14,6 +14,23 @@ export interface ControllerStatus {
     canStart: boolean;
     canStop: boolean;
     reasons: { code: string; message: string }[];
+    recovery: {
+      state: "none" | "clear" | "owned" | "uncertain" | "cleanup-required";
+      pending: boolean;
+      inFlight: boolean;
+      confirmedOffAt: string | null;
+      updatedAt: string | null;
+      writes: {
+        id: string;
+        operation: "enable" | "disable" | "window";
+        status: "prepared" | "acknowledged" | "verified" | "uncertain";
+        inFlight: boolean;
+        createdAt: string;
+        acknowledgedAt: string | null;
+        verifiedAt: string | null;
+        reconciledAt: string | null;
+      }[];
+    };
     verification: {
       checkedAt: string;
       passed: boolean;

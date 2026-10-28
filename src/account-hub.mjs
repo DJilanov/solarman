@@ -195,6 +195,24 @@ export class AccountHub {
     }
   }
 
+  /** @param {TenantRuntime} runtime @returns {Promise<boolean>} */
+  async prepareAccountUpdate(runtime) {
+    runtime.inhibitStarts = true;
+    runtime.enableEpoch++;
+    await runtime.journal.requestCleanup({ pause: true });
+    runtime.paused = true;
+    runtime.manualTopup = false;
+    runtime.topupExpiresAt = null;
+    try {
+      await runtime.queue(() => runtime.clearScheduledPermission(), 10);
+    } catch {
+      // New credentials may be needed to finish cleanup; its obligation remains in the journal.
+    }
+    await runtime.close();
+    await runtime.journal.load();
+    return runtime.journal.owned;
+  }
+
   async connect(tenantId, body) {
     if (
       typeof body.email !== "string" ||
@@ -232,15 +250,7 @@ export class AccountHub {
       );
     }
     const old = await this.forTenant(tenantId);
-    let cleanupUnconfirmed = false;
-    if (old.writesEnabled) {
-      try {
-        await old.queue(() => old.controller.disable(), 10);
-      } catch {
-        cleanupUnconfirmed = true;
-      }
-    }
-    await old.close();
+    const cleanupUnconfirmed = await this.prepareAccountUpdate(old);
     const id = existing?.id ?? randomUUID();
     const previous =
       existing && !ownApp && body.usePlatform !== true
@@ -256,29 +266,39 @@ export class AccountHub {
         ? { appId: body.appId.trim(), appSecret: body.appSecret }
         : retained),
     };
-    await this.pool.query(
-      `INSERT INTO solarman_accounts (id,tenant_id,email,credentials) VALUES ($1,$2,$3,$4)
+    const connection = await this.pool.connect();
+    try {
+      await connection.query("BEGIN");
+      await connection.query(
+        `INSERT INTO solarman_accounts (id,tenant_id,email,credentials) VALUES ($1,$2,$3,$4)
       ON CONFLICT (tenant_id) DO UPDATE SET email=EXCLUDED.email,credentials=EXCLUDED.credentials,
       validated_at=null,connection_status='pending',connection_message=null,updated_at=now()`,
-      [
-        id,
-        tenantId,
-        body.email.trim().toLowerCase(),
-        encryptCredentials(credentials, this.key, tenantId, id),
-      ],
-    );
-    await this.pool.query(
-      "UPDATE controller_state SET paused=true,manual_topup=false,control_enabled=false,verification=null,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
-      [tenantId],
-    );
-    if (cleanupUnconfirmed)
-      await this.pool.query(
-        "UPDATE solarman_accounts SET connection_message=$2 WHERE tenant_id=$1",
         [
+          id,
           tenantId,
-          "Previous grid-charging permission could not be confirmed off. Test the updated credentials and check device status; automation is paused.",
+          body.email.trim().toLowerCase(),
+          encryptCredentials(credentials, this.key, tenantId, id),
         ],
       );
+      await connection.query(
+        "UPDATE controller_state SET paused=true,manual_topup=false,control_enabled=false,verification=null,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
+        [tenantId],
+      );
+      if (cleanupUnconfirmed)
+        await connection.query(
+          "UPDATE solarman_accounts SET connection_message=$2 WHERE tenant_id=$1",
+          [
+            tenantId,
+            "Previous grid-charging permission could not be confirmed off. Test the updated credentials and check device status; automation is paused.",
+          ],
+        );
+      await connection.query("COMMIT");
+    } catch (error) {
+      await connection.query("ROLLBACK");
+      throw error;
+    } finally {
+      connection.release();
+    }
     return this.reload(tenantId);
   }
 
@@ -395,23 +415,35 @@ export class AccountHub {
       );
     }
     const old = await this.forTenant(tenantId);
-    if (old.writesEnabled) await old.queue(() => old.controller.disable(), 10);
-    await old.close();
+    await this.prepareAccountUpdate(old);
+    const unresolved = await this.pool.query(
+      "SELECT 1 FROM device_control_state WHERE tenant_id=$1 AND state<>'clear' LIMIT 1",
+      [tenantId],
+    );
+    if (unresolved.rowCount)
+      throw new Error(
+        "Confirm scheduled charging is off before changing the inverter, profile or timezone",
+      );
+    const connection = await this.pool.connect();
     try {
-      await this.pool.query(
+      await connection.query("BEGIN");
+      await connection.query(
         "UPDATE solarman_accounts SET device_sn=$2,profile=$3,station_id=$4,timezone=$5,updated_at=now() WHERE tenant_id=$1",
         [tenantId, body.deviceSn, body.profile, selected.stationId, timezone],
       );
+      await connection.query(
+        "UPDATE controller_state SET paused=true,manual_topup=false,control_enabled=false,verification=null,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
+        [tenantId],
+      );
+      await connection.query("COMMIT");
     } catch (error) {
-      await this.forTenant(tenantId);
+      await connection.query("ROLLBACK");
       if (error?.code === "23505")
         throw new Error("This inverter is already linked to another workspace");
       throw error;
+    } finally {
+      connection.release();
     }
-    await this.pool.query(
-      "UPDATE controller_state SET paused=true,manual_topup=false,control_enabled=false,verification=null,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
-      [tenantId],
-    );
     return this.reload(tenantId);
   }
 
