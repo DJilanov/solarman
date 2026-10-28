@@ -11,6 +11,7 @@ import {
   matchingControlFirmware,
 } from "./control-readiness.mjs";
 import { apiAppKey, ApiBudgetError, YEAR_MS } from "./api-budget.mjs";
+import { ApiCapacityError } from "./api-capacity.mjs";
 import { ControlJournal } from "./control-journal.mjs";
 import { Supervision } from "./supervision.mjs";
 import { DeviceHealth } from "./operations.mjs";
@@ -72,6 +73,7 @@ export class TenantRuntime {
     this.device = account?.device_sn ?? null;
     this.timezone = account?.timezone ?? "Europe/Sofia";
     this.ready = false;
+    this.monitoringAdmitted = false;
     this.ratedPowerChecked = false;
     this.profileVerified = false;
     this.profileError = null;
@@ -184,12 +186,7 @@ export class TenantRuntime {
     this.topupExpiresAt = result.rows[0].topup_expires_at;
     await this.journal.load(!this.initialized);
     if (!this.initialized) {
-      if (this.appKey)
-        await this.hub.budget.register(
-          this.appKey,
-          this.tenantId,
-          this.account.id,
-        );
+      if (this.appKey) await this.requestCapacity();
       this.profileVerified = this.verifiedDevice();
       this.ratedPowerChecked = this.verifiedDevice();
       this.cleanupRequired = this.journal.pending;
@@ -225,6 +222,43 @@ export class TenantRuntime {
     );
   }
 
+  /** @returns {object | null} */
+  capacity() {
+    return this.appKey && this.ready
+      ? this.hub.budget.capacityFor(this.appKey, this.tenantId)
+      : null;
+  }
+
+  /** @returns {Promise<boolean>} */
+  async requestCapacity() {
+    const admission = await this.hub.budget.register(
+      this.appKey,
+      this.tenantId,
+      this.account.id,
+      { ready: this.ready },
+    );
+    this.monitoringAdmitted = admission.admitted;
+    if (!admission.admitted || admission.revokeControl) {
+      this.paused = true;
+      this.manualTopup = false;
+      this.topupExpiresAt = null;
+      this.inhibitStarts = true;
+    }
+    if (admission.revokeControl) {
+      this.enableEpoch++;
+      await this.journal.requestCleanup({
+        pause: true,
+        cancelStarts: true,
+        revokeControl: true,
+      });
+      this.controlEnabled = false;
+      this.verification = null;
+      this.cleanupRequired = this.journal.pending;
+      await this.hub.budget.refreshCapacity(this.appKey);
+    }
+    return admission.admitted;
+  }
+
   /** @returns {ReturnType<typeof controlReadiness>} */
   readiness() {
     const age =
@@ -241,6 +275,7 @@ export class TenantRuntime {
         this.verification?.firmware,
         this.firmware,
       ),
+      capacityAvailable: Boolean(this.capacity()?.controlAvailable),
       settingsMatch: this.profileVerified,
       cleanupVerified: !this.cleanupRequired && !this.journal.pending,
       clockVerified: Boolean(this.clock?.passed),
@@ -257,6 +292,11 @@ export class TenantRuntime {
     const readiness = this.readiness();
     return {
       apiConfigured: Boolean(this.client),
+      capacity: this.capacity(),
+      nextPollAt:
+        this.nextPollAt === null
+          ? null
+          : new Date(this.nextPollAt).toISOString(),
       writesEnabled: readiness.canStart,
       control: {
         serverAllowed: this.hostWritesAllowed,
@@ -272,11 +312,13 @@ export class TenantRuntime {
           ? "stopping"
           : this.lastError || this.profileError
             ? "error"
-            : this.paused && !this.manualTopup
-              ? "paused"
-              : this.usesControlCycle()
-                ? "active"
-                : "read-only",
+            : this.ready && !this.monitoringAdmitted
+              ? "capacity"
+              : this.paused && !this.manualTopup
+                ? "paused"
+                : this.usesControlCycle()
+                  ? "active"
+                  : "read-only",
       paused: this.paused,
       manualTopup: this.manualTopup,
       topupExpiresAt: this.topupExpiresAt,
@@ -310,6 +352,7 @@ export class TenantRuntime {
   usesControlCycle() {
     return Boolean(
       this.writesEnabled &&
+        this.monitoringAdmitted &&
         this.controlEnabled &&
         this.verifiedDevice() &&
         (!this.paused || this.manualTopup),
@@ -325,12 +368,13 @@ export class TenantRuntime {
   fixedAnnualCalls() {
     if (!this.usesControlCycle()) return 0;
     return this.usesScheduledCycle()
-      ? (6 * YEAR_MS) / this.controlPollMs
+      ? (6 * YEAR_MS) / (this.capacity()?.scheduledMs ?? this.controlPollMs)
       : (5 * YEAR_MS) / this.supervision.options.auditMs;
   }
 
   /** @returns {number} */
   projectedCalls() {
+    if (!this.monitoringAdmitted) return 0;
     return Math.round(
       this.fixedAnnualCalls() +
         (this.usesScheduledCycle() ? 0 : YEAR_MS / this.pollMs),
@@ -338,8 +382,11 @@ export class TenantRuntime {
   }
 
   get pollMs() {
+    if (!this.monitoringAdmitted) return this.monitorPollMs;
+    if (this.cleanupRequired || this.journal.pending)
+      return Math.min(this.monitorPollMs, 300_000);
     return this.usesScheduledCycle()
-      ? this.controlPollMs
+      ? (this.capacity()?.scheduledMs ?? this.controlPollMs)
       : this.hub.monitorPollMs(this);
   }
 
@@ -443,6 +490,7 @@ export class TenantRuntime {
       this.profileVerified = false;
       this.ratedPowerChecked = false;
       this.cleanupRequired = this.journal.pending;
+      await this.hub.budget.refreshCapacity(this.appKey);
       this.events.push({ event: "firmware_verification_invalidated" });
       if (this.cleanupRequired) await this.clearScheduledPermission();
     }
@@ -674,6 +722,14 @@ export class TenantRuntime {
   async collect(inspectOnly = false, forceControl = false) {
     if (!this.client || !this.ready)
       throw new Error("Connect your account and choose an inverter first");
+    if (!inspectOnly && !this.monitoringAdmitted) {
+      if (this.cleanupRequired || this.journal.pending)
+        await this.clearScheduledPermission();
+      if (!(await this.requestCapacity()))
+        return {
+          decision: { charge: false, reason: "monitoring_capacity_waiting" },
+        };
+    }
     return this.health.run(
       () => this.collectReadings(inspectOnly, forceControl),
       () => Boolean(this.profileError),
@@ -700,6 +756,8 @@ export class TenantRuntime {
       if (!mapped.clock.passed)
         throw new Error("The inverter clock must match the workspace timezone");
       this.supervision.observe(mapped.snapshot, reading.collectedAt);
+      this.supervision.options.retryMs =
+        this.capacity()?.assessmentMs ?? this.controlPollMs;
       const plan = this.supervision.plan(mapped.snapshot, {
         owned: this.journal.owned,
         verified: this.profileVerified,
@@ -761,7 +819,7 @@ export class TenantRuntime {
     }
     if (await this.journal.confirmOff(result.snapshot.flags))
       this.cleanupRequired = false;
-    this.supervision.checked(result.decision.reason);
+    this.supervision.checked(result.decision.reason, Date.now(), !inspectOnly);
     if (
       !inspectOnly &&
       this.paused &&
@@ -860,7 +918,7 @@ export class TenantRuntime {
         pauseUnrecorded = true;
       }
     }
-    this.profileVerified = false;
+    if (!(error instanceof ApiCapacityError)) this.profileVerified = false;
     this.lastError =
       error instanceof Error ? error.message : "Device request failed";
     if (controlFailed) this.profileError = this.lastError;
@@ -894,15 +952,25 @@ export class TenantRuntime {
 
   /** @param {'enable_controls' | 'resume' | 'topup'} action @param {string} epoch @returns {Promise<boolean>} */
   async applyStartIntent(action, epoch) {
+    if (action === "enable_controls") {
+      const updated = await this.hub.budget.enableControl({
+        appKey: this.appKey,
+        tenantId: this.tenantId,
+        accountId: this.account.id,
+        device: this.device,
+        epoch,
+      });
+      if (updated) await this.initialize();
+      return updated;
+    }
     // A delayed update must not overwrite a stop committed after this request was accepted.
     const result = await this.q(
       `UPDATE controller_state SET
-      control_enabled=CASE WHEN $2='enable_controls' THEN true ELSE control_enabled END,
-      paused=CASE WHEN $2='enable_controls' THEN true WHEN $2='resume' THEN false ELSE paused END,
+      paused=CASE WHEN $2='resume' THEN false ELSE paused END,
       manual_topup=($2='topup'),
       topup_expires_at=CASE WHEN $2='topup' THEN now()+interval '6 hours' ELSE null END,
       updated_at=now()
-      WHERE tenant_id=$1 AND control_epoch=$3 AND ($2='enable_controls' OR control_enabled)
+      WHERE tenant_id=$1 AND control_epoch=$3 AND control_enabled
       RETURNING tenant_id`,
       [action, epoch],
     );
@@ -929,6 +997,8 @@ export class TenantRuntime {
         "refresh",
         "verify",
         "enable_controls",
+        "disable_controls",
+        "retry_capacity",
         "topup",
         "stop",
         "pause",
@@ -937,7 +1007,10 @@ export class TenantRuntime {
     )
       throw new Error("Unknown action");
     const requestedEpoch = this.enableEpoch;
-    if (["refresh", "topup"].includes(action) && (!this.client || !this.ready))
+    if (
+      ["refresh", "topup", "retry_capacity"].includes(action) &&
+      (!this.client || !this.ready)
+    )
       throw new Error(
         "Connect your SOLARMAN account and select an inverter first",
       );
@@ -956,7 +1029,10 @@ export class TenantRuntime {
       throw new Error(
         "Hardware writes require an enabled, verified Bluesun profile",
       );
-    if (this.scheduled.size >= 5 && !["stop", "pause"].includes(action))
+    if (
+      this.scheduled.size >= 5 &&
+      !["stop", "pause", "disable_controls"].includes(action)
+    )
       throw new Error("Wait for a pending command to finish");
     const controlEpoch = ["enable_controls", "resume", "topup"].includes(action)
       ? (
@@ -993,11 +1069,15 @@ export class TenantRuntime {
       return interrupted.rows[0];
     }
     this.scheduled.add(job.id);
-    if (["stop", "pause"].includes(action)) {
+    if (["stop", "pause", "disable_controls"].includes(action)) {
       this.inhibitStarts = true;
       this.enableEpoch++;
       try {
-        await this.journal.requestCleanup({ pause: true, cancelStarts: true });
+        await this.journal.requestCleanup({
+          pause: true,
+          cancelStarts: true,
+          revokeControl: action === "disable_controls",
+        });
       } catch (error) {
         this.scheduled.delete(job.id);
         await this.fail(job.id, error, false);
@@ -1006,6 +1086,17 @@ export class TenantRuntime {
       this.paused = true;
       this.manualTopup = false;
       this.topupExpiresAt = null;
+      if (action === "disable_controls") {
+        this.controlEnabled = false;
+        this.verification = null;
+        try {
+          await this.hub.budget.refreshCapacity(this.appKey);
+        } catch (error) {
+          this.scheduled.delete(job.id);
+          await this.fail(job.id, error, false);
+          throw error;
+        }
+      }
     }
     const enableEpoch = requestedEpoch;
     this.queue(
@@ -1035,13 +1126,19 @@ export class TenantRuntime {
             [job.id],
           );
           let message;
-          if (action === "verify") {
+          if (action === "retry_capacity") {
+            message = (await this.requestCapacity())
+              ? "Monitoring capacity is available"
+              : "Monitoring is waiting for shared API capacity";
+          } else if (action === "verify") {
             const report = await this.verifyDevice();
             this.events.push({ event: "device_verification", report });
             message = report.passed
               ? "Device settings verified"
               : "Device settings need attention";
           } else if (action === "enable_controls") {
+            if (!this.capacity()?.controlAvailable)
+              throw new ApiCapacityError();
             if (
               !this.readiness().canEnable ||
               Date.now() - new Date(this.verification.checkedAt).getTime() >
@@ -1059,7 +1156,7 @@ export class TenantRuntime {
             }
             message =
               "Control enabled for this workspace; automation remains paused";
-          } else if (["stop", "pause"].includes(action)) {
+          } else if (["stop", "pause", "disable_controls"].includes(action)) {
             await this.q(
               "UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
             );
@@ -1070,6 +1167,10 @@ export class TenantRuntime {
             message = cleared
               ? "Scheduled AC charging permission cleared; automation paused. Native inverter settings still apply."
               : "Automation paused; hardware writes are unavailable in the current setup";
+            if (action === "disable_controls")
+              message = cleared
+                ? "Workspace control disabled; scheduled permission cleared"
+                : "Workspace control disabled; scheduled permission off remains unconfirmed";
           } else {
             if (["topup", "resume"].includes(action)) {
               if (!this.readiness().canStart)
@@ -1125,7 +1226,7 @@ export class TenantRuntime {
           this.reschedulePolling();
         }
       },
-      action === "stop" || action === "pause" ? 10 : 5,
+      ["stop", "pause", "disable_controls"].includes(action) ? 10 : 5,
     ).catch(async () => {
       this.scheduled.delete(job.id);
       await this.fail(
@@ -1184,6 +1285,8 @@ export function reasonLabel(reason) {
         "The scheduled top-up is waiting during the inverter midnight boundary",
       firmware_verification_changed:
         "Firmware verification changed; automation was paused and workspace control was revoked",
+      monitoring_capacity_waiting:
+        "Monitoring is waiting for shared API capacity",
     }[reason] ?? reason
   );
 }

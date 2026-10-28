@@ -11,7 +11,8 @@ export interface Incident {
     | "request_failures"
     | "control_fault"
     | "cleanup_pending"
-    | "api_quota";
+    | "api_quota"
+    | "api_capacity";
   severity: "warning" | "critical";
   device: string;
   detailCode: "low" | "recovery-only" | "exhausted" | null;
@@ -41,6 +42,8 @@ export interface OperationsData {
   unseen: number;
   monitor: MonitorStatus;
   deviceHealth: {
+    monitoringAdmitted?: boolean;
+    capacityWaiting?: boolean;
     device: string;
     attemptedAt: string | null;
     succeededAt: string | null;
@@ -105,6 +108,8 @@ export interface FirmwareIdentity {
   hmi: string | null;
 }
 export interface ControllerStatus {
+  capacity?: ApiCapacity | null;
+  nextPollAt?: string | null;
   apiConfigured: boolean;
   writesEnabled: boolean;
   control: {
@@ -138,7 +143,14 @@ export interface ControllerStatus {
     } | null;
     firmware?: (FirmwareIdentity & { collectedAt: string }) | null;
   };
-  mode: "setup" | "stopping" | "error" | "paused" | "active" | "read-only";
+  mode:
+    | "setup"
+    | "stopping"
+    | "error"
+    | "paused"
+    | "active"
+    | "read-only"
+    | "capacity";
   paused: boolean;
   manualTopup: boolean;
   topupExpiresAt: string | null;
@@ -289,6 +301,7 @@ export interface SettingsData {
     providerRemaining: number | null;
     providerCheckedAt: string | null;
     balanceAttemptedAt: string | null;
+    capacity?: ApiCapacity | null;
   } | null;
   profile: string;
   release: string;
@@ -313,6 +326,22 @@ export interface SettingsData {
   } | null;
   platformApiConfigured: boolean;
 }
+export interface ApiCapacityPlan {
+  fits: boolean;
+  planningLimit: number;
+  reservedAnnual: number;
+  monitorMs: number;
+  scheduledMs: number;
+  assessmentMs: number;
+}
+export interface ApiCapacity extends ApiCapacityPlan {
+  admitted: boolean;
+  controlAvailable: boolean;
+  monitoringWorkspaces: number;
+  controlWorkspaces: number;
+  waitingWorkspaces: number;
+  activation?: ApiCapacityPlan | null;
+}
 export interface ActivityData {
   items: Command[];
   hasMore: boolean;
@@ -321,6 +350,8 @@ export interface ActivityData {
 export type Action =
   | "refresh"
   | "verify"
+  | "disable_controls"
+  | "retry_capacity"
   | "enable_controls"
   | "topup"
   | "stop"

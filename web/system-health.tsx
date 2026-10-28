@@ -93,6 +93,11 @@ export default function SystemHealthPage(): ReactNode {
             </Notice>
           )}
           <Panel title={tr("Monitoring status")} className="health-facts">
+            {data.deviceHealth?.capacityWaiting && (
+              <Notice>
+                {tr("Monitoring is waiting for shared API capacity")}
+              </Notice>
+            )}
             <dl className="command-facts">
               <div>
                 <dt>{tr("Last operational check")}</dt>

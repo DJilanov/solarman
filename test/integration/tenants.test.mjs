@@ -14,6 +14,7 @@ import { TenantRuntime } from "../../src/tenant-runtime.mjs";
 import { decide } from "../../src/controller.mjs";
 import { providerPayload } from "../fixtures/provider.mjs";
 import { ApiBudget, ApiBudgetError, apiAppKey } from "../../src/api-budget.mjs";
+import { ApiCapacityError } from "../../src/api-capacity.mjs";
 import { ControlJournal } from "../../src/control-journal.mjs";
 import { parseFrame, frame } from "../../src/modbus.mjs";
 import { Operations } from "../../src/operations.mjs";
@@ -406,7 +407,9 @@ async function controlFixture(writes = false) {
       },
       reserveRequest: async () => {},
       budget: new ApiBudget(pool, {}),
-      monitorPollMs: (runtime) => runtime.monitorPollMs,
+      monitorPollMs: (runtime) =>
+        runtime.hub.budget.capacityFor(runtime.appKey, runtime.tenantId)
+          ?.monitorMs ?? runtime.monitorPollMs,
       runLimited: async (operation) => operation(),
     },
     ids.alpha.tenant,
@@ -2508,5 +2511,283 @@ test("public health distinguishes a delayed operational monitor without exposing
     assert.equal((await fetch(`${origin}/healthz`)).status, 200);
   } finally {
     Object.assign(hub.operations, before);
+  }
+});
+
+async function capacityFixture(env = {}) {
+  const appKey = apiAppKey(`capacity-${randomUUID()}`);
+  await pool.query("INSERT INTO api_app_budgets (app_key) VALUES ($1)", [
+    appKey,
+  ]);
+  for (const owner of [ids.alpha, ids.beta]) {
+    await pool.query(
+      "UPDATE controller_state SET control_enabled=false,paused=true,manual_topup=false,topup_expires_at=null,verification=null WHERE tenant_id=$1",
+      [owner.tenant],
+    );
+    await pool.query(
+      `UPDATE solarman_accounts SET api_app_key=$2,monitoring_admitted=false,validated_at=now(),
+      device_sn=$3,discovered_devices=$4 WHERE tenant_id=$1`,
+      [
+        owner.tenant,
+        appKey,
+        owner.device,
+        JSON.stringify([{ deviceSn: owner.device }]),
+      ],
+    );
+  }
+  // Separate instances exercise the database lock rather than the local task queue.
+  return {
+    appKey,
+    budgets: [new ApiBudget(pool, env), new ApiBudget(pool, env)],
+  };
+}
+
+test("concurrent monitoring admission cannot overbook a shared App ID and retries require no device access", async () => {
+  const { appKey, budgets } = await capacityFixture({
+    SOLARMAN_API_CALL_LIMIT: "30000",
+  });
+  const owners = [ids.alpha, ids.beta];
+  const admissions = await Promise.all(
+    owners.map((owner, index) =>
+      budgets[index].register(appKey, owner.tenant, owner.account, {
+        ready: true,
+      }),
+    ),
+  );
+  assert.equal(admissions.filter((result) => result.admitted).length, 1);
+  const winner = admissions.findIndex((result) => result.admitted);
+  const waiting = 1 - winner;
+  const stored = (
+    await pool.query(
+      "SELECT monitoring_admitted,device_sn,discovered_devices FROM solarman_accounts WHERE id=$1",
+      [owners[waiting].account],
+    )
+  ).rows[0];
+  assert.equal(stored.monitoring_admitted, false);
+  assert.equal(stored.device_sn, owners[waiting].device);
+  assert.equal(stored.discovered_devices[0].deviceSn, owners[waiting].device);
+  assert.equal(
+    (
+      await budgets[winner].register(
+        appKey,
+        owners[winner].tenant,
+        owners[winner].account,
+        { ready: false },
+      )
+    ).admitted,
+    false,
+  );
+  assert.equal(
+    (
+      await budgets[waiting].register(
+        appKey,
+        owners[waiting].tenant,
+        owners[waiting].account,
+        { ready: true },
+      )
+    ).admitted,
+    true,
+  );
+  const dto = budgets[waiting].capacityFor(appKey, owners[waiting].tenant);
+  assert.equal(dto.monitoringWorkspaces, 1);
+  assert.equal(dto.admitted, true);
+  assert.equal(dto.controlAvailable, false);
+  const serialized = JSON.stringify(dto);
+  for (const owner of owners) {
+    assert.equal(serialized.includes(owner.tenant), false);
+    assert.equal(serialized.includes(owner.account), false);
+    assert.equal(serialized.includes(owner.device), false);
+  }
+  assert.equal(serialized.includes(appKey), false);
+});
+
+test("concurrent control activation reserves paused control capacity and a separate App ID remains independent", async () => {
+  const { appKey, budgets } = await capacityFixture();
+  const owners = [ids.alpha, ids.beta];
+  for (const [index, owner] of owners.entries())
+    await budgets[index].register(appKey, owner.tenant, owner.account, {
+      ready: true,
+    });
+  const requests = await Promise.all(
+    owners.map(async (owner) => ({
+      appKey,
+      tenantId: owner.tenant,
+      accountId: owner.account,
+      device: owner.device,
+      epoch: (
+        await pool.query(
+          "SELECT control_epoch::text AS epoch FROM controller_state WHERE tenant_id=$1",
+          [owner.tenant],
+        )
+      ).rows[0].epoch,
+    })),
+  );
+  const result = await Promise.allSettled(
+    requests.map((request, index) => budgets[index].enableControl(request)),
+  );
+  assert.equal(
+    result.filter((item) => item.status === "fulfilled" && item.value).length,
+    1,
+  );
+  const rejected = result.find((item) => item.status === "rejected");
+  assert.ok(rejected.reason instanceof ApiCapacityError);
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::integer AS n FROM controller_state WHERE tenant_id=ANY($1::uuid[]) AND control_enabled AND paused",
+        [owners.map((owner) => owner.tenant)],
+      )
+    ).rows[0].n,
+    1,
+  );
+  const waiting = result.findIndex((item) => item.status === "rejected");
+  const isolated = apiAppKey(`separate-${randomUUID()}`);
+  assert.equal(
+    (
+      await budgets[waiting].register(
+        isolated,
+        owners[waiting].tenant,
+        owners[waiting].account,
+        { ready: true },
+      )
+    ).admitted,
+    true,
+  );
+  assert.equal(
+    await budgets[waiting].enableControl({
+      ...requests[waiting],
+      appKey: isolated,
+    }),
+    true,
+  );
+  // A committed Stop epoch must still prevent a delayed activation.
+  await pool.query(
+    "UPDATE controller_state SET control_enabled=false,control_epoch=control_epoch+1 WHERE tenant_id=$1",
+    [owners[waiting].tenant],
+  );
+  assert.equal(
+    await budgets[waiting].enableControl({
+      ...requests[waiting],
+      appKey: isolated,
+    }),
+    false,
+  );
+});
+
+test("a capacity-waiting runtime makes no device assessment and resumes monitoring without enabling control", async () => {
+  const { runtime, user, calls } = await controlFixture();
+  try {
+    runtime.hub.budget = new ApiBudget(pool, {
+      SOLARMAN_API_CALL_LIMIT: "10000",
+    });
+    await runtime.requestCapacity();
+    assert.equal(runtime.monitoringAdmitted, false);
+    assert.equal(runtime.projectedCalls(), 0);
+    const before = await runtime.health.initialize();
+    const result = await runtime.collect();
+    assert.equal(result.decision.reason, "monitoring_capacity_waiting");
+    const after = await runtime.health.initialize();
+    assert.deepEqual(after.attempted_at, before.attempted_at);
+    assert.deepEqual(after.succeeded_at, before.succeeded_at);
+    assert.deepEqual(calls, []);
+    runtime.hub.budget = new ApiBudget(pool, {});
+    assert.equal(
+      (await completeCommand(runtime, "retry_capacity", user)).status,
+      "succeeded",
+    );
+    assert.deepEqual(calls, []);
+    assert.equal(runtime.monitoringAdmitted, true);
+    assert.equal(runtime.projectedCalls(), 105120);
+    assert.equal(runtime.controlEnabled, false);
+    assert.equal(runtime.paused, true);
+    await runtime.collect();
+    assert.deepEqual(calls, ["provider-read"]);
+    assert.ok((await runtime.health.initialize()).succeeded_at);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("disabling control releases its reservation while failed cleanup survives restart and remains recoverable", async () => {
+  const { runtime, user, calls } = await armedFixture();
+  let restarted;
+  try {
+    await runtime.journal.prepare(206, [0, 25], null);
+    runtime.controller.disable = async () => {
+      throw new Error("Cleanup transport unavailable");
+    };
+    assert.equal(
+      (await completeCommand(runtime, "disable_controls", user)).status,
+      "failed",
+    );
+    assert.equal(runtime.controlEnabled, false);
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.journal.pending, true);
+    assert.equal(runtime.capacity().controlWorkspaces, 0);
+    assert.equal(runtime.readiness().canStop, true);
+    assert.equal(runtime.readiness().canStart, false);
+    const account = (
+      await pool.query("SELECT * FROM solarman_accounts WHERE tenant_id=$1", [
+        runtime.tenantId,
+      ])
+    ).rows[0];
+    restarted = new TenantRuntime(runtime.hub, runtime.tenantId, account);
+    await restarted.initialize();
+    assert.equal(restarted.journal.pending, true);
+    restarted.controller.disable = async () => {
+      calls.push("recovered-disable");
+      return 9;
+    };
+    assert.equal(
+      (await completeCommand(restarted, "stop", user)).status,
+      "succeeded",
+    );
+    assert.equal(restarted.journal.pending, false);
+    assert.equal(restarted.controlEnabled, false);
+    assert.equal(restarted.paused, true);
+    assert.equal(restarted.readiness().canStart, false);
+    assert.equal(
+      calls.filter((call) => call === "recovered-disable").length,
+      1,
+    );
+  } finally {
+    await restarted?.close();
+    await runtime.close();
+  }
+});
+
+test("startup with a smaller allowance revokes saved activation without discarding its cleanup binding", async () => {
+  const { runtime, user } = await armedFixture();
+  let restarted;
+  try {
+    await runtime.journal.prepare(206, [0, 25], null);
+    runtime.hub.budget = new ApiBudget(pool, {
+      SOLARMAN_API_CALL_LIMIT: "10000",
+    });
+    const account = (
+      await pool.query("SELECT * FROM solarman_accounts WHERE tenant_id=$1", [
+        runtime.tenantId,
+      ])
+    ).rows[0];
+    restarted = new TenantRuntime(runtime.hub, runtime.tenantId, account);
+    await restarted.initialize();
+    assert.equal(restarted.monitoringAdmitted, false);
+    assert.equal(restarted.controlEnabled, false);
+    assert.equal(restarted.paused, true);
+    assert.equal(restarted.manualTopup, false);
+    assert.equal(restarted.journal.pending, true);
+    assert.equal(restarted.journal.context.device, runtime.device);
+    assert.equal(restarted.readiness().canStop, true);
+    restarted.controller.disable = async () => 9;
+    assert.equal(
+      (await completeCommand(restarted, "stop", user)).status,
+      "succeeded",
+    );
+    assert.equal(restarted.journal.pending, false);
+    assert.equal(restarted.monitoringAdmitted, false);
+    assert.equal(restarted.controlEnabled, false);
+  } finally {
+    await restarted?.close();
+    await runtime.close();
   }
 });

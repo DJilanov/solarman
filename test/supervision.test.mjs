@@ -6,6 +6,18 @@ const reading = { soc: 40, pvW: 500, loadW: 800, gridW: 2250, batteryW: -1945 };
 const context = { owned: false, verified: true, now };
 const create = () => new Supervision({ auditMs: 3600000, retryMs: 900000 });
 
+test("manual diagnostics do not postpone a pending automatic reserve assessment", () => {
+  const state = create();
+  state.checked("battery_not_ready", now);
+  const due = state.nextDecisionAt;
+  state.checked("below_reserve", now + 600000, false);
+  assert.equal(state.nextDecisionAt, due);
+  assert.equal(
+    state.plan({ ...reading, batteryW: 0 }, { ...context, now: due }).native,
+    true,
+  );
+});
+
 test("cold starts, unverified settings and owned schedules require native checks", () => {
   const state = create();
   assert.equal(state.plan(reading, context).native, true);

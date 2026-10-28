@@ -19,12 +19,20 @@ export class AccountHub {
     this.active = 0;
     this.reloads = new Map();
     this.accountUpdates = new Set();
-    this.budget = new ApiBudget(pool, env);
+    this.budget = new ApiBudget(pool, env, (/** @type {string} */ appKey) => {
+      for (const runtime of this.runtimes.values())
+        if (runtime.appKey === appKey) runtime.reschedulePolling();
+    });
     this.operations = new Operations(pool, this);
   }
 
   /** @param {TenantRuntime} runtime @returns {number} */
   monitorPollMs(runtime) {
+    const allocation = this.budget.capacityFor(
+      runtime.appKey,
+      runtime.tenantId,
+    );
+    if (allocation) return allocation.monitorMs;
     const group = [...this.runtimes.values()].filter(
       (candidate) =>
         candidate.appKey === runtime.appKey &&
@@ -61,7 +69,11 @@ export class AccountHub {
           !candidate.stopping,
       )
       .reduce((total, candidate) => total + candidate.projectedCalls(), 0);
-    return { ...usage, projected };
+    return {
+      ...usage,
+      projected,
+      capacity: runtime.capacity(),
+    };
   }
 
   async initialize() {
@@ -81,7 +93,13 @@ export class AccountHub {
     await this.pool.query(
       "UPDATE command_executions SET status='interrupted',message='Service restarted before completion could be confirmed',completed_at=now() WHERE status IN ('queued','running')",
     );
-    const tenants = await this.pool.query("SELECT id FROM tenants");
+    // The exclusive scheduler rebuilds admissions in creation order, including after a policy reduction.
+    await this.pool.query(
+      "UPDATE solarman_accounts SET monitoring_admitted=false WHERE monitoring_admitted",
+    );
+    const tenants = await this.pool.query(
+      "SELECT id FROM tenants ORDER BY created_at,id",
+    );
     for (const tenant of tenants.rows) await this.forTenant(tenant.id);
   }
 
@@ -148,7 +166,10 @@ export class AccountHub {
     const previous = this.runtimes.get(tenantId);
     if (previous) await previous.close();
     this.runtimes.delete(tenantId);
-    return this.forTenant(tenantId);
+    const next = await this.forTenant(tenantId);
+    if (previous?.appKey && previous.appKey !== next.appKey)
+      await this.budget.refreshCapacity(previous.appKey);
+    return next;
   }
 
   async accountInfo(tenantId) {

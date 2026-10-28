@@ -11,6 +11,7 @@ import type {
   OperationsData,
   Incident,
   BackupStatus,
+  ApiCapacity,
 } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
@@ -737,6 +738,184 @@ test("shared API budgets explain remaining capacity and recovery limits in both 
   ).toBe(false);
   await page.screenshot({
     path: "test-results/api-budget-mobile-bg.png",
+    fullPage: true,
+  });
+});
+
+test("capacity admission explains waiting, retries without premature success and exposes control revocation in Bulgarian on mobile", async ({
+  page,
+}) => {
+  await signIn(page);
+  const settings = (await (
+    await page.request.get("/api/settings")
+  ).json()) as SettingsData;
+  const overview = (await (
+    await page.request.get("/api/overview")
+  ).json()) as OverviewData;
+  const capacity: ApiCapacity = {
+    fits: true,
+    planningLimit: 188000,
+    reservedAnnual: 175200,
+    monitorMs: 1800000,
+    scheduledMs: 900000,
+    assessmentMs: 900000,
+    admitted: false,
+    controlAvailable: false,
+    monitoringWorkspaces: 10,
+    controlWorkspaces: 0,
+    waitingWorkspaces: 1,
+    activation: null,
+  };
+  settings.budget = {
+    limit: 200000,
+    reserve: 2000,
+    tracked: 2000,
+    remaining: 198000,
+    routineRemaining: 196000,
+    state: "available",
+    workspaces: 11,
+    projected: 175200,
+    providerRemaining: null,
+    providerCheckedAt: null,
+    balanceAttemptedAt: null,
+    capacity,
+  };
+  settings.controller.deviceSelected = true;
+  overview.controller.capacity = capacity;
+  overview.controller.mode = "capacity";
+  overview.controller.error = null;
+  overview.controller.setupError = null;
+  overview.controller.control.workspaceEnabled = false;
+  overview.controller.control.canStart = false;
+  overview.controller.control.canStop = true;
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({ json: settings }),
+  );
+  await page.route("**/api/overview", (route) =>
+    route.fulfill({ json: overview }),
+  );
+  const retryId = randomUUID();
+  const disableId = randomUUID();
+  let finished = false;
+  const actions: string[] = [];
+  await page.route("**/api/commands", (route) => {
+    const action = (route.request().postDataJSON() as { action: string })
+      .action;
+    actions.push(action);
+    return route.fulfill({
+      status: 202,
+      json: {
+        id: action === "retry_capacity" ? retryId : disableId,
+        status: "queued",
+        action,
+      },
+    });
+  });
+  await page.route(`**/api/commands/${retryId}`, (route) => {
+    if (finished) {
+      Object.assign(capacity, {
+        admitted: true,
+        controlAvailable: true,
+        monitoringWorkspaces: 1,
+        waitingWorkspaces: 0,
+        monitorMs: 300000,
+        reservedAnnual: 105120,
+        activation: {
+          fits: true,
+          planningLimit: 188000,
+          reservedAnnual: 187245,
+          monitorMs: 300000,
+          scheduledMs: 1020000,
+          assessmentMs: 1920000,
+        },
+      });
+    }
+    return route.fulfill({
+      json: {
+        id: retryId,
+        status: finished ? "succeeded" : "running",
+        action: "retry_capacity",
+        message: finished ? "Monitoring capacity is available" : null,
+      },
+    });
+  });
+  await page.route(`**/api/commands/${disableId}`, (route) => {
+    overview.controller.control.workspaceEnabled = false;
+    return route.fulfill({
+      json: {
+        id: disableId,
+        status: "succeeded",
+        action: "disable_controls",
+        message: "Workspace control disabled; scheduled permission cleared",
+      },
+    });
+  });
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(page.locator(".capacity-details")).toHaveAttribute("open", "");
+  await expect(page.locator(".capacity-details")).toContainText(
+    "no capacity slot",
+  );
+  await page
+    .getByRole("button", { name: "Retry monitoring capacity", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", {
+      name: "Retry monitoring capacity",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await expect(page.locator(".capacity-details")).toContainText(
+    "no capacity slot",
+  );
+  expect(actions).toEqual(["retry_capacity"]);
+  finished = true;
+  await expect(page.locator(".toast")).toContainText(
+    "Monitoring capacity is available",
+  );
+  await expect(page.locator(".capacity-details")).not.toHaveAttribute(
+    "open",
+    "",
+  );
+  await page.locator(".capacity-details summary").click();
+  await expect(page.locator(".capacity-details")).toContainText(
+    "scheduled checks 17 minutes",
+  );
+  await expect(page.locator(".capacity-details")).toContainText(
+    "reserve assessments 32 minutes",
+  );
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(page.locator(".capacity-details")).toContainText(
+    "Паузата запазва резервацията",
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+  Object.assign(overview.controller, {
+    mode: "error",
+    error: "Device settings need attention",
+  });
+  overview.controller.control.workspaceEnabled = true;
+  await page.getByRole("link", { name: "Управление", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Изключи управлението", exact: true })
+    .click();
+  await expect(page.locator(".toast")).toContainText(
+    "Управлението за пространството е изключено",
+  );
+  expect(actions).toEqual(["retry_capacity", "disable_controls"]);
+  await expect(
+    page.getByRole("button", { name: "Разреши управлението", exact: true }),
+  ).toBeDisabled();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+  await page.screenshot({
+    path: "test-results/api-capacity-mobile-bg.png",
     fullPage: true,
   });
 });

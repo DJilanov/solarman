@@ -681,6 +681,8 @@ export function createApp({ pool, hub, config }) {
             "refresh",
             "verify",
             "enable_controls",
+            "disable_controls",
+            "retry_capacity",
             "topup",
             "stop",
             "pause",

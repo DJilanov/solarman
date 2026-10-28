@@ -62,6 +62,7 @@ import type {
 import { WriteHistory } from "./write-history";
 import { IncidentSummary } from "./incident-summary";
 import { BackupNotice } from "./backup-health";
+import { CapacityNotice, CapacityDetails } from "./api-capacity";
 
 export function Overview(): ReactNode {
   const {
@@ -118,6 +119,7 @@ export function Overview(): ReactNode {
       {error && <Notice tone="danger">{error}</Notice>}
       <SetupNotice controller={controller} />
       {session.user.platformAdmin && <BackupNotice status={data.backup} />}
+      <CapacityNotice capacity={controller.capacity} />
       <IncidentSummary
         alerts={data.alerts}
         timezone={session.tenant.timezone}
@@ -611,6 +613,7 @@ export function Controls(): ReactNode {
         )}
       />
       <SetupNotice controller={controller} />
+      <CapacityNotice capacity={controller.capacity} />
       <Panel
         className="readiness-panel"
         title={tr("Control readiness")}
@@ -772,6 +775,18 @@ export function Controls(): ReactNode {
               <LockKeyhole size={17} /> {tr("Enable workspace control")}
             </button>
           )}
+          {controller.control.workspaceEnabled && (
+            <button
+              className="button secondary"
+              disabled={submitting || !controller.control.canStop}
+              onClick={() => {
+                void command("disable_controls");
+              }}
+            >
+              <LockKeyhole size={17} />
+              {tr("Disable workspace control")}
+            </button>
+          )}
         </div>
         {controller.control.reasons.length > 0 && (
           <ul className="readiness-reasons">
@@ -902,6 +917,14 @@ export function Controls(): ReactNode {
               <div>
                 <span>{tr("Last native policy check")}</span>
                 <strong>{age(controller.supervision.lastNativeAt)}</strong>
+              </div>
+            )}
+            {controller.nextPollAt && (
+              <div>
+                <span>{tr("Next assessment")}</span>
+                <strong>
+                  {when(controller.nextPollAt, controller.timezone, "medium")}
+                </strong>
               </div>
             )}
           </div>
@@ -1171,7 +1194,7 @@ export function ActivityPage(): ReactNode {
 }
 
 export function SettingsPage(): ReactNode {
-  const { session, refreshSession } = useWorkspace();
+  const { session, refreshSession, command, busy } = useWorkspace();
   const { data, error, loading, reload } = useData<SettingsData>("/settings");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -1563,6 +1586,17 @@ export function SettingsPage(): ReactNode {
         >
           {data.budget ? (
             <>
+              {data.budget.capacity && (
+                <CapacityDetails
+                  capacity={data.budget.capacity}
+                  disabled={
+                    Boolean(pending) || busy || !data.controller.deviceSelected
+                  }
+                  onRetry={() => {
+                    void command("retry_capacity").then(reload);
+                  }}
+                />
+              )}
               <p className="fine-print">
                 {tr("Connected workspaces sharing this budget: {{count}}", {
                   count: data.budget.workspaces,

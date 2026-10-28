@@ -145,6 +145,7 @@ export function StatusBadge({ status }: { status: string }): ReactNode {
         interrupted: "Unconfirmed",
         connected: "Connected",
         pending: "Pending",
+        capacity: "Waiting for capacity",
       } as Record<string, string>
     )[status] ?? status;
   return (
@@ -446,6 +447,8 @@ export function commandLabel(action: string): string {
     refresh: "Refresh diagnostics",
     verify: "Verify device settings",
     enable_controls: "Enable workspace control",
+    disable_controls: "Disable workspace control",
+    retry_capacity: "Retry monitoring capacity",
     topup: "Top up to 50%",
     stop: "Stop scheduled top-ups",
     pause: "Pause automation",

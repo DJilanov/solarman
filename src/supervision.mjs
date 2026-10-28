@@ -73,10 +73,10 @@ export class Supervision {
       : { native: false, reason: this.lastDecision ?? "topup_waiting" };
   }
 
-  /** @param {string | null} reason @param {number} [now] @returns {void} */
-  checked(reason, now = Date.now()) {
+  /** @param {string | null} reason @param {number} [now] @param {boolean} [assessment] @returns {void} */
+  checked(reason, now = Date.now(), assessment = true) {
     this.lastNativeAt = now;
-    this.nextDecisionAt = now + this.options.retryMs;
+    if (assessment) this.nextDecisionAt = now + this.options.retryMs;
     this.lastDecision = reason;
     this.checkedIssue = this.issue?.key ?? null;
   }

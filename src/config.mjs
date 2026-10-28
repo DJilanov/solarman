@@ -1,3 +1,39 @@
+/** @param {Record<string, string | undefined>} env @param {string} name @param {number} fallback @param {number} min @param {number} max @returns {number} */
+function configurationInteger(env, name, fallback, min, max) {
+  const text = env[name] ?? String(fallback);
+  if (!/^\d+$/.test(text)) throw new Error(`Invalid integer: ${name}`);
+  const value = Number(text);
+  if (!Number.isSafeInteger(value) || value < min || value > max)
+    throw new Error(`${name} must be between ${min} and ${max}`);
+  return value;
+}
+
+/** @param {Record<string, string | undefined>} env @returns {{pollMs:number,telemetryPollMs:number,controlAuditMs:number,chargeWindowMinutes:number}} */
+export function pollingConfig(env) {
+  const pollSeconds = configurationInteger(env, "POLL_SECONDS", 900, 30, 1800);
+  const chargeWindowMinutes = configurationInteger(
+    env,
+    "CHARGE_WINDOW_MINUTES",
+    25,
+    5,
+    45,
+  );
+  if (chargeWindowMinutes * 60 <= pollSeconds + 180)
+    throw new Error(
+      "CHARGE_WINDOW_MINUTES must exceed POLL_SECONDS by more than 180 seconds",
+    );
+  return {
+    pollMs: pollSeconds * 1000,
+    chargeWindowMinutes,
+    telemetryPollMs:
+      configurationInteger(env, "TELEMETRY_POLL_SECONDS", 300, 300, 1800) *
+      1000,
+    controlAuditMs:
+      configurationInteger(env, "CONTROL_AUDIT_SECONDS", 3600, 900, 21600) *
+      1000,
+  };
+}
+
 /** @param {NodeJS.ProcessEnv | Record<string, string | undefined>} env */
 export function loadConfig(env, { deviceRequired = true } = {}) {
   const required = (name) => {
@@ -5,15 +41,8 @@ export function loadConfig(env, { deviceRequired = true } = {}) {
     if (!value) throw new Error(`Missing environment variable: ${name}`);
     return value;
   };
-  const integer = (name, fallback, min, max) => {
-    const text = env[name] ?? String(fallback);
-    if (!/^\d+$/.test(text)) throw new Error(`Invalid integer: ${name}`);
-    const value = Number(text);
-    if (!Number.isSafeInteger(value) || value < min || value > max) {
-      throw new Error(`${name} must be between ${min} and ${max}`);
-    }
-    return value;
-  };
+  const integer = (name, fallback, min, max) =>
+    configurationInteger(env, name, fallback, min, max);
   const providedHash = env.SOLARMAN_PASSWORD_SHA256?.trim();
   const password = env.SOLARMAN_PASSWORD;
   if (providedHash && password)
@@ -64,13 +93,6 @@ export function loadConfig(env, { deviceRequired = true } = {}) {
     throw new Error("WRITES_ENABLED must be true or false");
   const timezone = env.INVERTER_TIMEZONE ?? "Europe/Sofia";
   new Intl.DateTimeFormat("en-GB", { timeZone: timezone }).format();
-  const pollSeconds = integer("POLL_SECONDS", 900, 30, 1800);
-  const chargeWindowMinutes = integer("CHARGE_WINDOW_MINUTES", 25, 5, 45);
-  if (chargeWindowMinutes * 60 <= pollSeconds + 180) {
-    throw new Error(
-      "CHARGE_WINDOW_MINUTES must exceed POLL_SECONDS by more than 180 seconds",
-    );
-  }
   return {
     appId: required("SOLARMAN_APP_ID"),
     appSecret: required("SOLARMAN_APP_SECRET"),
@@ -84,12 +106,9 @@ export function loadConfig(env, { deviceRequired = true } = {}) {
     host: env.LISTEN_HOST ?? "0.0.0.0",
     port: integer("PORT", 3000, 1, 65535),
     writesEnabled: writes === "true",
-    pollMs: pollSeconds * 1000,
-    telemetryPollMs: integer("TELEMETRY_POLL_SECONDS", 300, 300, 1800) * 1000,
-    controlAuditMs: integer("CONTROL_AUDIT_SECONDS", 3600, 900, 21600) * 1000,
+    ...pollingConfig(env),
     commandTimeoutMs: integer("COMMAND_TIMEOUT_SECONDS", 30, 10, 60) * 1000,
     timezone,
-    chargeWindowMinutes,
   };
 }
 import { createHash } from "node:crypto";

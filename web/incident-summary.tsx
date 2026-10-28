@@ -14,6 +14,7 @@ export function incidentTitle(item: Incident): string {
     control_fault: "A control check needs attention",
     cleanup_pending: "Scheduled charging cleanup is unconfirmed",
     api_quota: "API capacity needs attention",
+    api_capacity: "Monitoring is waiting for API capacity",
   };
   return tr(labels[item.kind]);
 }
@@ -38,6 +39,8 @@ export function incidentDescription(item: Incident): string {
       "Refresh native diagnostics and review the control settings before resuming. Monitoring alone does not clear this fault.",
     cleanup_pending:
       "The service has not confirmed scheduled charging permission off. Check Controls and the inverter; acknowledging this alert does not stop charging.",
+    api_capacity:
+      "Regular polling is waiting for a shared capacity slot. Account repair, manual diagnostics and scheduled-charge cleanup remain available.",
   };
   return tr(descriptions[item.kind]);
 }

@@ -459,6 +459,7 @@ strong {
   background: #1d2c25;
   border-color: #304b39;
 }
+.badge.capacity,
 .badge.setup,
 .badge.pending,
 .badge.interrupted {
@@ -2983,4 +2984,24 @@ html[lang="bg"] .segmented button {
 }
 .health-filter select {
   min-width: 150px;
+}
+
+.capacity-details {
+  margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.capacity-details summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+}
+.capacity-details summary span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.capacity-details[open] summary {
+  margin-bottom: 18px;
 }

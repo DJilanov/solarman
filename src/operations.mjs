@@ -84,9 +84,18 @@ export class DeviceHealth {
 /** @param {object} row @param {number} now @param {number} pollMs @returns {object[]} */
 export function deviceIssues(row, now, pollMs) {
   const issues = [];
+  const capacityWaiting =
+    row.monitoring_eligible === true && row.monitoring_admitted === false;
+  if (capacityWaiting)
+    issues.push({
+      kind: "api_capacity",
+      severity: "warning",
+      at: new Date(now),
+    });
   const source = row.uploaded_at ?? row.created_at;
   const upload = new Date(source).getTime();
   if (
+    !capacityWaiting &&
     source &&
     Number.isFinite(upload) &&
     now - upload > pollMs + UPLOAD_GRACE_MS
@@ -106,7 +115,7 @@ export function deviceIssues(row, now, pollMs) {
       severity: "critical",
       at: row.reported_at ?? row.created_at,
     });
-  if (row.failures >= 3)
+  if (!capacityWaiting && row.failures >= 3)
     issues.push({
       kind: "request_failures",
       severity: "warning",
@@ -206,7 +215,7 @@ export class Operations {
     const now = Date.now();
     const [accounts, debts, tenants] = await Promise.all([
       this.pool
-        .query(`SELECT a.tenant_id,a.id AS account_id,a.device_sn AS device,h.created_at,h.attempted_at,h.succeeded_at,h.failed_at,h.uploaded_at,h.reported_at,h.device_state,h.failures,h.control_fault,h.control_fault_at
+        .query(`SELECT a.tenant_id,a.id AS account_id,a.device_sn AS device,a.monitoring_admitted,h.created_at,h.attempted_at,h.succeeded_at,h.failed_at,h.uploaded_at,h.reported_at,h.device_state,h.failures,h.control_fault,h.control_fault_at
         FROM solarman_accounts a LEFT JOIN device_health h ON h.tenant_id=a.tenant_id AND h.account_id=a.id AND h.device=a.device_sn WHERE a.device_sn IS NOT NULL`),
       this.pool.query(
         "SELECT tenant_id,account_id,device,updated_at FROM device_control_state WHERE state IN ('uncertain','cleanup-required') AND updated_at<now()-interval '2 minutes'",
@@ -224,7 +233,14 @@ export class Operations {
       group.scopes.add(scope);
       const runtime = this.hub.runtimes.get(row.tenant_id);
       const pollMs = runtime?.pollMs ?? 300000;
-      for (const issue of deviceIssues(row, now, pollMs))
+      for (const issue of deviceIssues(
+        {
+          ...row,
+          monitoring_eligible: Boolean(runtime?.ready && runtime.client),
+        },
+        now,
+        pollMs,
+      ))
         group.desired.push({ ...row, ...issue, binding: scope });
       if (runtime?.appKey) {
         const quotaScope = `api:${runtime.appKey}:${row.account_id}`;
@@ -366,13 +382,19 @@ export class Operations {
   /** @param {string} tenantId @returns {Promise<object | null>} */
   async deviceStatus(tenantId) {
     const result = await this.pool.query(
-      `SELECT h.* FROM device_health h JOIN solarman_accounts a ON a.tenant_id=h.tenant_id AND a.id=h.account_id AND a.device_sn=h.device WHERE h.tenant_id=$1`,
+      `SELECT h.*,a.monitoring_admitted FROM device_health h JOIN solarman_accounts a ON a.tenant_id=h.tenant_id AND a.id=h.account_id AND a.device_sn=h.device WHERE h.tenant_id=$1`,
       [tenantId],
     );
     const row = result.rows[0];
     if (!row) return null;
     return {
       device: row.device,
+      monitoringAdmitted: row.monitoring_admitted,
+      capacityWaiting: Boolean(
+        this.hub.runtimes.get(tenantId)?.ready &&
+          this.hub.runtimes.get(tenantId)?.client &&
+          row.monitoring_admitted === false,
+      ),
       attemptedAt: row.attempted_at,
       succeededAt: row.succeeded_at,
       failedAt: row.failed_at,

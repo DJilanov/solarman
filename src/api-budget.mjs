@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { pollingConfig } from "./config.mjs";
+import { allocateCapacity, ApiCapacityError } from "./api-capacity.mjs";
 
 export const YEAR_MS = 365 * 86400_000;
 const BALANCE_INTERVAL_MS = 86400_000;
@@ -74,42 +76,245 @@ export class ApiBudgetError extends Error {
 }
 
 export class ApiBudget {
-  /** @param {import('pg').Pool} pool @param {Record<string, string | undefined>} env */
-  constructor(pool, env) {
+  /** @param {import('pg').Pool} pool @param {Record<string, string | undefined>} env @param {(appKey:string)=>void} [capacityChanged] */
+  constructor(pool, env, capacityChanged = () => {}) {
     this.pool = pool;
     this.policy = budgetConfig(env);
     this.syncs = new Map();
+    this.cadence = pollingConfig(env);
+    this.capacityPlans = new Map();
+    this.capacityTasks = new Map();
+    this.capacityChanged = capacityChanged;
   }
 
-  /** @param {string} appKey @param {string} tenantId @param {string} accountId @returns {Promise<void>} */
-  async register(appKey, tenantId, accountId) {
-    const client = await this.pool.connect();
+  /** @param {string} appKey @param {object} snapshot @returns {void} */
+  publishCapacity(appKey, snapshot) {
+    this.capacityPlans.set(appKey, snapshot);
+    this.capacityChanged(appKey);
+  }
+
+  /** @template T @param {string} key @param {() => Promise<T>} operation @returns {Promise<T>} */
+  async capacityTask(key, operation) {
+    const previous = this.capacityTasks.get(key) ?? Promise.resolve();
+    const task = previous.catch(() => {}).then(operation);
+    this.capacityTasks.set(key, task);
     try {
-      await client.query("BEGIN");
-      await client.query(
-        "INSERT INTO api_app_budgets (app_key) VALUES ($1) ON CONFLICT DO NOTHING",
-        [appKey],
-      );
-      await client.query(
-        "SELECT app_key FROM api_app_budgets WHERE app_key=$1 FOR UPDATE",
-        [appKey],
-      );
-      await client.query(
-        "UPDATE solarman_accounts SET api_app_key=$3 WHERE tenant_id=$1 AND id=$2",
-        [tenantId, accountId, appKey],
-      );
-      // Legacy requests have no App ID provenance; charge them conservatively to the current binding once.
-      await client.query(
-        "UPDATE api_requests SET app_key=$3 WHERE tenant_id=$1 AND account_id=$2 AND app_key IS NULL",
-        [tenantId, accountId, appKey],
-      );
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
+      return await task;
     } finally {
-      client.release();
+      if (this.capacityTasks.get(key) === task) this.capacityTasks.delete(key);
     }
+  }
+
+  /** @param {import('pg').PoolClient} client @param {string} appKey @returns {Promise<object>} */
+  async readCapacity(client, appKey) {
+    const members = (
+      await client.query(
+        `SELECT a.id,a.tenant_id,a.monitoring_admitted,c.control_enabled
+      FROM solarman_accounts a JOIN controller_state c ON c.tenant_id=a.tenant_id
+      WHERE a.api_app_key=$1 AND a.validated_at IS NOT NULL AND a.device_sn IS NOT NULL
+      AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.discovered_devices) d WHERE d->>'deviceSn'=a.device_sn)`,
+        [appKey],
+      )
+    ).rows;
+    return {
+      members,
+      plan: this.planCapacity(members.filter((row) => row.monitoring_admitted)),
+    };
+  }
+
+  /** @param {object[]} members @returns {ReturnType<typeof allocateCapacity>} */
+  planCapacity(members) {
+    const controls = members.filter((row) => row.control_enabled).length;
+    return allocateCapacity(
+      { controls, monitors: members.length - controls },
+      this.policy,
+      this.cadence,
+    );
+  }
+
+  /** @param {string} appKey @param {string} tenantId @returns {object | null} */
+  capacityFor(appKey, tenantId) {
+    const snapshot = this.capacityPlans.get(appKey);
+    if (!snapshot) return null;
+    const admitted = snapshot.members.filter((row) => row.monitoring_admitted);
+    const current = admitted.find((row) => row.tenant_id === tenantId);
+    const activation = current
+      ? this.planCapacity(
+          admitted.map((row) =>
+            row === current ? { ...row, control_enabled: true } : row,
+          ),
+        )
+      : null;
+    const controlAvailable = Boolean(activation?.fits);
+    return {
+      ...snapshot.plan,
+      admitted: Boolean(current),
+      controlAvailable,
+      monitoringWorkspaces: admitted.length,
+      controlWorkspaces: admitted.filter((row) => row.control_enabled).length,
+      waitingWorkspaces: snapshot.members.length - admitted.length,
+      activation,
+    };
+  }
+
+  /** @param {string} appKey @returns {Promise<void>} */
+  async refreshCapacity(appKey) {
+    await this.capacityTask(appKey, async () => {
+      const client = await this.pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "SELECT app_key FROM api_app_budgets WHERE app_key=$1 FOR UPDATE",
+          [appKey],
+        );
+        const snapshot = await this.readCapacity(client, appKey);
+        await client.query("COMMIT");
+        this.publishCapacity(appKey, snapshot);
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+  }
+
+  /** @param {{appKey:string,tenantId:string,accountId:string,device:string,epoch:string}} request @returns {Promise<boolean>} */
+  async enableControl(request) {
+    return this.capacityTask(request.appKey, async () => {
+      const client = await this.pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "SELECT app_key FROM api_app_budgets WHERE app_key=$1 FOR UPDATE",
+          [request.appKey],
+        );
+        const snapshot = await this.readCapacity(client, request.appKey);
+        const current = snapshot.members.find(
+          (row) =>
+            row.id === request.accountId &&
+            row.tenant_id === request.tenantId &&
+            row.monitoring_admitted,
+        );
+        if (
+          !current ||
+          !this.planCapacity(
+            snapshot.members
+              .filter((row) => row.monitoring_admitted)
+              .map((row) =>
+                row === current ? { ...row, control_enabled: true } : row,
+              ),
+          ).fits
+        )
+          throw new ApiCapacityError();
+        const updated = await client.query(
+          `UPDATE controller_state SET control_enabled=true,paused=true,manual_topup=false,topup_expires_at=null,updated_at=now()
+          WHERE tenant_id=$1 AND control_epoch=$2 AND EXISTS (SELECT 1 FROM solarman_accounts a WHERE a.tenant_id=$1 AND a.id=$3 AND a.device_sn=$4 AND a.api_app_key=$5 AND a.monitoring_admitted)
+          RETURNING tenant_id`,
+          [
+            request.tenantId,
+            request.epoch,
+            request.accountId,
+            request.device,
+            request.appKey,
+          ],
+        );
+        const result = await this.readCapacity(client, request.appKey);
+        await client.query("COMMIT");
+        this.publishCapacity(request.appKey, result);
+        return Boolean(updated.rowCount);
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+  }
+
+  /** @param {string} appKey @param {string} tenantId @param {string} accountId @param {{ready?:boolean}} [options] @returns {Promise<{admitted:boolean,revokeControl:boolean}>} */
+  async register(appKey, tenantId, accountId, { ready } = {}) {
+    return this.capacityTask(appKey, async () => {
+      const client = await this.pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "INSERT INTO api_app_budgets (app_key) VALUES ($1) ON CONFLICT DO NOTHING",
+          [appKey],
+        );
+        await client.query(
+          "SELECT app_key FROM api_app_budgets WHERE app_key=$1 FOR UPDATE",
+          [appKey],
+        );
+        await client.query(
+          "UPDATE solarman_accounts SET api_app_key=$3 WHERE tenant_id=$1 AND id=$2",
+          [tenantId, accountId, appKey],
+        );
+        const snapshot = await this.readCapacity(client, appKey);
+        const current = snapshot.members.find(
+          (row) => row.id === accountId && row.tenant_id === tenantId,
+        );
+        const others = snapshot.members.filter(
+          (row) => row.monitoring_admitted && row.id !== accountId,
+        );
+        let admitted = Boolean(current?.monitoring_admitted);
+        let revokeControl = false;
+        if (ready !== undefined) {
+          admitted = Boolean(
+            ready &&
+              current &&
+              this.planCapacity([
+                ...others,
+                { ...current, monitoring_admitted: true },
+              ]).fits,
+          );
+          const control = (
+            await client.query(
+              "SELECT control_enabled FROM controller_state WHERE tenant_id=$1",
+              [tenantId],
+            )
+          ).rows[0];
+          revokeControl = Boolean(control?.control_enabled && !admitted);
+          if (revokeControl)
+            admitted = Boolean(
+              ready &&
+                current &&
+                this.planCapacity([
+                  ...others,
+                  {
+                    ...current,
+                    monitoring_admitted: true,
+                    control_enabled: false,
+                  },
+                ]).fits,
+            );
+          await client.query(
+            "UPDATE solarman_accounts SET monitoring_admitted=$3 WHERE tenant_id=$1 AND id=$2",
+            [tenantId, accountId, admitted],
+          );
+          if (!admitted || revokeControl)
+            await client.query(
+              `UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,
+          control_epoch=control_epoch+CASE WHEN NOT paused OR manual_topup THEN 1 ELSE 0 END,updated_at=now() WHERE tenant_id=$1`,
+              [tenantId],
+            );
+        }
+        // Legacy requests have no App ID provenance; charge them conservatively to the current binding once.
+        await client.query(
+          "UPDATE api_requests SET app_key=$3 WHERE tenant_id=$1 AND account_id=$2 AND app_key IS NULL",
+          [tenantId, accountId, appKey],
+        );
+        const result = await this.readCapacity(client, appKey);
+        await client.query("COMMIT");
+        this.publishCapacity(appKey, result);
+        return { admitted, revokeControl };
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
   }
 
   /** @param {{appKey: string, tenantId: string, accountId: string, kind: string, purpose: 'routine' | 'recovery' | 'balance'}} request @returns {Promise<void>} */

@@ -355,7 +355,11 @@ function Dashboard({
     [],
   );
   const command = async (action: Action): Promise<void> => {
-    if (submitting || (busy && !["stop", "pause"].includes(action))) return;
+    if (
+      submitting ||
+      (busy && !["stop", "pause", "disable_controls"].includes(action))
+    )
+      return;
     const current = ++generation.current;
     setBusy(true);
     setSubmitting(true);
@@ -373,7 +377,10 @@ function Dashboard({
       if (current !== generation.current) return;
       setSubmitting(false);
       setToast({
-        message: "Request queued. Waiting for the device result…",
+        message:
+          action === "retry_capacity"
+            ? "Checking polling capacity…"
+            : "Request queued. Waiting for the device result…",
         tone: "info",
       });
       for (

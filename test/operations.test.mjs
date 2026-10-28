@@ -3,6 +3,26 @@ import assert from "node:assert/strict";
 import { deviceIssues, Operations } from "../src/operations.mjs";
 import { AccountHub } from "../src/account-hub.mjs";
 
+test("capacity waiting does not manufacture stale or request-failure incidents and retains critical conditions", () => {
+  const issues = deviceIssues(
+    {
+      created_at: new Date(0),
+      uploaded_at: new Date(0),
+      failures: 3,
+      device_state: 2,
+      control_fault: true,
+      monitoring_eligible: true,
+      monitoring_admitted: false,
+    },
+    Date.now(),
+    300000,
+  );
+  assert.deepEqual(
+    issues.map((issue) => issue.kind),
+    ["api_capacity", "device_offline", "control_fault"],
+  );
+});
+
 const now = Date.parse("2026-10-28T13:00:00Z");
 const recent = {
   created_at: new Date(now - 600000),
