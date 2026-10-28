@@ -17,6 +17,8 @@ Monitoring can display plausible native readings with different control settings
 
 The requested 5 kW solar power cap is **not configured**: registers 3022–3023 returned raw 100, inconsistent with interpreting the generic protocol's watt scaling as the effective limit. The AC setting is not a separately verified grid-contribution limit during mixed PV/grid charging.
 
+The [firmware evidence review](firmware-evidence.md) records the conflicting public tables and the exact clarification still needed. The commissioning page offers an EN/BG request using saved diagnostics before a commissioning run exists. Explicit verification retains the relevant raw words from reads already performed; preparing or exporting the request adds no device request and grants no control permission.
+
 ## Firmware verification
 
 Control verification includes protocol 2.02, main DSP 1.57 and HMI 1.45, alongside the eight existing rating/settings/clock checks. The firmware identity is saved with the report and shown with its observation time. Missing or unvalidated DSP/HMI versions permit monitoring but cannot pass control verification. Unknown model/protocol mappings retain raw provider monitoring only.

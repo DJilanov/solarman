@@ -219,6 +219,7 @@ test("read-only diagnostics still show measurements when control settings differ
   assert.deepEqual(await controller.settings(), {
     maximumSoc: 100,
     reserveSoc: 50,
+    rawHolding: { 3005: 1000, 3022: 0, 3023: 0, 3036: 500 },
   });
   assert.deepEqual(inverter.writes, []);
 });
@@ -230,6 +231,35 @@ test("does not mistake an accepted write for a successfully changed setting", as
     new BatteryController(inverter, options).disable(),
     /readback mismatch/,
   );
+});
+
+test("saved policy evidence preserves individual raw words using one existing block read", async () => {
+  const inverter = new Inverter();
+  inverter.holding.set(3022, 65535);
+  inverter.holding.set(3023, 1);
+  const requests = [];
+  const controller = new BatteryController(
+    {
+      command: async (hex) => {
+        const parsed = parseFrame(hex);
+        requests.push({
+          fn: parsed[1],
+          address: parsed.readUInt16BE(2),
+          count: parsed.readUInt16BE(4),
+        });
+        return inverter.command(hex);
+      },
+    },
+    { ...options, writesEnabled: false },
+  );
+  assert.deepEqual((await controller.settings()).rawHolding, {
+    3005: 1000,
+    3022: 65535,
+    3023: 1,
+    3036: 500,
+  });
+  assert.deepEqual(requests, [{ fn: 3, address: 3005, count: 32 }]);
+  assert.deepEqual(inverter.writes, []);
 });
 
 test("disabling preserves unrelated flag bits, while enabling refuses unexpected bits", async () => {

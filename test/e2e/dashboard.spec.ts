@@ -4405,3 +4405,339 @@ test("notifications retry a failed page load and paginate history without dispat
   await expect(page.locator(".notification-delivery")).toHaveCount(25);
   expect(offsets).toContain(25);
 });
+
+async function firmwareSupportFixture(page: Page): Promise<OverviewData> {
+  await signIn(page);
+  const overview = (await (
+    await page.request.get("/api/overview")
+  ).json()) as OverviewData;
+  const checkedAt = "2026-10-28T21:14:30.000Z";
+  const firmware = { protocol: "2.02", dsp: "1.57", hmi: "1.45" };
+  overview.controller.profile = "bluesun-bse20kh3";
+  overview.controller.error =
+    "PRIVATE-DIAGNOSTIC-DATA private-provider@example.test SENSITIVE-INVERTER-SERIAL";
+  overview.controller.control = {
+    ...overview.controller.control,
+    canStart: false,
+    canEnable: false,
+    serverAllowed: false,
+    workspaceEnabled: false,
+    firmware: { ...firmware, collectedAt: "2026-10-28T22:50:00.000Z" },
+    verificationStatus: {
+      state: "expired",
+      checkedAt,
+      expiresAt: "2026-10-28T21:44:30.000Z",
+    },
+    verification: {
+      checkedAt,
+      passed: true,
+      firmware,
+      checks: [
+        {
+          label: "Inverter rating",
+          actual: 20000,
+          expected: 20000,
+          unit: "W",
+          passed: true,
+        },
+        {
+          label: "Operating mode",
+          actual: 0,
+          expected: 0,
+          unit: "",
+          passed: true,
+        },
+        {
+          label: "Run and backup flags",
+          actual: 9,
+          expected: 9,
+          unit: "",
+          passed: true,
+        },
+        {
+          label: "AC charging setting",
+          actual: 2000,
+          expected: 2000,
+          unit: "W",
+          passed: true,
+        },
+        {
+          label: "Grid charging SOC target",
+          actual: 50,
+          expected: 50,
+          unit: "%",
+          passed: true,
+        },
+        {
+          label: "Overall SOC maximum",
+          actual: 100,
+          expected: 100,
+          unit: "%",
+          passed: true,
+        },
+        {
+          label: "On-grid battery reserve",
+          actual: 50,
+          expected: 50,
+          unit: "%",
+          passed: true,
+        },
+        {
+          label: "PRIVATE-DIAGNOSTIC-DATA",
+          actual: 1234,
+          expected: 1234,
+          unit: "PRIVATE-UNIT",
+          passed: true,
+        },
+      ],
+    },
+  };
+  overview.controller.policy.solarPowerCapVerified = false;
+  if (overview.controller.control.verification)
+    overview.controller.control.verification.holdingRegisters = {
+      2504: 100,
+      2505: 500,
+      3005: 1000,
+      3022: 0,
+      3023: 100,
+      3036: 500,
+    };
+  const commissioning: CommissioningData = {
+    identity: null,
+    canPrepare: false,
+    attendedMinutes: 30,
+    run: null,
+    history: [],
+  };
+  await page.route("**/api/overview", (route) =>
+    route.fulfill({ json: overview }),
+  );
+  await page.route("**/api/commissioning", (route) =>
+    route.fulfill({ json: commissioning }),
+  );
+  return overview;
+}
+
+test("firmware support is available before commissioning and exports only saved technical evidence", async ({
+  page,
+}) => {
+  await firmwareSupportFixture(page);
+  const mutations: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() !== "GET" &&
+      new URL(request.url()).pathname.startsWith("/api/")
+    )
+      mutations.push(request.method());
+  });
+  await page.goto("/controls/commissioning");
+  await expect(
+    page.getByRole("heading", { name: "No commissioning run", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Prepare commissioning", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("heading", {
+      name: "Resolve the firmware power-limit mapping",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page
+    .getByText("Review the firmware support request", { exact: true })
+    .click();
+  const preview = page.getByRole("region", {
+    name: "Support request preview",
+    exact: true,
+  });
+  await expect(preview).toContainText("Settings report expired");
+  await expect(preview).toContainText("2026-10-28T21:14:30.000Z");
+  const downloaded = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "Download support request", exact: true })
+    .click();
+  const download = await downloaded;
+  expect(download.suggestedFilename()).toBe("solarman-firmware-support.txt");
+  const file = await download.path();
+  expect(file).not.toBeNull();
+  const text = readFileSync(file!, "utf8");
+  expect(text).toBe(await preview.textContent());
+  expect(text).toContain("Protocol version: 2.02");
+  expect(text).toContain("Main DSP version: 1.57");
+  expect(text).toContain("HMI version: 1.45");
+  expect(text).toContain("AC charging setting: 2000 W");
+  expect(text).toContain("Overall SOC maximum: 100 %");
+  expect(text).toContain("3022-3023");
+  expect(text).toContain("\n3022: 0\n3023: 100\n");
+  expect(text).toContain("\n2504: 100\n");
+  expect(text).not.toContain("PRIVATE-DIAGNOSTIC-DATA");
+  expect(text).not.toContain("PRIVATE-UNIT");
+  expect(text).not.toContain("private-provider@example.test");
+  expect(text).not.toContain("SENSITIVE-INVERTER-SERIAL");
+  if (process.env.E2E_EMAIL) expect(text).not.toContain(process.env.E2E_EMAIL);
+  expect(text).not.toContain("Settings report verified");
+  await page.setViewportSize({ width: 320, height: 1100 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await preview.focus();
+  expect(
+    await preview.evaluate(
+      (element) => element.scrollHeight > element.clientHeight,
+    ),
+  ).toBe(true);
+  expect(mutations).toEqual([]);
+});
+
+test("firmware support keeps missing observations separate, handles clipboard failures and translates the request on mobile", async ({
+  page,
+}) => {
+  const overview = await firmwareSupportFixture(page);
+  const observed = overview.controller.control.firmware;
+  if (!observed) throw new Error("Missing firmware fixture");
+  observed.protocol = "PRIVATE-PROTOCOL";
+  observed.dsp = "PRIVATE-DSP";
+  observed.hmi = null;
+  observed.collectedAt = "PRIVATE-DATE";
+  const verification = overview.controller.control.verification;
+  if (!verification) throw new Error("Missing settings fixture");
+  verification.checkedAt = "PRIVATE-DATE";
+  verification.checks[0].actual = null;
+  delete verification.holdingRegisters;
+  overview.controller.control.verificationStatus.state = "outdated";
+  const mutations: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() !== "GET" &&
+      new URL(request.url()).pathname.startsWith("/api/")
+    )
+      mutations.push(request.method());
+  });
+  await page.goto("/controls/commissioning");
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(
+    page.getByRole("heading", {
+      name: "Уточняване на ограниченията на мощността във фърмуера",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page
+    .getByText("Преглед на запитването за фърмуера", { exact: true })
+    .click();
+  const preview = page.getByRole("region", {
+    name: "Преглед на запитването за поддръжка",
+    exact: true,
+  });
+  const text = await preview.textContent();
+  expect(text).toContain("Запитване за регистрите на фърмуера");
+  expect(text).not.toContain("PRIVATE-");
+  expect(text?.split("Версия на основния DSP: 1.57")).toHaveLength(2);
+  await page.evaluate(() =>
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (): Promise<void> => {
+          throw new DOMException(
+            "Fixture permission denied",
+            "NotAllowedError",
+          );
+        },
+      },
+    }),
+  );
+  await page
+    .getByRole("button", { name: "Копирай запитването", exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      "Няма достъп до клипборда. Изтеглете запитването като файл.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await page.evaluate(() =>
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string): Promise<void> => {
+          sessionStorage.setItem("firmware-support-copy", value);
+        },
+      },
+    }),
+  );
+  await page
+    .getByRole("button", { name: "Копирай запитването", exact: true })
+    .click();
+  await expect(
+    page.getByText("Запитването е копирано", { exact: true }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() => sessionStorage.getItem("firmware-support-copy")),
+  ).toBe(text);
+  const downloaded = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "Изтегли запитването", exact: true })
+    .click();
+  const file = await (await downloaded).path();
+  expect(file).not.toBeNull();
+  expect(readFileSync(file!, "utf8")).toBe(text);
+  await page.setViewportSize({ width: 320, height: 1100 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "test-results/firmware-support-mobile-bg.png",
+    fullPage: true,
+  });
+  await page.locator(".language-switch select").selectOption("en");
+  await expect(
+    page.getByText("Support request copied", { exact: true }),
+  ).not.toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Support request preview", exact: true }),
+  ).toContainText("Firmware register clarification request");
+  await expect(
+    page.getByRole("region", { name: "Support request preview", exact: true }),
+  ).toContainText("2504: Not recorded");
+  verification.holdingRegisters = {
+    2504: -1,
+    2505: 65536,
+    3022: 1.5,
+    3023: null,
+  };
+  await page.reload();
+  await page
+    .getByText("Review the firmware support request", { exact: true })
+    .click();
+  const invalidWords = page.getByRole("region", {
+    name: "Support request preview",
+    exact: true,
+  });
+  await expect(invalidWords).toContainText("2504: Not recorded");
+  await expect(invalidWords).toContainText("2505: Not recorded");
+  await expect(invalidWords).toContainText("3022: Not recorded");
+  expect(mutations).toEqual([]);
+});
+
+test("firmware support does not attach Bluesun register questions to another selected profile", async ({
+  page,
+}) => {
+  const overview = await firmwareSupportFixture(page);
+  overview.controller.profile = "monitor-only";
+  await page.goto("/controls/commissioning");
+  await expect(
+    page.getByRole("heading", { name: "No commissioning run", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", {
+      name: "Resolve the firmware power-limit mapping",
+      exact: true,
+    }),
+  ).not.toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Download support request", exact: true }),
+  ).not.toBeVisible();
+});

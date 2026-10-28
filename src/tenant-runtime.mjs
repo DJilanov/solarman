@@ -772,6 +772,14 @@ export class TenantRuntime {
       checkedAt: new Date().toISOString(),
       passed: checks.every((check) => check.passed),
       checks,
+      holdingRegisters: {
+        2504: snapshot.acPowerRaw,
+        2505: snapshot.acTargetRaw,
+        3005: settings.rawHolding?.[3005] ?? null,
+        3022: settings.rawHolding?.[3022] ?? null,
+        3023: settings.rawHolding?.[3023] ?? null,
+        3036: settings.rawHolding?.[3036] ?? null,
+      },
     };
     await this.q(
       "UPDATE controller_state SET verification=$2,updated_at=now() WHERE tenant_id=$1",

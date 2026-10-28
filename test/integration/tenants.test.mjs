@@ -538,7 +538,11 @@ async function controlFixture(
       return [0, 20000];
     },
     snapshot: async () => structuredClone(snapshot),
-    settings: async () => ({ maximumSoc: 100, reserveSoc: 50 }),
+    settings: async () => ({
+      maximumSoc: 100,
+      reserveSoc: 50,
+      rawHolding: { 3005: 1000, 3022: 0, 3023: 100, 3036: 500 },
+    }),
   };
   runtime.controller.disable = async () => {
     calls.push("disable");
@@ -587,6 +591,37 @@ test("read-only verification persists checked values but cannot enable control w
       hmi: "1.45",
     });
     assert.equal(history.evidence.verification.passed, true);
+    const holdingRegisters = {
+      2504: 100,
+      2505: 500,
+      3005: 1000,
+      3022: 0,
+      3023: 100,
+      3036: 500,
+    };
+    assert.deepEqual(
+      runtime.status().control.verification.holdingRegisters,
+      holdingRegisters,
+    );
+    const storedCommand = (
+      await pool.query(
+        "SELECT detail FROM command_executions WHERE tenant_id=$1 AND id=$2",
+        [runtime.tenantId, job.id],
+      )
+    ).rows[0].detail;
+    assert.deepEqual(
+      storedCommand.events.findLast(
+        (event) => event.event === "device_verification",
+      ).report.holdingRegisters,
+      holdingRegisters,
+    );
+    const stored = (
+      await pool.query(
+        "SELECT verification FROM controller_state WHERE tenant_id=$1",
+        [runtime.tenantId],
+      )
+    ).rows[0].verification;
+    assert.deepEqual(stored.holdingRegisters, holdingRegisters);
     assert.equal(history.device, runtime.device);
     assert.deepEqual(history.writes, []);
     assert.equal(runtime.status().control.verification.passed, true);

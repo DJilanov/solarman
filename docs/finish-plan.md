@@ -1,6 +1,6 @@
 # Solarman completion plan
 
-Updated 2026-10-29. Commissioning was deployed through release `9ef343eaabdb01bbf3971d624b2f133f943eb145`; notifications were deployed in `52127f0fe02581020414867016c29098eb575d98`. Both increments passed their release checks. This is the current finish plan; [dashboard-plan.md](dashboard-plan.md) retains the original requirements and historical implementation notes.
+Updated 2026-10-29. Commissioning, tenant notifications and the independent-watchdog implementation are deployed through release `af876fbde39dc2fd29ad55755cc8aae87a3536cb`. The watchdog still needs its own server and selected recipient. This is the current finish plan; [dashboard-plan.md](dashboard-plan.md) retains the original requirements and historical implementation notes.
 
 ## What is actually locked
 
@@ -11,7 +11,7 @@ The quoted Bulgarian monitoring-only notice is an unused translation entry. The 
 | Native diagnostics | All nine checks passed at 21:14:30 UTC on October 28 after the commissioning deployment. Reports expire after 30 minutes while control is inactive. | Refresh before activation; retain explicit failure/late-response states. Earlier 530/timeout causes remain undiagnosed. |
 | Activation | Host writes and workspace control are off. Automation is paused; manual top-up is off. Device-bound commissioning is also required. | Commissioning software is deployed; physical acceptance and the independent source-limit contract remain open. |
 | Physical changes | Zero application inverter-write intents and zero unresolved bindings; scheduled permission is confirmed off. | Attended write/recovery tests have not been performed. |
-| Policy observations | A real, device-bound run had ten accepted samples and no collector failure at 21:14 UTC on October 28, surviving the commissioning deployments. | Above-50% solar charging/discharging, the reserve transition and a full day/night cycle remain unproven. |
+| Policy observations | A real, device-bound run had 36 accepted samples and no collector failure at 23:24 UTC on October 28, surviving the commissioning and notification deployments. | Above-50% solar charging/discharging, the reserve transition and a full day/night cycle remain unproven. |
 | Alerts | Durable in-app incidents and tenant-configured Telegram delivery are deployed. The independent watchdog implementation adds fresh health challenges, TCP context, durable retries and restore quarantine. | Select a real destination, provide an accessible separate monitoring host and prove outage/recovery delivery. |
 | Hosted tenants | Isolation, private invitations, account security/recovery, suspension, export, retention and closure/erasure are implemented. Production has migrations 001–021. | Complete a disposable-tenant rehearsal including commissioning and notifications. |
 | Recovery | Notification release passed both schema-020 upgrade and fresh schema-021 restores, with zero device or delivery calls. Backup healthy; erasure-receipt service verified. | Maintain recurring recovery drills and perform an actual operator handover. |
@@ -54,19 +54,22 @@ Verification passed: type/syntax checks, production build, 161 local unit tests 
 
 Stored measurements previously showed approximately 1.95 kW charging at 48%, then zero battery power at 50%, with scheduled AC permission off. Solar-surplus charging at exactly 50% was also observed. These are useful native-policy signals; they do not establish the above-50% behavior or independent source limits. Prefer native inverter behavior when it already meets the requirement.
 
+## Firmware evidence increment
+
+The commissioning page now provides an EN/BG firmware clarification request before a run is prepared. It uses saved numeric settings, separate observed/saved firmware identities and timestamps, and explicitly unverified raw register words. Old reports retain missing-word labels rather than inferred values. An explicit settings check saves the raw words from existing reads without additional polling. Preview/copy/download never sends a provider request or support message. Public reference provenance and contradictions are recorded in [firmware-evidence.md](firmware-evidence.md); the independent source-limit and commissioning gates remain unchanged.
+
+Verification passed: type/syntax checks, production build, 162 local unit tests with three Linux-only skips, all 164 PostgreSQL integration tests and all 39 browser tests. The added browser cases cover saved/expired/malformed evidence, unavailable clipboard and recovery, UTF-8 download, privacy exclusions, profile specificity, EN/BG and a visually inspected 320 px layout. An initial integration assertion incorrectly expected raw words in Activity's filtered projection; the corrected test proves runtime status, durable settings and stored command evidence. The complete database rerun passed after that correction.
+
 ## 1. Complete commissioning and activation
 
-Software implemented in the commissioning increment above; physical acceptance and release proofs remain separate.
+The commissioning lifecycle, attended-control path, dispatch gates, translated states, persistence/export and restore quarantine are implemented in the increment above. Physical acceptance remains separate.
 
 Primary files: `src/control-readiness.mjs`, `src/tenant-runtime.mjs`, `src/control-journal.mjs`, `src/http-app.mjs`, `web/control-readiness.tsx`, `web/pages.tsx`, `web/policy-observations.tsx`.
 
-- Add durable commissioning runs and steps, bound to tenant, account, inverter, model, firmware, timezone, mapping and policy revision. Record baseline settings, initiating user, command IDs, readbacks, observations and result separately.
-- Make the lifecycle explicit: monitoring → verified settings → attended commissioning → approved policy → workspace enabled but paused → resumed supervision.
-- Provide a restricted attended-test path using the existing journal, queue, cancellation and allowlist. It must not start the unattended scheduler. Recheck permission and binding immediately before every dispatch; interrupted tests remain paused with cleanup retained.
-- Require current commissioning approval for ordinary Resume and top-up actions. Enforce this in the backend and at dispatch, including stale browsers and queued jobs. A firmware/account/device/timezone/mapping/policy change invalidates approval. Unavailable current identity blocks starts without relabeling historical evidence as a confirmed identity change.
-- Preserve read-only diagnostics and Stop when starts are blocked. Label Stop accurately: it cancels app top-ups and clears scheduled AC permission; native reserve charging can continue.
-- Show monitoring freshness, settings verification, physical evidence and activation as distinct states. Preserve the observed/received timestamps and report expiry. Finish EN/BG loading, error, unknown-outcome and phone layouts; remove the obsolete notice after confirming all consumers.
-- Include the new records in tenant export, retention, erasure and restore quarantine. Restore must invalidate approval and keep all restored control paused.
+- Refresh explicit verification when preparing an actual attended session; do not repeatedly renew an unused report.
+- Resolve the independent source-limit contract before claiming full-policy approval. The pre-commissioning support report now makes that next action available without host writes or a prepared run; see [firmware-evidence.md](firmware-evidence.md).
+- Complete the physical checklist below through the implemented attended path, preserving readbacks and recovery evidence. Verify the operator can follow monitoring → verified settings → attended commissioning → approved policy → enabled but paused → resumed supervision.
+- Retain the implemented separation between observations and permission. A passing report or observed low charging power cannot replace physical acceptance or the missing source-limit contract.
 
 **Exit:** valid settings alone cannot authorize unattended starts; an owner can follow the next required action; concurrent Stop, permission changes, restart and late responses cannot bypass approval or abandon cleanup.
 
@@ -87,11 +90,10 @@ Primary files: `src/controller.mjs`, `src/telemetry.mjs`, `src/supervision.mjs`,
 
 Primary files: `src/operations.mjs`, `src/account-hub.mjs`, `src/http-app.mjs`, `web/system-health.tsx`, plus notification storage/transport and settings UI.
 
-- Telegram is the first implemented tenant-configured channel, with encrypted credentials, a verified destination and an explicit test. No recipient is inferred from login/provider emails.
-- Add a transactional notification outbox tied to incident opening, escalation and recovery. Preserve pending work across restarts, deduplicate incident revisions and bound retries. Show pending, confirmed, rejected and unconfirmed outcomes honestly.
-- Cover stale/offline readings, repeated native failures, authentication/control faults, unresolved cleanup and API exhaustion. Backup, recovery and erasure-service alerts are administrator-scoped.
-- Cancel future delivery when a destination changes or a workspace closes; drain in-flight work before erasure. Export metadata without secrets, prune terminal history safely and disable all delivery on restore.
-- Place the reachability and `/healthz` check outside the application host. Prove that it detects a stopped app and an unreachable host, and reports recovery without depending on that same process.
+- The encrypted Telegram channel, transactional incident outbox, bounded retries, uncertain outcomes, closure drain, secret-free export, retention and restore quarantine are implemented and tested.
+- Select a real bot/chat destination, then perform its explicit test and enable sequence. No recipient is inferred from login/provider emails.
+- Install the implemented watchdog on an accessible separate, always-on host. Its SSH target is still missing; the application server cannot prove detection of its own complete outage.
+- Prove real incident and recovery delivery, a stopped-app failure and an unreachable-host failure. Preserve the distinction between local software fixtures and actual outside-host acceptance.
 
 **Exit:** a selected destination receives a real test incident and recovery; restart/retry and ambiguous-response tests pass; independent outage detection works. No real message is sent until its channel and destination are selected.
 
@@ -117,7 +119,9 @@ For each independently reviewable release:
 
 ## Execution order and dependencies
 
-Start with **commissioning/activation**, while continuing passive observations. Implement **notification delivery** while waiting for daylight, SOC transitions or manufacturer evidence. Complete **firmware mapping and attended physical acceptance**, then **unattended observation and the hosted-tenant rehearsal**. Independent outage monitoring must be in place before unattended handover.
+The commissioning and notification software is implemented. The remaining critical path is **exact firmware clarification → supported source-limit implementation, if required → attended physical acceptance → approved activation → full day/night observation**. Passive observations may continue while waiting for firmware evidence or suitable SOC/daylight conditions.
+
+In parallel, select a notification destination and independent monitoring host, install/test the watchdog, and complete the disposable-tenant journey and EN/BG audit. Confirm the provider entitlement before admitting another controlled home. Independent outage monitoring and operator handover must pass before unattended completion.
 
 The software can be completed without manufacturing physical evidence. Daylight/SOC conditions, the independent 5 kW mapping, a chosen notification destination, an independent monitoring location and the real provider entitlement are explicit external dependencies. The full home requirement remains open until these are resolved.
 

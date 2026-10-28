@@ -178,10 +178,19 @@ export class BatteryController {
     }
   }
 
-  /** @returns {Promise<{ maximumSoc: number, reserveSoc: number }>} */
+  /** @returns {Promise<{ maximumSoc: number, reserveSoc: number, rawHolding: Record<number,number> }>} */
   async settings() {
     const registers = await this.read(3, 3005, 32);
-    return { maximumSoc: registers[0] / 10, reserveSoc: registers[31] / 10 };
+    return {
+      maximumSoc: registers[0] / 10,
+      reserveSoc: registers[31] / 10,
+      rawHolding: {
+        3005: registers[0],
+        3022: registers[17],
+        3023: registers[18],
+        3036: registers[31],
+      },
+    };
   }
 
   /** @returns {Promise<Snapshot>} */

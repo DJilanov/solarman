@@ -5,6 +5,7 @@ import { useWorkspace } from "./context";
 import { useData, request, isUnconfirmedResponse } from "./api";
 import { tr } from "./i18n";
 import { Heading, Loading, Notice, Panel, when } from "./components";
+import { FirmwareSupport } from "./firmware-support";
 import type { CommissioningData, PolicyObservationData } from "./types";
 
 const requirements: Record<
@@ -226,6 +227,7 @@ export default function CommissioningPage(): ReactNode {
           </p>
         )}
       </Panel>
+      <FirmwareSupport controller={overview?.controller ?? null} />
       {run && (
         <>
           <Panel
@@ -253,11 +255,6 @@ export default function CommissioningPage(): ReactNode {
                 </li>
               ))}
             </ul>
-            <Notice>
-              {tr(
-                "The firmware mapping for independent source limits is unverified. Approval stays blocked until the requested 2 kW grid and 5 kW solar limits are established.",
-              )}
-            </Notice>
             <Link className="text-link" to="/controls/observations">
               {tr("Observe the home policy")}
             </Link>

@@ -257,6 +257,12 @@ export interface ControllerStatus {
       firmware?: FirmwareIdentity | null;
       checkedAt: string;
       passed: boolean;
+      holdingRegisters?: Partial<
+        Record<
+          "2504" | "2505" | "3005" | "3022" | "3023" | "3036",
+          number | null
+        >
+      >;
       checks: {
         label: string;
         actual: number | null;

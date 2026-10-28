@@ -1,6 +1,6 @@
 # Solarman dashboard implementation plan
 
-The current execution order, production state and acceptance gates are in the [completion plan](finish-plan.md), updated at 20:42 UTC on 2026-10-28. The audit and work breakdown below retain their original timestamps and are historical; completed offboarding and policy-observation releases are reflected in the current plan.
+The current execution order, production state and acceptance gates are in the [completion plan](finish-plan.md). The audit and work breakdown below retain their original timestamps and are historical; subsequent implementation and releases are reflected in the current plan.
 
 ## Historical completion audit — 2026-10-28
 
