@@ -40,6 +40,7 @@ async function main() {
       server.listen(config.port, config.host, resolve);
     });
     hub.operations.start();
+    hub.dataMaintenance.start();
     console.log(
       JSON.stringify({ event: "dashboard_started", port: config.port }),
     );

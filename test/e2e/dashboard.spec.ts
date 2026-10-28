@@ -2460,3 +2460,231 @@ test("workspace suspension and resumption preserve member access and require sep
     await memberContext.close();
   }
 });
+
+test("workspace archives download complete data and retention changes remain explicit and recoverable in Bulgarian", async ({
+  page,
+  browser,
+}) => {
+  await signIn(page);
+  const owner = (await (
+    await page.request.get("/api/auth/session")
+  ).json()) as Session;
+  const invite = await page.request.post("/api/admin/invitations", {
+    headers: {
+      origin: "http://localhost:3000",
+      "x-csrf-token": owner.csrfToken,
+    },
+    data: {
+      email: `data-browser-${randomUUID()}@example.test`,
+      tenantName: "Workspace data browser fixture",
+    },
+  });
+  expect(invite.status()).toBe(201);
+  const link = (await invite.json()) as { url: string };
+  const context = await browser.newContext({
+    baseURL: "http://localhost:3000",
+  });
+  const secret = "workspace-data-browser-fixture-password";
+  try {
+    const activated = await context.request.post("/api/auth/activate", {
+      headers: { origin: "http://localhost:3000" },
+      data: {
+        token: new URLSearchParams(new URL(link.url).hash.slice(1)).get(
+          "token",
+        ),
+        password: secret,
+      },
+    });
+    expect(activated.status()).toBe(200);
+    const member = await context.newPage();
+    const urls: string[] = [];
+    member.on("request", (request) => urls.push(request.url()));
+    await member.goto("/settings");
+    await member
+      .getByRole("link", { name: "Data and privacy", exact: true })
+      .click();
+    await expect(
+      member.getByRole("heading", { name: "Workspace archive", exact: true }),
+    ).toBeVisible();
+    await member
+      .getByLabel("Dashboard password for the archive", { exact: true })
+      .fill(secret);
+    await member
+      .getByLabel("Reading retention in days", { exact: true })
+      .fill("90");
+    await member
+      .getByLabel("Activity retention in days", { exact: true })
+      .fill("180");
+    await member.locator(".language-switch select").selectOption("bg");
+    await expect(
+      member.getByLabel("Срок за показанията в дни", { exact: true }),
+    ).toHaveValue("90");
+    await expect(
+      member.getByLabel("Парола за таблото за изтегляне на архив", {
+        exact: true,
+      }),
+    ).toHaveValue(secret);
+    const [download] = await Promise.all([
+      member.waitForEvent("download"),
+      member
+        .getByRole("button", {
+          name: "Изтегли архив на пространството",
+          exact: true,
+        })
+        .click(),
+    ]);
+    expect(download.suggestedFilename()).toMatch(
+      /^solarman-workspace-\d{4}-\d{2}-\d{2}\.ndjson$/,
+    );
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const archive = readFileSync(path!, "utf8");
+    const rows = archive
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as { type: string; counts?: Record<string, number> },
+      );
+    expect(rows[0].type).toBe("manifest");
+    expect(rows.at(-1)?.type).toBe("complete");
+    expect(rows.at(-1)?.counts?.members).toBe(1);
+    expect(archive).not.toContain(secret);
+    expect(archive).not.toContain("token_hash");
+    expect(archive).not.toContain("password_hash");
+    expect(urls.some((url) => url.includes(secret))).toBe(false);
+    await expect(
+      member.getByText("Архивът на пространството е изтеглен.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    const before = (await (
+      await member.request.get("/api/workspace/retention")
+    ).json()) as { enabled: boolean; revision: string };
+    expect(before.enabled).toBe(false);
+    expect(before.revision).toBe("0");
+    await member
+      .getByLabel("Автоматично почистване", { exact: true })
+      .selectOption("true");
+    await member
+      .getByLabel("Парола за таблото за промяна на съхранението", {
+        exact: true,
+      })
+      .fill("wrong-password");
+    await member
+      .getByRole("button", {
+        name: "Запази правилата за съхранение",
+        exact: true,
+      })
+      .click();
+    await expect(
+      member.getByText("Текущата парола е неправилна", { exact: true }),
+    ).toBeVisible();
+    await member.route("**/api/workspace/retention", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      await route.fetch();
+      await route.abort("failed");
+    });
+    await member
+      .getByLabel("Парола за таблото за промяна на съхранението", {
+        exact: true,
+      })
+      .fill(secret);
+    await member
+      .getByRole("button", {
+        name: "Запази правилата за съхранение",
+        exact: true,
+      })
+      .click();
+    await expect(
+      member.getByText(
+        "Промяната на съхранението не е потвърдена. Заредете запазените правила, преди да опитате отново.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      member.getByRole("button", {
+        name: "Запази правилата за съхранение",
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await member
+      .getByRole("button", { name: "Зареди запазените правила", exact: true })
+      .click();
+    await expect(
+      member.getByLabel("Автоматично почистване", { exact: true }),
+    ).toHaveValue("true");
+    await expect(
+      member.getByLabel("Срок за показанията в дни", { exact: true }),
+    ).toHaveValue("90");
+    await member.unroute("**/api/workspace/retention");
+    await member
+      .getByLabel("Автоматично почистване", { exact: true })
+      .selectOption("false");
+    await member
+      .getByLabel("Парола за таблото за промяна на съхранението", {
+        exact: true,
+      })
+      .fill(secret);
+    await member
+      .getByRole("button", {
+        name: "Запази правилата за съхранение",
+        exact: true,
+      })
+      .click();
+    await expect(
+      member.getByText("Правилата за съхранение са запазени.", { exact: true }),
+    ).toBeVisible();
+    await member.setViewportSize({ width: 320, height: 1000 });
+    expect(
+      await member.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      ),
+    ).toBe(false);
+    await member
+      .locator(".workspace-data-grid")
+      .screenshot({ path: "test-results/workspace-data-mobile-bg.png" });
+    const after = (await (
+      await member.request.get("/api/workspace/retention")
+    ).json()) as { enabled: boolean; revision: string; events: unknown[] };
+    expect(after.enabled).toBe(false);
+    expect(after.revision).toBe("2");
+    expect(after.events).toHaveLength(2);
+  } finally {
+    await context.close();
+  }
+});
+
+test("an incomplete archive never triggers a successful file download", async ({
+  page,
+}) => {
+  await signIn(page);
+  await page.goto("/settings/data");
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  await page.route("**/api/workspace/archive", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/x-ndjson",
+      body: '{"type":"manifest","version":1}\n{"type":"record","section":"workspace","data":{}}\n',
+    }),
+  );
+  await page
+    .getByLabel("Dashboard password for the archive", { exact: true })
+    .fill("archive-fixture-password");
+  await page
+    .getByRole("button", { name: "Download workspace archive", exact: true })
+    .click();
+  await expect(
+    page.getByText("The archive download was interrupted. Try again.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(downloads).toBe(0);
+  await expect(
+    page.getByLabel("Dashboard password for the archive", { exact: true }),
+  ).toHaveValue("");
+});

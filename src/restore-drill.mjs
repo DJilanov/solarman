@@ -53,6 +53,10 @@ async function createAuthenticationFixture(pool) {
     "INSERT INTO users(id,tenant_id,email,password_hash) VALUES ($1,$2,$3,$4)",
     [user, tenant, email, await hashPassword(password)],
   );
+  await pool.query(
+    "INSERT INTO workspace_retention(tenant_id,enabled) VALUES($1,true)",
+    [tenant],
+  );
   return { password, user, email };
 }
 
@@ -197,6 +201,33 @@ async function verifyAuthentication(pool, { password, user, email }) {
     const lifecycleState = await lifecycle.json();
     assert.equal(lifecycleState.state, "suspended");
     assert.equal(lifecycleState.message, "Isolated recovery check");
+    const retention = await fetch(origin + "/api/workspace/retention", {
+      headers: { cookie },
+    });
+    assert.equal(retention.status, 200);
+    assert.equal((await retention.json()).enabled, false);
+    const archive = await fetch(origin + "/api/workspace/archive", {
+      method: "POST",
+      headers: {
+        cookie,
+        origin: "http://localhost",
+        "content-type": "application/json",
+        "x-csrf-token": session.csrfToken,
+      },
+      body: JSON.stringify({ currentPassword: recoveredPassword }),
+    });
+    assert.equal(archive.status, 200);
+    const lines = (await archive.text()).trimEnd().split("\n");
+    const complete = JSON.parse(lines.at(-1));
+    assert.equal(complete.type, "complete");
+    assert.equal(complete.counts.workspace, 1);
+    assert.equal(complete.counts.members, 1);
+    assert.equal(
+      complete.sha256,
+      createHash("sha256")
+        .update(lines.slice(0, -1).join("\n") + "\n")
+        .digest("hex"),
+    );
     assert.equal(
       (await fetch(origin + "/api/security", { headers: { cookie } })).status,
       200,
@@ -350,6 +381,24 @@ export async function restoreDrill(header, dump) {
       .filter((version) => !header.contents.migrations.includes(version));
     stage = "quarantine";
     const authenticationFixture = await createAuthenticationFixture(pool);
+    assert.ok(
+      (
+        await pool.query(
+          "SELECT count(*)::integer AS n FROM workspace_retention WHERE enabled",
+        )
+      ).rows[0].n > 0,
+    );
+    await pool.query(
+      "UPDATE workspace_retention SET enabled=false,revision=revision+1,updated_at=clock_timestamp() WHERE enabled",
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::integer AS n FROM workspace_retention WHERE enabled",
+        )
+      ).rows[0].n,
+      0,
+    );
     await pool.query(
       `INSERT INTO account_recovery_tokens (user_id,token_hash,kind,expires_at) VALUES
       ($1,$2,'saved_key',null),($1,$3,'admin_link',clock_timestamp()+interval '1 hour')`,
@@ -404,6 +453,8 @@ export async function restoreDrill(header, dump) {
       accountSecurityVerified: true,
       accountRecoveryVerified: true,
       tenantLifecycleVerified: true,
+      retentionQuarantined: true,
+      workspaceExportVerified: true,
       recoveryQuarantined: true,
       schemaUpgradeVerified: true,
       controlQuarantined: true,

@@ -4,6 +4,7 @@ import { encryptCredentials, decryptCredentials } from "./credentials.mjs";
 import { TenantRuntime } from "./tenant-runtime.mjs";
 import { ApiBudget, monitoringInterval } from "./api-budget.mjs";
 import { Operations } from "./operations.mjs";
+import { DataMaintenance } from "./data-maintenance.mjs";
 
 export class AccountHub {
   constructor(pool, env, key) {
@@ -24,6 +25,7 @@ export class AccountHub {
         if (runtime.appKey === appKey) runtime.reschedulePolling();
     });
     this.operations = new Operations(pool, this);
+    this.dataMaintenance = new DataMaintenance(pool);
   }
 
   /** @param {TenantRuntime} runtime @returns {number} */
@@ -500,10 +502,12 @@ export class AccountHub {
   async close() {
     this.stopping = true;
     const monitorStopped = this.operations.stop();
+    const maintenanceStopped = this.dataMaintenance.stop();
     await Promise.allSettled(
       [...this.runtimes.values()].map((runtime) => runtime.close()),
     );
     await monitorStopped;
+    await maintenanceStopped;
     if (this.lock) {
       try {
         await this.lock.query("SELECT pg_advisory_unlock(193401,2)");

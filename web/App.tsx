@@ -55,6 +55,7 @@ import type { Action, Command, OverviewData, Session } from "./types";
 const CommandDetailsPage = lazy(() => import("./command-details"));
 const SystemHealthPage = lazy(() => import("./system-health"));
 const AccountSecurityPage = lazy(() => import("./account-security"));
+const WorkspaceDataPage = lazy(() => import("./workspace-data"));
 const RecoverAccountPage = lazy(() => import("./account-recovery"));
 const WriteHistoryPage = lazy(() =>
   import("./command-details").then((module) => ({
@@ -647,6 +648,14 @@ function Dashboard({
                 }
               />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route
+                path="/settings/data"
+                element={
+                  <Suspense fallback={<Loading />}>
+                    <WorkspaceDataPage />
+                  </Suspense>
+                }
+              />
               <Route
                 path="/settings/security"
                 element={

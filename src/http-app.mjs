@@ -11,6 +11,7 @@ import {
 import { AccountRecovery } from "./account-recovery.mjs";
 import { Invitations } from "./invitations.mjs";
 import { TenantLifecycle } from "./tenant-lifecycle.mjs";
+import { WorkspaceData } from "./workspace-data.mjs";
 import { summarize, localDay, dayStart, addDays } from "./analytics.mjs";
 import { historyEvidence, writeHistory } from "./command-history.mjs";
 import { readBackupStatus } from "./backup-status.mjs";
@@ -85,6 +86,7 @@ export function createApp({ pool, hub, config }) {
   const recovery = new AccountRecovery(pool);
   const invitations = new Invitations(pool);
   const lifecycle = new TenantLifecycle(pool);
+  const workspaceData = new WorkspaceData(pool);
   /** @param {import('node:http').IncomingMessage} request @param {import('node:http').ServerResponse} response @param {string} purpose @returns {string} */
   const limitPublic = (request, response, purpose) => {
     const trusted = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(
@@ -445,6 +447,28 @@ export function createApp({ pool, hub, config }) {
         json(response, 200, {
           revoked: await security.revoke(session, target),
         });
+        return;
+      }
+      if (pathname === "/api/workspace/retention" && request.method === "GET") {
+        json(response, 200, await workspaceData.retention(session.tenant_id));
+        return;
+      }
+      if (
+        pathname === "/api/workspace/retention" &&
+        request.method === "POST"
+      ) {
+        const body = await bodyJson(request);
+        limitSecurity(response, session);
+        const policy = await workspaceData.updateRetention(session, body);
+        securityLimiter.clear(session.id);
+        json(response, 200, policy);
+        return;
+      }
+      if (pathname === "/api/workspace/archive" && request.method === "POST") {
+        const body = await bodyJson(request);
+        limitSecurity(response, session);
+        await workspaceData.archive(session, body.currentPassword, response);
+        securityLimiter.clear(session.id);
         return;
       }
       if (pathname === "/api/admin/tenants" && request.method === "GET") {
@@ -843,6 +867,7 @@ export function createApp({ pool, hub, config }) {
       }
       throw new HttpError(404, "Endpoint not found");
     } catch (error) {
+      if (response.destroyed) return;
       if (response.headersSent) {
         response.end();
         return;

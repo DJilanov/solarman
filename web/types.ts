@@ -3,6 +3,22 @@ export interface Session {
   tenant: { id: string; name: string; timezone: string };
   csrfToken: string;
 }
+export interface RetentionPolicy {
+  enabled: boolean;
+  measurementDays: number;
+  activityDays: number;
+  revision: string;
+  lastRunAt: string | null;
+  lastFailedAt: string | null;
+  lastCounts: Record<string, number>;
+  events: {
+    revision: string;
+    enabled: boolean;
+    measurementDays: number;
+    activityDays: number;
+    at: string;
+  }[];
+}
 export interface TenantLifecycleStatus {
   state: "active" | "suspended";
   revision: string;

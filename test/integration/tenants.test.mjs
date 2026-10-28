@@ -1,7 +1,7 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createPool, migrate } from "../../src/database.mjs";
 import { dashboardConfig } from "../../src/dashboard-config.mjs";
@@ -19,6 +19,8 @@ import { ControlJournal } from "../../src/control-journal.mjs";
 import { parseFrame, frame } from "../../src/modbus.mjs";
 import { Operations } from "../../src/operations.mjs";
 import { AccountRecovery } from "../../src/account-recovery.mjs";
+import { WorkspaceData } from "../../src/workspace-data.mjs";
+import { DataMaintenance } from "../../src/data-maintenance.mjs";
 import { TenantLifecycle } from "../../src/tenant-lifecycle.mjs";
 import { Invitations, lockInvitationEmail } from "../../src/invitations.mjs";
 import {
@@ -4467,4 +4469,764 @@ test("workspace history retains the newest twenty numeric revisions without expo
     Array.from({ length: 20 }, (_, i) => String(30 - i)),
   );
   assert.equal(JSON.stringify(status).includes(f.actor.user), false);
+});
+
+async function dataFixture() {
+  const f = await lifecycleFixture();
+  return {
+    ...f,
+    data: new WorkspaceData(pool),
+    memberSession: {
+      id: f.target.user,
+      tenant_id: f.target.tenant,
+      token_hash: tokenHash(f.member.cookie.split("=")[1]),
+    },
+  };
+}
+function retentionBody(overrides = {}) {
+  return {
+    currentPassword: password,
+    enabled: true,
+    measurementDays: 365,
+    activityDays: 30,
+    revision: "0",
+    ...overrides,
+  };
+}
+async function dataMeasurement(owner, daysAgo, number = 1) {
+  return (
+    await pool.query(
+      `INSERT INTO measurements(tenant_id,account_id,device,observed_at,soc,temperature_c,pv_w,load_w,grid_w,battery_w,ac_enabled,snapshot)
+    SELECT $1,$2,$3,clock_timestamp()-$4*interval '1 day'-n*interval '1 second',50,20,1234,1000,0,-234,false,'{}' FROM generate_series(1,$5) n RETURNING id::text`,
+      [owner.tenant, owner.account, owner.device, daysAgo, number],
+    )
+  ).rows.map((row) => row.id);
+}
+
+test("workspace retention is opt-in, scoped, reauthenticated, revision checked and available during suspension", async () => {
+  const f = await dataFixture();
+  const initial = await (
+    await fetchApi("/workspace/retention", { auth: f.member })
+  ).json();
+  assert.equal(initial.enabled, false);
+  assert.equal(initial.measurementDays, 365);
+  assert.equal(initial.activityDays, 730);
+  assert.equal(initial.revision, "0");
+  assert.equal(await new DataMaintenance(pool).runOnce(f.target.tenant), null);
+  assert.equal(
+    (
+      await fetchApi("/workspace/retention", {
+        auth: f.member,
+        method: "POST",
+        body: retentionBody(),
+        csrf: false,
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await fetchApi("/workspace/retention", {
+        auth: f.member,
+        method: "POST",
+        body: retentionBody({ currentPassword: "wrong" }),
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await fetchApi("/workspace/retention", {
+        auth: f.member,
+        method: "POST",
+        body: retentionBody({ activityDays: 29 }),
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await fetchApi("/workspace/retention", {
+        auth: f.member,
+        method: "POST",
+        body: retentionBody({ measurementDays: 3651 }),
+      })
+    ).status,
+    400,
+  );
+  const saved = await fetchApi("/workspace/retention", {
+    auth: f.member,
+    method: "POST",
+    body: retentionBody({ tenantId: f.actor.tenant }),
+  });
+  assert.equal(saved.status, 200);
+  const policy = await saved.json();
+  assert.equal(policy.enabled, true);
+  assert.equal(policy.revision, "1");
+  assert.equal(policy.events.length, 1);
+  assert.equal((await f.data.retention(f.actor.tenant)).enabled, false);
+  assert.equal(
+    (
+      await fetchApi("/workspace/retention", {
+        auth: f.member,
+        method: "POST",
+        body: retentionBody(),
+      })
+    ).status,
+    409,
+  );
+  await f.lifecycle.change(f.session, f.target.tenant, lifecycleBody());
+  assert.equal(
+    (
+      await f.data.updateRetention(
+        f.memberSession,
+        retentionBody({ revision: "1", enabled: false }),
+      )
+    ).revision,
+    "2",
+  );
+  assert.equal((await f.lifecycle.status(f.target.tenant)).state, "suspended");
+});
+
+test("workspace archives contain complete tenant data and a checksum without credentials, browser secrets or another users security metadata", async () => {
+  const f = await dataFixture();
+  await pool.query(
+    "INSERT INTO device_health(tenant_id,account_id,device,control_fault) VALUES($1,$2,$3,true)",
+    [f.target.tenant, f.target.account, f.target.device],
+  );
+  await dataMeasurement(f.target, 1, 3);
+  await dataMeasurement(ids.alpha, 1);
+  const savedKey = await new AccountRecovery(pool).createKey(
+    f.memberSession,
+    password,
+  );
+  const otherUser = randomUUID();
+  const hash = await hashPassword(password);
+  await pool.query(
+    "INSERT INTO users(id,tenant_id,email,password_hash) VALUES($1,$2,$3,$4)",
+    [
+      otherUser,
+      f.target.tenant,
+      `archive-other-${otherUser}@example.test`,
+      hash,
+    ],
+  );
+  const client = await pool.connect();
+  let other;
+  try {
+    other = await createBrowserSession(
+      client,
+      otherUser,
+      "PRIVATE-OTHER-BROWSER",
+    );
+  } finally {
+    client.release();
+  }
+  assert.equal(
+    (
+      await fetchApi("/workspace/archive", {
+        auth: f.member,
+        method: "POST",
+        body: { currentPassword: password },
+        csrf: false,
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await fetchApi("/workspace/archive", {
+        auth: f.member,
+        method: "POST",
+        body: { currentPassword: "wrong" },
+      })
+    ).status,
+    400,
+  );
+  const response = await fetchApi("/workspace/archive", {
+    auth: f.member,
+    method: "POST",
+    body: { currentPassword: password, tenantId: ids.alpha.tenant },
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /ndjson/);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const text = await response.text();
+  const lines = text.trimEnd().split("\n");
+  const entries = lines.map((line) => JSON.parse(line));
+  const footer = entries.at(-1);
+  assert.equal(entries[0].type, "manifest");
+  assert.equal(footer.type, "complete");
+  assert.equal(footer.counts.measurements, 3);
+  assert.equal(footer.counts.members, 2);
+  assert.equal(footer.counts.deviceHealth, 1);
+  assert.equal(
+    entries.find((row) => row.section === "deviceHealth").data.control_fault,
+    true,
+  );
+  assert.equal(
+    footer.sha256,
+    createHash("sha256")
+      .update(lines.slice(0, -1).join("\n") + "\n")
+      .digest("hex"),
+  );
+  for (const forbidden of [
+    ids.alpha.tenant,
+    ids.alpha.device,
+    hash,
+    f.member.csrfToken,
+    other.token,
+    "PRIVATE-OTHER-BROWSER",
+    savedKey.key,
+    "password_hash",
+    "token_hash",
+    "csrf_token",
+    "passwordSha256",
+    "isolated-fixture",
+  ])
+    assert.equal(
+      text.includes(forbidden),
+      false,
+      forbidden === "PRIVATE-OTHER-BROWSER"
+        ? "Other browser metadata leaked"
+        : "Private data leaked",
+    );
+  assert.equal(
+    entries
+      .filter((row) => row.section === "browserSessions")
+      .every((row) => row.data.user_agent !== "PRIVATE-OTHER-BROWSER"),
+    true,
+  );
+  for (const section of entries[0].sections)
+    assert.equal(
+      footer.counts[section],
+      entries.filter((row) => row.section === section).length,
+    );
+});
+
+async function archiveServer(data, session) {
+  let finished;
+  const done = new Promise((resolve) => {
+    finished = resolve;
+  });
+  const http = createServer((request, response) => {
+    void data
+      .archive(session, password, response)
+      .catch((error) => {
+        if (!response.headersSent && !response.destroyed) {
+          response.writeHead(error.status ?? 500, {
+            "content-type": "application/json",
+          });
+          response.end(JSON.stringify({ error: "Archive rejected" }));
+        }
+      })
+      .finally(() => finished());
+  });
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  return {
+    url: `http://127.0.0.1:${http.address().port}`,
+    done,
+    close: () =>
+      new Promise((resolve) => {
+        http.close(resolve);
+        http.closeIdleConnections();
+      }),
+  };
+}
+
+test("archive snapshots remain consistent while new readings arrive and a second export for the workspace is refused", async () => {
+  const f = await dataFixture();
+  await dataMeasurement(f.target, 1, 2);
+  let release;
+  let entered;
+  const blocked = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const wait = new Promise((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  const proxy = {
+    query: pool.query.bind(pool),
+    connect: async () => {
+      const client = await pool.connect();
+      return {
+        release: client.release.bind(client),
+        query: async (...args) => {
+          const result = await client.query(...args);
+          if (first && String(args[0]).startsWith("FETCH")) {
+            first = false;
+            entered();
+            await wait;
+          }
+          return result;
+        },
+      };
+    },
+  };
+  const data = new WorkspaceData(proxy, { batchRows: 1 });
+  const http = await archiveServer(data, f.memberSession);
+  try {
+    const response = await fetch(http.url);
+    const output = response.text();
+    await blocked;
+    const other = await fetch(http.url);
+    assert.equal(other.status, 429);
+    await other.text();
+    await dataMeasurement(f.target, 0, 1);
+    release();
+    const entries = (await output)
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(entries.at(-1).counts.measurements, 2);
+    await http.done;
+    assert.equal(data.exports.size, 0);
+  } finally {
+    release();
+    await http.close();
+  }
+});
+
+test("revoking a browser during an archive aborts the stream and releases its database connection", async () => {
+  const f = await dataFixture();
+  await dataMeasurement(f.target, 1);
+  let release;
+  let entered;
+  const blocked = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const wait = new Promise((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  const proxy = {
+    query: pool.query.bind(pool),
+    connect: async () => {
+      const client = await pool.connect();
+      return {
+        release: client.release.bind(client),
+        query: async (...args) => {
+          const result = await client.query(...args);
+          if (first && String(args[0]).startsWith("FETCH")) {
+            first = false;
+            entered();
+            await wait;
+          }
+          return result;
+        },
+      };
+    },
+  };
+  const data = new WorkspaceData(proxy, { batchRows: 1 });
+  const http = await archiveServer(data, f.memberSession);
+  try {
+    const response = await fetch(http.url);
+    const result = response.text().then(
+      () => ({ failed: false }),
+      () => ({ failed: true }),
+    );
+    await blocked;
+    await pool.query("DELETE FROM sessions WHERE token_hash=$1", [
+      f.memberSession.token_hash,
+    ]);
+    release();
+    assert.equal((await result).failed, true);
+    await http.done;
+    assert.equal(data.exports.size, 0);
+    assert.equal((await pool.query("SELECT 1 AS alive")).rows[0].alive, 1);
+  } finally {
+    release();
+    await http.close();
+  }
+});
+
+test("an oversized archive never returns a successful completion marker and releases the export slot", async () => {
+  const f = await dataFixture();
+  const data = new WorkspaceData(pool, { maxBytes: 16 });
+  const http = await archiveServer(data, f.memberSession);
+  try {
+    await assert.rejects(async () => {
+      const response = await fetch(http.url);
+      await response.text();
+    });
+    await http.done;
+    assert.equal(data.exports.size, 0);
+  } finally {
+    await http.close();
+  }
+});
+
+test("retention removes bounded old readings while preserving the current sample and other workspaces", async () => {
+  const f = await dataFixture();
+  const old = await dataMeasurement(f.target, 400, 601);
+  const newest = await dataMeasurement(f.target, 0, 1);
+  const other = await dataMeasurement(ids.alpha, 400);
+  await f.data.updateRetention(f.memberSession, retentionBody());
+  const worker = new DataMaintenance(pool);
+  const first = await worker.runOnce(f.target.tenant);
+  assert.equal(first.measurements, 500);
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int AS n FROM measurements WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0].n,
+    102,
+  );
+  await pool.query(
+    "UPDATE workspace_retention SET next_run_at=clock_timestamp() WHERE tenant_id=$1",
+    [f.target.tenant],
+  );
+  assert.equal((await worker.runOnce(f.target.tenant)).measurements, 101);
+  assert.deepEqual(
+    (
+      await pool.query("SELECT id::text FROM measurements WHERE tenant_id=$1", [
+        f.target.tenant,
+      ])
+    ).rows.map((r) => r.id),
+    newest,
+  );
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int AS n FROM measurements WHERE id=ANY($1::bigint[])",
+        [other],
+      )
+    ).rows[0].n,
+    1,
+  );
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int AS n FROM measurements WHERE id=ANY($1::bigint[])",
+        [old],
+      )
+    ).rows[0].n,
+    0,
+  );
+  const policy = await f.data.retention(f.target.tenant);
+  assert.ok(policy.lastRunAt);
+  assert.equal(policy.lastFailedAt, null);
+});
+
+test("retention preserves unresolved writes, their commands, active incidents and the rolling API ledger", async () => {
+  const f = await dataFixture();
+  await f.data.updateRetention(f.memberSession, retentionBody());
+  const job = randomUUID(),
+    write = randomUUID(),
+    incident = randomUUID();
+  await pool.query(
+    "INSERT INTO command_executions(id,tenant_id,account_id,device,actor,action,status,created_at,completed_at) VALUES($1,$2,$3,$4,'fixture','topup','interrupted',now()-interval '400 days',now()-interval '400 days')",
+    [job, f.target.tenant, f.target.account, f.target.device],
+  );
+  await pool.query(
+    "INSERT INTO device_control_state(tenant_id,account_id,device,state) VALUES($1,$2,$3,'uncertain')",
+    [f.target.tenant, f.target.account, f.target.device],
+  );
+  await pool.query(
+    "INSERT INTO inverter_write_intents(id,tenant_id,account_id,device,execution_id,operation,address,register_values,status,created_at) VALUES($1,$2,$3,$4,$5,'enable',206,'[0,25]','uncertain',now()-interval '400 days')",
+    [write, f.target.tenant, f.target.account, f.target.device, job],
+  );
+  await pool.query(
+    "INSERT INTO operational_incidents(id,tenant_id,account_id,device,binding,kind,severity,first_seen_at,last_seen_at) VALUES($1,$2,$3,$4,'fixture','cleanup_pending','critical',now()-interval '400 days',now())",
+    [incident, f.target.tenant, f.target.account, f.target.device],
+  );
+  for (const days of [364, 367])
+    await pool.query(
+      "INSERT INTO api_requests(tenant_id,account_id,kind,created_at) VALUES($1,$2,'read',clock_timestamp()-$3*interval '1 day')",
+      [f.target.tenant, f.target.account, days],
+    );
+  const worker = new DataMaintenance(pool);
+  const result = await worker.runOnce(f.target.tenant);
+  assert.equal(result.writes, 0);
+  assert.equal(result.commands, 0);
+  assert.equal(result.incidents, 0);
+  assert.equal(result.usage, 1);
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int AS n FROM api_requests WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0].n,
+    1,
+  );
+  // A clear lease alone does not turn an unknown write into a resolved write.
+  await pool.query(
+    "UPDATE device_control_state SET state='clear' WHERE tenant_id=$1",
+    [f.target.tenant],
+  );
+  await pool.query(
+    "UPDATE workspace_retention SET next_run_at=clock_timestamp() WHERE tenant_id=$1",
+    [f.target.tenant],
+  );
+  assert.equal((await worker.runOnce(f.target.tenant)).writes, 0);
+  await pool.query(
+    "UPDATE inverter_write_intents SET reconciled_at=now()-interval '90 days' WHERE id=$1",
+    [write],
+  );
+  await pool.query(
+    "UPDATE operational_incidents SET resolved_at=now()-interval '90 days',resolution_reason='cleared' WHERE id=$1",
+    [incident],
+  );
+  await pool.query(
+    "UPDATE workspace_retention SET next_run_at=clock_timestamp() WHERE tenant_id=$1",
+    [f.target.tenant],
+  );
+  const cleared = await worker.runOnce(f.target.tenant);
+  assert.equal(cleared.writes, 1);
+  assert.equal(cleared.commands, 1);
+  assert.equal(cleared.incidents, 1);
+});
+
+test("a later pruning failure rolls back earlier deletions, records the failure and allows a retry", async () => {
+  const f = await dataFixture();
+  await dataMeasurement(f.target, 400, 2);
+  await dataMeasurement(f.target, 0);
+  await f.data.updateRetention(f.memberSession, retentionBody());
+  const trigger = `retention_failure_${randomUUID().replaceAll("-", "")}`;
+  await pool.query(
+    `CREATE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.tenant_id='${f.target.tenant}'::uuid THEN RAISE EXCEPTION 'fixture failure'; END IF; RETURN OLD; END $$`,
+  );
+  await pool.query(
+    `CREATE TRIGGER ${trigger} BEFORE DELETE ON api_requests FOR EACH ROW EXECUTE FUNCTION ${trigger}()`,
+  );
+  await pool.query(
+    "INSERT INTO api_requests(tenant_id,account_id,kind,created_at) VALUES($1,$2,'read',now()-interval '400 days')",
+    [f.target.tenant, f.target.account],
+  );
+  const worker = new DataMaintenance(pool);
+  try {
+    await assert.rejects(worker.runOnce(f.target.tenant));
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM measurements WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0].n,
+      3,
+    );
+    const policy = await f.data.retention(f.target.tenant);
+    assert.ok(policy.lastFailedAt);
+    assert.equal(policy.lastRunAt, null);
+  } finally {
+    await pool.query(`DROP TRIGGER ${trigger} ON api_requests`);
+    await pool.query(`DROP FUNCTION ${trigger}()`);
+  }
+  await pool.query(
+    "UPDATE workspace_retention SET next_run_at=clock_timestamp() WHERE tenant_id=$1",
+    [f.target.tenant],
+  );
+  assert.equal((await worker.runOnce(f.target.tenant)).measurements, 2);
+  assert.equal((await f.data.retention(f.target.tenant)).lastFailedAt, null);
+});
+
+test("a locked or disabled retention policy does not prune data and does not lock inverter control", async () => {
+  const f = await dataFixture();
+  await dataMeasurement(f.target, 400);
+  await f.data.updateRetention(f.memberSession, retentionBody());
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT tenant_id FROM workspace_retention WHERE tenant_id=$1 FOR UPDATE",
+      [f.target.tenant],
+    );
+    assert.equal(
+      await new DataMaintenance(pool).runOnce(f.target.tenant),
+      null,
+    );
+    await client.query("COMMIT");
+    await f.data.updateRetention(
+      f.memberSession,
+      retentionBody({ enabled: false, revision: "1" }),
+    );
+    assert.equal(
+      await new DataMaintenance(pool).runOnce(f.target.tenant),
+      null,
+    );
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT tenant_id FROM controller_state WHERE tenant_id=$1 FOR UPDATE",
+      [f.target.tenant],
+    );
+    // Maintenance owns the retention-policy row, independently of the inverter-control row.
+    await f.data.updateRetention(
+      f.memberSession,
+      retentionBody({ enabled: true, revision: "2" }),
+    );
+    assert.equal(
+      (await new DataMaintenance(pool).runOnce(f.target.tenant)).measurements,
+      0,
+    );
+  } finally {
+    await client.query("ROLLBACK");
+    client.release();
+  }
+});
+
+test("retention prunes obsolete provider and security history while keeping current device data and active recovery access", async () => {
+  const f = await dataFixture();
+  await f.data.updateRetention(f.memberSession, retentionBody());
+  const protectedDevice = `protected-${randomUUID()}`;
+  for (const device of [
+    f.target.device,
+    `obsolete-${randomUUID()}`,
+    protectedDevice,
+  ])
+    await pool.query(
+      "INSERT INTO provider_readings(tenant_id,account_id,device,collected_at,received_at,data_list) VALUES($1,$2,$3,now()-interval '400 days',now()-interval '400 days','[]')",
+      [f.target.tenant, f.target.account, device],
+    );
+  await pool.query(
+    "INSERT INTO device_control_state(tenant_id,account_id,device,state) VALUES($1,$2,$3,'cleanup-required')",
+    [f.target.tenant, f.target.account, protectedDevice],
+  );
+  await pool.query(
+    "INSERT INTO account_security_events(tenant_id,user_id,kind,affected_sessions,occurred_at) VALUES($1,$2,'signed_in',1,now()-interval '400 days')",
+    [f.target.tenant, f.target.user],
+  );
+  for (const [kind, used, expired] of [
+    ["saved_key", true, false],
+    ["admin_link", false, true],
+    ["saved_key", false, false],
+  ])
+    await pool.query(
+      `INSERT INTO account_recovery_tokens(user_id,token_hash,kind,created_at,used_at,expires_at) VALUES($1,$2,$3,now()-interval '400 days',CASE WHEN $4 THEN now()-interval '90 days' ELSE null END,CASE WHEN $5 THEN now()-interval '90 days' ELSE null END)`,
+      [f.target.user, tokenHash(randomUUID()), kind, used, expired],
+    );
+  const counts = await new DataMaintenance(pool).runOnce(f.target.tenant);
+  assert.equal(counts.providerReadings, 1);
+  assert.equal(counts.security, 1);
+  assert.equal(counts.recovery, 2);
+  assert.deepEqual(
+    (
+      await pool.query(
+        "SELECT device FROM provider_readings WHERE tenant_id=$1 ORDER BY device",
+        [f.target.tenant],
+      )
+    ).rows.map((row) => row.device),
+    [f.target.device, protectedDevice].sort(),
+  );
+  const keys = (
+    await pool.query(
+      "SELECT kind,used_at,expires_at FROM account_recovery_tokens WHERE user_id=$1",
+      [f.target.user],
+    )
+  ).rows;
+  assert.equal(keys.length, 1);
+  assert.equal(keys[0].kind, "saved_key");
+  assert.equal(keys[0].used_at, null);
+});
+
+test("concurrent retention changes accept only one displayed revision", async () => {
+  const f = await dataFixture();
+  const results = await Promise.allSettled([
+    f.data.updateRetention(f.memberSession, retentionBody()),
+    new WorkspaceData(pool).updateRetention(
+      f.memberSession,
+      retentionBody({ measurementDays: 180 }),
+    ),
+  ]);
+  assert.equal(
+    results.filter((result) => result.status === "fulfilled").length,
+    1,
+  );
+  const rejected = results.find((result) => result.status === "rejected");
+  assert.equal(rejected.reason.status, 409);
+  const policy = await f.data.retention(f.target.tenant);
+  assert.equal(policy.revision, "1");
+  assert.equal(policy.events.length, 1);
+});
+
+test("retention preserves request receipts so retrying a pruned command cannot execute it again", async () => {
+  const f = await dataFixture();
+  await f.data.updateRetention(f.memberSession, retentionBody());
+  const job = randomUUID(),
+    requestId = randomUUID();
+  await pool.query(
+    "INSERT INTO command_executions(id,tenant_id,user_id,actor,action,idempotency_key,status,created_at,completed_at) VALUES($1,$2,$3,'fixture','resume',$4,'succeeded',now()-interval '400 days',now()-interval '400 days')",
+    [job, f.target.tenant, f.target.user, requestId],
+  );
+  assert.equal(
+    (await new DataMaintenance(pool).runOnce(f.target.tenant)).commands,
+    1,
+  );
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int AS n FROM command_receipts WHERE tenant_id=$1 AND user_id=$2 AND idempotency_key=$3",
+        [f.target.tenant, f.target.user, requestId],
+      )
+    ).rows[0].n,
+    1,
+  );
+  const runtime = await hub.forTenant(f.target.tenant);
+  await assert.rejects(
+    runtime.submit(
+      "resume",
+      { id: f.target.user, tenant_id: f.target.tenant },
+      requestId,
+    ),
+    /expired from history/,
+  );
+  await assert.rejects(
+    runtime.submit(
+      "pause",
+      { id: f.target.user, tenant_id: f.target.tenant },
+      requestId,
+    ),
+    /another action/,
+  );
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int AS n FROM command_executions WHERE tenant_id=$1 AND idempotency_key=$2",
+        [f.target.tenant, requestId],
+      )
+    ).rows[0].n,
+    0,
+  );
+});
+
+test("retention skips an account update before acquiring its policy lock instead of deadlocking receipt insertion", async () => {
+  const f = await dataFixture();
+  await f.data.updateRetention(f.memberSession, retentionBody());
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [
+      f.target.user,
+    ]);
+    assert.equal(
+      await new DataMaintenance(pool).runOnce(f.target.tenant),
+      null,
+    );
+    assert.equal((await f.data.retention(f.target.tenant)).lastFailedAt, null);
+    await client.query("COMMIT");
+    assert.ok(await new DataMaintenance(pool).runOnce(f.target.tenant));
+  } finally {
+    await client.query("ROLLBACK");
+    client.release();
+  }
+});
+
+test("the archive byte limit includes its completion marker", async () => {
+  const f = await dataFixture();
+  const data = new WorkspaceData(pool);
+  const http = await archiveServer(data, f.memberSession);
+  try {
+    const complete = await (await fetch(http.url)).text();
+    data.maxBytes = Buffer.byteLength(complete) - 1;
+    await assert.rejects(async () => {
+      const response = await fetch(http.url);
+      await response.text();
+    });
+    assert.equal(data.exports.size, 0);
+  } finally {
+    await http.close();
+  }
 });

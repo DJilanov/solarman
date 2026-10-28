@@ -1063,6 +1063,16 @@ export class TenantRuntime {
         );
       return existing.rows[0];
     }
+    const receipt = await this.q(
+      "SELECT action FROM command_receipts WHERE tenant_id=$1 AND user_id=$2 AND idempotency_key=$3",
+      [user.id, key],
+    );
+    if (receipt.rowCount)
+      throw new Error(
+        receipt.rows[0].action !== action
+          ? "The request identifier was already used for another action"
+          : "The original command has expired from history. Use a new request identifier to send another command.",
+      );
     if (["topup", "resume"].includes(action) && !this.readiness().canStart)
       throw new Error(
         "Hardware writes require an enabled, verified Bluesun profile",
