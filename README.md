@@ -16,6 +16,7 @@ SOLARMAN OpenAPI **App ID / App Secret** activation is required in addition to a
 - **Analytics:** power/SOC charts, date ranges, daily energy estimates, data coverage and full-resolution CSV export.
 - **Controls:** refresh diagnostics, top up to 50%, stop grid charging, pause/resume automation. Commands have idempotent request IDs, device acknowledgments, write readbacks and an audit trail.
 - **Activity:** searchable command history with individual request, verification and write details, plus all inverter writes including unlinked recovery operations and earlier bindings.
+- **System health:** persistent device, control-recovery and API-capacity alerts with seen/active/resolved states, available from Settings and an Overview alert summary.
 - **Settings:** private provider link, optional personal API keys, device discovery, compatibility profile, timezone, API usage and raw provider readings.
 
 Missing data stays unavailable rather than becoming zero. Estimated energy excludes gaps longer than twice the sampling interval and honors the selected timezone and daylight-saving boundaries. Browser refreshes read the database; explicit **Refresh readings** requests contact the inverter.
@@ -57,6 +58,10 @@ Explicit Refresh diagnostics reads the native register blocks and renews the pro
 The default steady supervision baseline is 148,920 regular requests/year (105,120 telemetry plus 43,800 native audit requests), before transitions, retries, authentication and recovery. An app-owned timed top-up retains its guarded 15-minute cycle and 210,240/year continuous-use projection while that mode lasts. Shared budget allocation includes periodic native audits. Hardware writes remain disabled during commissioning.
 
 Observed-behavior notices require two distinct newer device uploads; cached responses cannot count twice. They identify grid-supplied house demand above the reserve without meaningful battery support, or solar surplus without expected charging below 99% SOC. Notices include their source observation time and suggest checking inverter settings/BMS limits. They do not override battery protections. A failed active native check pauses automation and attempts cleanup; its error remains visible until a successful native check. Manual diagnostic refreshes cannot postpone a pending scheduler check.
+
+## Operational health
+
+An independent operational monitor checks stored state once a minute without additional SOLARMAN requests. It records persistent episodes for delayed uploads, provider-reported offline/alarm status, three consecutive failed assessments, saved control faults, unresolved scheduled-charge cleanup and low API capacity. Successful communication does not refresh the upload timestamp. Persistent stale alerts allow the effective polling interval plus one five-minute logger cycle and three minutes of delivery jitter. Acknowledging an alert does not resolve it or change inverter settings; escalation to recovery-only or exhausted API capacity makes the alert unseen again. New episodes keep separate history, and a binding change is distinguished from an observed clear condition. Control faults survive restart, force paused intent and require a successful native check before starting again. Alerts are in-app; external delivery is not configured. Backups and a tested restore remain outstanding.
 
 ## Shared API budgets
 

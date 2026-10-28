@@ -9,6 +9,7 @@ import { controlReadiness } from "./control-readiness.mjs";
 import { apiAppKey, ApiBudgetError, YEAR_MS } from "./api-budget.mjs";
 import { ControlJournal } from "./control-journal.mjs";
 import { Supervision } from "./supervision.mjs";
+import { DeviceHealth } from "./operations.mjs";
 import {
   BLUESUN_MAPPING,
   TELEMETRY_MAX_AGE_MS,
@@ -29,6 +30,7 @@ export class TenantRuntime {
       accountId: account?.id ?? null,
       device: account?.device_sn ?? null,
     });
+    this.health = new DeviceHealth(hub.pool, this.journal.context);
     this.work = new WorkQueue();
     this.closePromise = null;
     this.stopping = false;
@@ -185,6 +187,18 @@ export class TenantRuntime {
       this.profileVerified = this.verifiedDevice();
       this.ratedPowerChecked = this.verifiedDevice();
       this.cleanupRequired = this.journal.pending;
+      const health = await this.health.initialize();
+      if (health?.control_fault) {
+        this.profileVerified = false;
+        this.profileError =
+          "A previous control check failed. Refresh native diagnostics before resuming.";
+        this.paused = true;
+        this.manualTopup = false;
+        this.topupExpiresAt = null;
+        this.inhibitStarts = true;
+        await this.journal.requestCleanup({ pause: true, cancelStarts: true });
+        this.cleanupRequired = this.journal.pending;
+      }
       this.initialized = true;
     }
     if (this.paused && !this.manualTopup && this.journal.owned)
@@ -358,6 +372,7 @@ export class TenantRuntime {
       deviceSn: this.device,
     });
     const reading = parseProviderReading(data, this.device);
+    await this.health.upload(reading);
     const receivedAt = new Date().toISOString();
     this.telemetry = {
       source: "provider",
@@ -453,6 +468,14 @@ export class TenantRuntime {
       throw new Error(
         "Pause automation before verifying the inverter settings",
       );
+    return this.health.run(
+      () => this.verifyReadings(),
+      () => Boolean(this.profileError),
+    );
+  }
+
+  /** @returns {Promise<object>} */
+  async verifyReadings() {
     await this.q(
       "UPDATE controller_state SET verification=null,updated_at=now() WHERE tenant_id=$1",
     );
@@ -589,6 +612,13 @@ export class TenantRuntime {
   async collect(inspectOnly = false, forceControl = false) {
     if (!this.client || !this.ready)
       throw new Error("Connect your account and choose an inverter first");
+    return this.health.run(
+      () => this.collectReadings(inspectOnly, forceControl),
+      () => Boolean(this.profileError),
+    );
+  }
+
+  async collectReadings(inspectOnly = false, forceControl = false) {
     if (!this.executionId) this.events = [];
     if (!inspectOnly && (this.cleanupRequired || this.journal.pending))
       await this.clearScheduledPermission();
@@ -774,6 +804,13 @@ export class TenantRuntime {
     }
     if (pauseUnrecorded)
       this.lastError += "; automation pause could not be recorded";
+    if (controlFailed) {
+      try {
+        await this.health.controlFault(true);
+      } catch {
+        console.error(JSON.stringify({ event: "device_health_update_failed" }));
+      }
+    }
     try {
       await this.q(
         "UPDATE command_executions SET status='failed',message=$3,detail=$4,completed_at=now() WHERE tenant_id=$1 AND id=$2",

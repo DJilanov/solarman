@@ -16,6 +16,7 @@ import { providerPayload } from "../fixtures/provider.mjs";
 import { ApiBudget, ApiBudgetError, apiAppKey } from "../../src/api-budget.mjs";
 import { ControlJournal } from "../../src/control-journal.mjs";
 import { parseFrame, frame } from "../../src/modbus.mjs";
+import { Operations } from "../../src/operations.mjs";
 
 let pool;
 let hub;
@@ -157,6 +158,7 @@ test("all data routes require a session", async () => {
     "/activity",
     "/settings",
     "/write-history",
+    "/operations",
     `/activity/${randomUUID()}`,
   ])
     assert.equal((await fetchApi(path)).status, 401);
@@ -360,6 +362,12 @@ test("session identifiers are hashed in PostgreSQL and logout revokes them", asy
 });
 
 async function controlFixture(writes = false) {
+  await pool.query("DELETE FROM operational_incidents WHERE tenant_id=$1", [
+    ids.alpha.tenant,
+  ]);
+  await pool.query("DELETE FROM device_health WHERE tenant_id=$1", [
+    ids.alpha.tenant,
+  ]);
   await pool.query("DELETE FROM inverter_write_intents WHERE tenant_id=$1", [
     ids.alpha.tenant,
   ]);
@@ -1909,5 +1917,376 @@ test("history migration backfills only unambiguous devices within the original t
   } finally {
     await connection.query("ROLLBACK");
     connection.release();
+  }
+});
+
+test("device health persists real upload time and consecutive failures across restarts", async () => {
+  const { runtime } = await controlFixture();
+  let restarted;
+  try {
+    const at = new Date(Date.now() - 120000);
+    runtime.client.api = async () =>
+      providerPayload({ device: runtime.device, collectedAt: at.getTime() });
+    await runtime.collect();
+    runtime.client.api = async () =>
+      providerPayload({
+        device: runtime.device,
+        collectedAt: at.getTime() - 60000,
+      });
+    await runtime.collect();
+    let state = await hub.operations.deviceStatus(runtime.tenantId);
+    assert.equal(
+      new Date(state.uploadedAt).getTime(),
+      Math.floor(at.getTime() / 1000) * 1000,
+    );
+    assert.ok(
+      new Date(state.succeededAt).getTime() >
+        new Date(state.uploadedAt).getTime(),
+    );
+    runtime.client.api = async () => {
+      throw new Error("private-health-error-marker");
+    };
+    for (let index = 0; index < 3; index++)
+      await assert.rejects(runtime.collect(), /private-health-error-marker/);
+    await hub.operations.refresh();
+    let data = await (await fetchApi("/operations", { auth: alpha })).json();
+    assert.ok(data.items.some((item) => item.kind === "request_failures"));
+    assert.equal(data.deviceHealth.failures, 3);
+    assert.equal(
+      JSON.stringify(data).includes("private-health-error-marker"),
+      false,
+    );
+    restarted = new TenantRuntime(
+      runtime.hub,
+      runtime.tenantId,
+      runtime.account,
+    );
+    await restarted.initialize();
+    const persisted = new Operations(pool, hub);
+    assert.equal(
+      (await persisted.list(runtime.tenantId)).items[0].id,
+      data.items[0].id,
+    );
+    restarted.client.api = async () =>
+      providerPayload({ device: runtime.device });
+    await restarted.collect();
+    await hub.operations.refresh();
+    state = await hub.operations.deviceStatus(runtime.tenantId);
+    assert.equal(state.failures, 0);
+    data = await (
+      await fetchApi("/operations?filter=resolved", { auth: alpha })
+    ).json();
+    assert.ok(
+      data.items.some(
+        (item) =>
+          item.kind === "request_failures" &&
+          item.resolutionReason === "cleared",
+      ),
+    );
+  } finally {
+    await restarted?.close();
+    await runtime.close();
+  }
+});
+
+test("alerts deduplicate, acknowledgments are scoped and escalation becomes unseen without resolving the condition", async () => {
+  const { runtime } = await controlFixture();
+  const scope = "quota-test-scope";
+  const scopes = new Set([scope]);
+  const base = {
+    account_id: runtime.account.id,
+    device: runtime.device,
+    binding: scope,
+    kind: "api_quota",
+    severity: "warning",
+    detailCode: "low",
+    at: new Date(),
+  };
+  try {
+    await Promise.all([
+      hub.operations.reconcile(runtime.tenantId, [base], scopes),
+      hub.operations.reconcile(runtime.tenantId, [base], scopes),
+    ]);
+    let list = await hub.operations.list(runtime.tenantId);
+    assert.equal(list.total, 1);
+    const id = list.items[0].id;
+    assert.equal(
+      (
+        await fetchApi(`/incidents/${id}/acknowledge`, {
+          auth: beta,
+          method: "POST",
+          body: { revision: 1 },
+        })
+      ).status,
+      404,
+    );
+    assert.equal(
+      (
+        await fetchApi(`/incidents/${id}/acknowledge`, {
+          auth: alpha,
+          method: "POST",
+          body: { revision: 1 },
+          csrf: false,
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await fetchApi(`/incidents/${id}/acknowledge`, {
+          auth: alpha,
+          method: "POST",
+          body: { revision: 1 },
+          originHeader: false,
+        })
+      ).status,
+      403,
+    );
+    const seen = await (
+      await fetchApi(`/incidents/${id}/acknowledge`, {
+        auth: alpha,
+        method: "POST",
+        body: { revision: 1 },
+      })
+    ).json();
+    const duplicate = await (
+      await fetchApi(`/incidents/${id}/acknowledge`, {
+        auth: alpha,
+        method: "POST",
+        body: { revision: 1 },
+      })
+    ).json();
+    assert.equal(seen.acknowledgedAt, duplicate.acknowledgedAt);
+    assert.equal(duplicate.resolvedAt, null);
+    assert.equal((await hub.operations.summary(runtime.tenantId)).unseen, 0);
+    await hub.operations.reconcile(
+      runtime.tenantId,
+      [{ ...base, severity: "critical", detailCode: "recovery-only" }],
+      scopes,
+    );
+    list = await hub.operations.list(runtime.tenantId);
+    assert.equal(list.items[0].revision, 2);
+    assert.equal(list.items[0].acknowledgedAt, null);
+    assert.equal(
+      (
+        await fetchApi(`/incidents/${id}/acknowledge`, {
+          auth: alpha,
+          method: "POST",
+          body: { revision: 1 },
+        })
+      ).status,
+      409,
+    );
+    assert.equal(
+      (
+        await fetchApi(`/incidents/${id}/acknowledge`, {
+          auth: alpha,
+          method: "POST",
+          body: { revision: 0 },
+        })
+      ).status,
+      400,
+    );
+    await hub.operations.acknowledge(runtime.tenantId, id, ids.alpha.user, 2);
+    await hub.operations.reconcile(
+      runtime.tenantId,
+      [{ ...base, severity: "critical", detailCode: "exhausted" }],
+      scopes,
+    );
+    await hub.operations.reconcile(
+      runtime.tenantId,
+      [{ ...base, severity: "critical", detailCode: "exhausted" }],
+      scopes,
+    );
+    list = await hub.operations.list(runtime.tenantId);
+    assert.equal(list.items[0].revision, 3);
+    assert.equal(list.unseen, 1);
+    await hub.operations.reconcile(runtime.tenantId, [], scopes);
+    assert.equal((await hub.operations.list(runtime.tenantId)).total, 0);
+    assert.equal(
+      (await hub.operations.list(runtime.tenantId, "resolved")).items[0]
+        .resolutionReason,
+      "cleared",
+    );
+    await hub.operations.reconcile(runtime.tenantId, [base], scopes);
+    list = await hub.operations.list(runtime.tenantId, "all");
+    assert.equal(list.total, 2);
+    const beyond = await hub.operations.list(runtime.tenantId, "all", 9999);
+    assert.equal(beyond.total, 2);
+    assert.equal(beyond.items.length, 0);
+    assert.notEqual(list.items[0].id, id);
+    const other = await (await fetchApi("/operations", { auth: beta })).json();
+    assert.equal(
+      other.items.some((item) => item.id === id),
+      false,
+    );
+    assert.equal(
+      (await fetchApi("/operations?filter=invalid", { auth: alpha })).status,
+      400,
+    );
+    assert.equal(
+      (await fetchApi("/operations?offset=-1", { auth: alpha })).status,
+      400,
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("binding changes resolve old monitoring alerts without abandoning outstanding cleanup", async () => {
+  const { runtime } = await controlFixture();
+  try {
+    await pool.query(
+      "UPDATE device_health SET uploaded_at=now()-interval '1 hour' WHERE tenant_id=$1",
+      [runtime.tenantId],
+    );
+    await hub.operations.refresh();
+    assert.ok(
+      (await hub.operations.list(runtime.tenantId)).items.some(
+        (item) => item.kind === "telemetry_stale",
+      ),
+    );
+    await pool.query(
+      "UPDATE solarman_accounts SET device_sn='replacement-health-device' WHERE tenant_id=$1",
+      [runtime.tenantId],
+    );
+    await pool.query(
+      "INSERT INTO device_control_state (tenant_id,account_id,device,state,updated_at) VALUES ($1,$2,$3,'cleanup-required',now()-interval '3 minutes')",
+      [runtime.tenantId, runtime.account.id, runtime.device],
+    );
+    await hub.operations.refresh();
+    const old = await hub.operations.list(runtime.tenantId, "resolved");
+    assert.ok(
+      old.items.some(
+        (item) =>
+          item.kind === "telemetry_stale" &&
+          item.resolutionReason === "binding_changed",
+      ),
+    );
+    assert.ok(
+      (await hub.operations.list(runtime.tenantId)).items.some(
+        (item) =>
+          item.kind === "cleanup_pending" && item.device === runtime.device,
+      ),
+    );
+    await runtime.journal.confirmOff(9);
+    await hub.operations.refresh();
+    assert.ok(
+      (await hub.operations.list(runtime.tenantId, "resolved")).items.some(
+        (item) =>
+          item.kind === "cleanup_pending" &&
+          item.resolutionReason === "cleared",
+      ),
+    );
+  } finally {
+    await pool.query(
+      "UPDATE solarman_accounts SET device_sn=$2 WHERE tenant_id=$1",
+      [runtime.tenantId, runtime.device],
+    );
+    await runtime.close();
+  }
+});
+
+test("a persisted control fault forces pause after restart and only native success clears it", async () => {
+  const { runtime } = await armedFixture();
+  let restarted;
+  try {
+    await runtime.health.controlFault(true);
+    await pool.query(
+      "UPDATE controller_state SET paused=false,manual_topup=true,topup_expires_at=now()+interval '1 hour' WHERE tenant_id=$1",
+      [runtime.tenantId],
+    );
+    restarted = new TenantRuntime(
+      runtime.hub,
+      runtime.tenantId,
+      runtime.account,
+    );
+    await restarted.initialize();
+    restarted.client.api = async () =>
+      providerPayload({ device: runtime.device });
+    restarted.controller.disable = async () => 9;
+    restarted.inspector = runtime.inspector;
+    assert.equal(restarted.paused, true);
+    assert.equal(restarted.manualTopup, false);
+    assert.equal(restarted.readiness().canStart, false);
+    const persisted = (
+      await pool.query(
+        "SELECT paused,manual_topup FROM controller_state WHERE tenant_id=$1",
+        [runtime.tenantId],
+      )
+    ).rows[0];
+    assert.deepEqual(persisted, { paused: true, manual_topup: false });
+    await restarted.collect();
+    assert.equal(
+      (await hub.operations.deviceStatus(runtime.tenantId)).controlFault,
+      true,
+    );
+    await restarted.collect(true);
+    assert.equal(
+      (await hub.operations.deviceStatus(runtime.tenantId)).controlFault,
+      false,
+    );
+    assert.equal(restarted.paused, true);
+    assert.equal(restarted.readiness().canStart, true);
+  } finally {
+    await restarted?.close();
+    await runtime.close();
+  }
+});
+
+test("operational quota checks share one cached status lookup without sending device requests", async () => {
+  const { runtime, calls } = await controlFixture();
+  let probes = 0;
+  const monitor = new Operations(pool, {
+    runtimes: new Map([
+      [runtime.tenantId, { appKey: "shared-operational-app", pollMs: 300000 }],
+      [ids.beta.tenant, { appKey: "shared-operational-app", pollMs: 300000 }],
+    ]),
+    budget: {
+      status: async () => {
+        probes++;
+        return { routineRemaining: 0, limit: 200000, state: "recovery-only" };
+      },
+    },
+  });
+  try {
+    await monitor.refresh();
+    assert.equal(probes, 1);
+    assert.deepEqual(calls, []);
+    const data = await monitor.list(runtime.tenantId);
+    assert.equal(
+      data.items.find((item) => item.kind === "api_quota").severity,
+      "critical",
+    );
+    assert.equal(
+      data.items.find((item) => item.kind === "api_quota").detailCode,
+      "recovery-only",
+    );
+  } finally {
+    await pool.query(
+      "DELETE FROM operational_incidents WHERE tenant_id=$1 AND binding LIKE 'api:shared-operational-app:%'",
+      [ids.beta.tenant],
+    );
+    await runtime.close();
+  }
+});
+
+test("public health distinguishes a delayed operational monitor without exposing tenant details", async () => {
+  const before = {
+    checkedAt: hub.operations.checkedAt,
+    startedAt: hub.operations.startedAt,
+  };
+  try {
+    hub.operations.checkedAt = Date.now() - 180001;
+    const response = await fetch(`${origin}/healthz`);
+    assert.equal(response.status, 503);
+    const body = await response.json();
+    assert.equal(body.status, "degraded");
+    assert.equal(body.monitoring, "delayed");
+    assert.equal(JSON.stringify(body).includes(ids.alpha.device), false);
+    hub.operations.checkedAt = Date.now();
+    assert.equal((await fetch(`${origin}/healthz`)).status, 200);
+  } finally {
+    Object.assign(hub.operations, before);
   }
 });

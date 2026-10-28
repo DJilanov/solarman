@@ -39,6 +39,7 @@ async function main() {
       server.once("error", reject);
       server.listen(config.port, config.host, resolve);
     });
+    hub.operations.start();
     console.log(
       JSON.stringify({ event: "dashboard_started", port: config.port }),
     );

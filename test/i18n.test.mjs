@@ -32,6 +32,8 @@ test("every literal translation used by the interface exists in both catalogues"
     "i18n.tsx",
     "command-details.tsx",
     "write-history.tsx",
+    "system-health.tsx",
+    "incident-summary.tsx",
   ]) {
     const source = readFileSync(
       new URL(`../web/${file}`, import.meta.url),

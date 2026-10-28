@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { encryptCredentials, decryptCredentials } from "./credentials.mjs";
 import { TenantRuntime } from "./tenant-runtime.mjs";
 import { ApiBudget, monitoringInterval } from "./api-budget.mjs";
+import { Operations } from "./operations.mjs";
 
 export class AccountHub {
   constructor(pool, env, key) {
@@ -19,6 +20,7 @@ export class AccountHub {
     this.reloads = new Map();
     this.accountUpdates = new Set();
     this.budget = new ApiBudget(pool, env);
+    this.operations = new Operations(pool, this);
   }
 
   /** @param {TenantRuntime} runtime @returns {number} */
@@ -455,9 +457,11 @@ export class AccountHub {
 
   async close() {
     this.stopping = true;
+    const monitorStopped = this.operations.stop();
     await Promise.allSettled(
       [...this.runtimes.values()].map((runtime) => runtime.close()),
     );
+    await monitorStopped;
     if (this.lock) {
       try {
         await this.lock.query("SELECT pg_advisory_unlock(193401,2)");

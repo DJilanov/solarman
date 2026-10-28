@@ -185,9 +185,15 @@ export function createApp({ pool, hub, config }) {
       }
       if (pathname === "/healthz" && request.method === "GET") {
         await pool.query("SELECT 1");
-        json(response, 200, {
-          status: hub.stopping ? "stopping" : "ok",
+        const monitoring = hub.operations.status().state;
+        json(response, hub.stopping || monitoring === "delayed" ? 503 : 200, {
+          status: hub.stopping
+            ? "stopping"
+            : monitoring === "delayed"
+              ? "degraded"
+              : "ok",
           release: process.env.RELEASE_SHA ?? "development",
+          monitoring,
         });
         return;
       }
@@ -401,19 +407,21 @@ export function createApp({ pool, hub, config }) {
       const runtime = await hub.forTenant(session.tenant_id);
       if (pathname === "/api/overview" && request.method === "GET") {
         const today = localDay(Date.now(), runtime.timezone);
-        const [current, stats, recent] = await Promise.all([
+        const [current, stats, recent, alerts] = await Promise.all([
           latest(session.tenant_id),
           analytics(session.tenant_id, runtime, today, today),
           pool.query(
             "SELECT id,actor,action,status,message,created_at,completed_at FROM command_executions WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 5",
             [session.tenant_id],
           ),
+          hub.operations.summary(session.tenant_id),
         ]);
         json(response, 200, {
           latest: measurement(current),
           controller: runtime.status(),
           today: stats,
           recent: recent.rows,
+          alerts,
         });
         return;
       }
@@ -457,6 +465,54 @@ export function createApp({ pool, hub, config }) {
           "cache-control": "no-store",
         });
         response.end([header, ...lines].join("\n"));
+        return;
+      }
+      if (pathname === "/api/operations" && request.method === "GET") {
+        const filter = url.searchParams.get("filter") ?? "active";
+        const offsetText = url.searchParams.get("offset") ?? "0";
+        if (
+          !["active", "resolved", "all"].includes(filter) ||
+          !/^\d{1,6}$/.test(offsetText)
+        )
+          throw new HttpError(400, "Invalid incident filter or page");
+        const [history, deviceHealth] = await Promise.all([
+          hub.operations.list(session.tenant_id, filter, Number(offsetText)),
+          hub.operations.deviceStatus(session.tenant_id),
+        ]);
+        json(response, 200, { ...history, deviceHealth });
+        return;
+      }
+      const incidentMatch =
+        /^\/api\/incidents\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/acknowledge$/i.exec(
+          pathname,
+        );
+      if (incidentMatch && request.method === "POST") {
+        const body = await bodyJson(request);
+        if (
+          !Number.isInteger(body.revision) ||
+          body.revision < 1 ||
+          body.revision > 2147483647
+        )
+          throw new HttpError(400, "A current alert revision is required");
+        const incident = await hub.operations.acknowledge(
+          session.tenant_id,
+          incidentMatch[1],
+          session.id,
+          body.revision,
+        );
+        if (!incident) {
+          const owned = await pool.query(
+            "SELECT 1 FROM operational_incidents WHERE tenant_id=$1 AND id=$2",
+            [session.tenant_id, incidentMatch[1]],
+          );
+          throw new HttpError(
+            owned.rowCount ? 409 : 404,
+            owned.rowCount
+              ? "This alert changed. Refresh status before marking it as seen."
+              : "Alert not found",
+          );
+        }
+        json(response, 200, incident);
         return;
       }
       if (pathname === "/api/activity" && request.method === "GET") {

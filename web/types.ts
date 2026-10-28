@@ -3,6 +3,54 @@ export interface Session {
   tenant: { id: string; name: string; timezone: string };
   csrfToken: string;
 }
+export interface Incident {
+  id: string;
+  kind:
+    | "telemetry_stale"
+    | "device_offline"
+    | "request_failures"
+    | "control_fault"
+    | "cleanup_pending"
+    | "api_quota";
+  severity: "warning" | "critical";
+  device: string;
+  detailCode: "low" | "recovery-only" | "exhausted" | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  resolvedAt: string | null;
+  resolutionReason: "cleared" | "binding_changed" | null;
+  acknowledgedAt: string | null;
+  revision: number;
+}
+export interface MonitorStatus {
+  checkedAt: string | null;
+  state: "current" | "starting" | "delayed";
+}
+export interface AlertSummary {
+  items: Incident[];
+  active: number;
+  unseen: number;
+  monitor: MonitorStatus;
+}
+export interface OperationsData {
+  items: Incident[];
+  hasMore: boolean;
+  offset: number;
+  total: number;
+  unseen: number;
+  monitor: MonitorStatus;
+  deviceHealth: {
+    device: string;
+    attemptedAt: string | null;
+    succeededAt: string | null;
+    failedAt: string | null;
+    uploadedAt: string | null;
+    deviceState: number | null;
+    failures: number;
+    controlFault: boolean;
+    staleAfterSeconds: number;
+  } | null;
+}
 export interface WriteSummary {
   id: string;
   executionId: string | null;
@@ -181,6 +229,7 @@ export interface OverviewData {
   controller: ControllerStatus;
   today: Analytics;
   recent: Command[];
+  alerts: AlertSummary;
 }
 export interface SettingsData {
   controller: ControllerStatus;

@@ -60,6 +60,7 @@ import type {
   ControllerStatus,
 } from "./types";
 import { WriteHistory } from "./write-history";
+import { IncidentSummary } from "./incident-summary";
 
 export function Overview(): ReactNode {
   const {
@@ -115,6 +116,10 @@ export function Overview(): ReactNode {
       />
       {error && <Notice tone="danger">{error}</Notice>}
       <SetupNotice controller={controller} />
+      <IncidentSummary
+        alerts={data.alerts}
+        timezone={session.tenant.timezone}
+      />
       {controller.supervision.issue && (
         <Notice tone="danger">
           <span>{tr(controller.supervision.issue.message)}</span>
@@ -1247,6 +1252,11 @@ export function SettingsPage(): ReactNode {
         description={tr(
           "Manage the provider account and inverter belonging to your workspace.",
         )}
+        action={
+          <Link className="button secondary small" to="/settings/health">
+            {tr("System health")}
+          </Link>
+        }
       />
       {error && <Notice tone="danger">{error}</Notice>}
       {message && (

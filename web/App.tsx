@@ -51,6 +51,7 @@ import {
 import type { Action, Command, OverviewData, Session } from "./types";
 
 const CommandDetailsPage = lazy(() => import("./command-details"));
+const SystemHealthPage = lazy(() => import("./system-health"));
 const WriteHistoryPage = lazy(() =>
   import("./command-details").then((module) => ({
     default: module.WriteHistoryPage,
@@ -577,6 +578,14 @@ function Dashboard({
                 }
               />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route
+                path="/settings/health"
+                element={
+                  <Suspense fallback={<Loading />}>
+                    <SystemHealthPage />
+                  </Suspense>
+                }
+              />
               <Route
                 path="/workspaces"
                 element={

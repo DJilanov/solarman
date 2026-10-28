@@ -44,6 +44,14 @@ curl --fail https://solarman.jilanov.com/healthz
 
 Check release SHA, HTTPS login, settings and tenant access. A healthy HTTP process does not prove provider access or successful inverter commissioning. Real device monitoring remains unavailable without activated OpenAPI credentials.
 
+## Operational monitoring
+
+Settings → **System health** shows durable, tenant-scoped alerts and separate timestamps for attempts, successful assessments and device uploads. Overview shows up to three active alerts and the unseen count. The monitor reads PostgreSQL once a minute; it does not increase provider polling. Refresh status reloads stored state rather than issuing a device command. Alert history includes active, seen and resolved episodes, with explicit resolution when a monitored binding changes. Marking an alert as seen does not suppress the underlying condition or confirm a hardware stop. Severity escalation clears the acknowledgment so an exhausted allowance is not hidden by an earlier acknowledgment of low capacity. Acknowledgments include the displayed revision; a delayed acknowledgment for an older warning cannot hide its newer critical revision. Monitor transactions have bounded lock/query timeouts, and draining the monitor does not postpone inverter cleanup during shutdown.
+
+Persistent stale-data detection allows the effective device poll interval plus eight minutes for a five-minute logger cycle and delivery jitter (13 minutes at the default cadence). Three consecutive failed assessments open a separate alert; quota refusal does not count as a failed device communication. Offline/alarm assertions retain the time of the last provider report. Uncertain or cleanup-required control ownership older than two minutes opens a critical alert, including obligations on previous bindings. Stored control faults force paused intent on restart; provider telemetry alone cannot clear them.
+
+`/healthz` continues to check the database and scheduler shutdown state, and now reports the operational monitor heartbeat. A heartbeat delayed by more than three minutes returns HTTP 503 with generic `monitoring: delayed`; it exposes no tenant details. Device conditions live in the authenticated health page and do not change a healthy process response into a claim that inverter behavior has been commissioned. Fault records remain available across process restarts. The in-app channel is implemented; external notification delivery, scheduled private backups and a verified restore are still required work.
+
 ## Rollback
 
 Read `/home/mitko/solarman/previous` and confirm the desired release and schema compatibility before switching. Delete only the `solarman` PM2 process, then set `RELEASE_SHA` to the desired commit and run `pm2 start <release>/ecosystem.config.cjs --only solarman --update-env`. Verify health and the actual process working directory and frontend, update the `current` symlink, then run `pm2 save`. Do not restart other applications.

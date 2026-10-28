@@ -8,6 +8,8 @@ import type {
   SettingsData,
   Session,
   Command,
+  OperationsData,
+  Incident,
 } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
@@ -1101,4 +1103,193 @@ test("full write history includes recovery and paginated command evidence withou
       await pool.end();
     }
   }
+});
+
+test("health alerts stay active after being marked seen and show resolved history in Bulgarian on mobile", async ({
+  page,
+}) => {
+  await signIn(page);
+  const overview = (await (
+    await page.request.get("/api/overview")
+  ).json()) as OverviewData;
+  const now = new Date().toISOString();
+  const before = new Date(Date.now() - 3600000).toISOString();
+  const items: Incident[] = [
+    {
+      id: randomUUID(),
+      kind: "cleanup_pending",
+      severity: "critical",
+      device: "health-inverter-" + "long-serial-".repeat(5),
+      detailCode: null,
+      firstSeenAt: before,
+      lastSeenAt: now,
+      resolvedAt: null,
+      resolutionReason: null,
+      acknowledgedAt: null,
+      revision: 1,
+    },
+    {
+      id: randomUUID(),
+      kind: "telemetry_stale",
+      severity: "warning",
+      device: "health-inverter",
+      detailCode: null,
+      firstSeenAt: before,
+      lastSeenAt: now,
+      resolvedAt: null,
+      resolutionReason: null,
+      acknowledgedAt: null,
+      revision: 1,
+    },
+  ];
+  const monitor = { checkedAt: now, state: "current" } as const;
+  overview.alerts = { items, active: 2, unseen: 2, monitor };
+  await page.route("**/api/overview", (route) =>
+    route.fulfill({ json: overview }),
+  );
+  await page.route("**/api/operations?**", (route) => {
+    const filter = new URL(route.request().url()).searchParams.get("filter");
+    const selected = items.filter(
+      (item) =>
+        filter === "all" ||
+        (filter === "resolved"
+          ? item.resolvedAt !== null
+          : item.resolvedAt === null),
+    );
+    const data: OperationsData = {
+      items: selected,
+      hasMore: false,
+      offset: 0,
+      total: selected.length,
+      unseen: selected.filter(
+        (item) => !item.resolvedAt && !item.acknowledgedAt,
+      ).length,
+      monitor,
+      deviceHealth: {
+        device: "health-inverter",
+        attemptedAt: now,
+        succeededAt: now,
+        failedAt: before,
+        uploadedAt: before,
+        deviceState: 1,
+        failures: 0,
+        controlFault: false,
+        staleAfterSeconds: 480,
+      },
+    };
+    return route.fulfill({ json: data });
+  });
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(
+    `**/api/incidents/${items[0].id}/acknowledge`,
+    async (route) => {
+      expect(route.request().method()).toBe("POST");
+      expect(route.request().headers()["x-csrf-token"]).toBeTruthy();
+      expect(route.request().postDataJSON() as { revision: number }).toEqual({
+        revision: 1,
+      });
+      await gate;
+      items[0].acknowledgedAt = now;
+      overview.alerts.unseen = 1;
+      await route.fulfill({ json: items[0] });
+    },
+  );
+  await page.goto("/");
+  await expect(page.locator(".incident-summary")).toContainText(
+    "2 active alerts",
+  );
+  await page
+    .getByRole("link", { name: "Review health and alerts", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "System health", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".incident-card")).toHaveCount(2);
+  const critical = page.locator(".incident-card.critical");
+  await critical
+    .getByRole("button", { name: "Mark as seen", exact: true })
+    .click();
+  await expect(
+    critical.getByRole("button", { name: "Saving…", exact: true }),
+  ).toBeDisabled();
+  release();
+  await expect(critical).toContainText("Seen; the condition is still active.");
+  await expect(critical.locator(".badge")).toHaveText("Critical");
+  await page.locator(".language-switch select").selectOption("bg");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(
+    page.getByRole("heading", { name: "Състояние на системата", exact: true }),
+  ).toBeVisible();
+  await expect(critical).toContainText("Видян; състоянието все още е активно.");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+  ).toBe(false);
+  await page.screenshot({
+    path: "test-results/system-health-mobile-bg.png",
+    fullPage: true,
+  });
+  items[0].resolvedAt = now;
+  items[0].resolutionReason = "cleared";
+  await page.getByLabel("Показване на сигнали").selectOption("resolved");
+  await expect(page.locator(".incident-card")).toHaveCount(1);
+  await expect(page.locator(".incident-card")).toContainText(
+    "Записано състояние:",
+  );
+  await expect(page.locator(".incident-card .badge")).toHaveText("Приключен");
+  await expect(page.locator(".incident-card")).toContainText(
+    "Състоянието вече не се установява",
+  );
+  await expect(
+    page.getByRole("button", { name: "Отбелязване като видян", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("health request failure offers retry and a delayed monitor never appears as current", async ({
+  page,
+}) => {
+  await signIn(page);
+  let requests = 0;
+  await page.route("**/api/operations?**", (route) => {
+    requests++;
+    if (requests === 1)
+      return route.fulfill({
+        status: 503,
+        json: {
+          error: "The request could not be completed. Please try again.",
+        },
+      });
+    const data: OperationsData = {
+      items: [],
+      hasMore: false,
+      offset: 0,
+      total: 0,
+      unseen: 0,
+      monitor: {
+        checkedAt: new Date(Date.now() - 300000).toISOString(),
+        state: "delayed",
+      },
+      deviceHealth: null,
+    };
+    return route.fulfill({ json: data });
+  });
+  await page.goto("/settings/health");
+  await expect(page.getByRole("alert")).toContainText(
+    "The request could not be completed. Please try again.",
+  );
+  await expect(page.locator(".health-facts")).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Refresh status", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText(
+    "The operational monitor is overdue. Alert status may be out of date.",
+  );
+  await expect(page.locator(".health-facts")).toBeVisible();
+  await expect(
+    page.getByText("No active alerts recorded.", { exact: true }),
+  ).toBeVisible();
 });
