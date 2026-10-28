@@ -47,6 +47,7 @@ export class TenantRuntime {
     this.lastSuccessAt = null;
     this.lastError = null;
     this.paused = true;
+    this.lifecycle = "active";
     this.manualTopup = false;
     this.topupExpiresAt = null;
     this.controlEnabled = false;
@@ -120,6 +121,7 @@ export class TenantRuntime {
         account.profile === "bluesun-bse20kh3";
       this.appKey = apiAppKey(config.appId);
       this.client = new SolarmanClient(config, {
+        authorizeCommand: (command) => this.journal.authorizeDispatch(command),
         callbackPrefix: `/solarman/callback/${account.id}/`,
         beforeRequest: () => hub.reserveRequest(),
         onRequest: async (kind, purpose) => {
@@ -177,13 +179,34 @@ export class TenantRuntime {
 
   async initialize() {
     const result = await this.q(
-      "SELECT paused,manual_topup,control_enabled,verification,topup_expires_at FROM controller_state WHERE tenant_id=$1",
+      "SELECT c.paused,c.manual_topup,c.control_enabled,c.verification,c.topup_expires_at,t.lifecycle FROM controller_state c JOIN tenants t ON t.id=c.tenant_id WHERE c.tenant_id=$1",
     );
     this.paused = result.rows[0].paused;
     this.manualTopup = result.rows[0].manual_topup;
     this.controlEnabled = result.rows[0].control_enabled;
     this.verification = result.rows[0].verification;
     this.topupExpiresAt = result.rows[0].topup_expires_at;
+    this.lifecycle = result.rows[0].lifecycle;
+    if (this.lifecycle !== "active") {
+      this.inhibitStarts = true;
+      if (
+        !this.paused ||
+        this.manualTopup ||
+        this.controlEnabled ||
+        this.verification
+      ) {
+        await this.journal.requestCleanup({
+          pause: true,
+          cancelStarts: true,
+          revokeControl: true,
+        });
+        this.paused = true;
+        this.manualTopup = false;
+        this.topupExpiresAt = null;
+        this.controlEnabled = false;
+        this.verification = null;
+      }
+    }
     await this.journal.load(!this.initialized);
     if (!this.initialized) {
       if (this.appKey) await this.requestCapacity();
@@ -264,6 +287,7 @@ export class TenantRuntime {
     const age =
       Date.now() - new Date(this.verification?.checkedAt ?? "").getTime();
     return controlReadiness({
+      tenantActive: this.lifecycle === "active",
       connected: Boolean(this.client && this.ready),
       supported: this.account?.profile === "bluesun-bse20kh3",
       serverAllowed: this.hostWritesAllowed,
@@ -291,6 +315,7 @@ export class TenantRuntime {
   status() {
     const readiness = this.readiness();
     return {
+      lifecycle: this.lifecycle,
       apiConfigured: Boolean(this.client),
       capacity: this.capacity(),
       nextPollAt:
@@ -777,7 +802,10 @@ export class TenantRuntime {
       await this.mapProvider(await this.readProvider());
     }
     const canWrite =
-      this.writesEnabled && this.controlEnabled && this.verifiedDevice();
+      this.lifecycle === "active" &&
+      this.writesEnabled &&
+      this.controlEnabled &&
+      this.verifiedDevice();
     if (canWrite && !this.ratedPowerChecked) {
       const rated = await this.inspector.read(4, 7, 2);
       if (rated[0] * 65536 + rated[1] !== 20_000)
@@ -970,7 +998,7 @@ export class TenantRuntime {
       manual_topup=($2='topup'),
       topup_expires_at=CASE WHEN $2='topup' THEN now()+interval '6 hours' ELSE null END,
       updated_at=now()
-      WHERE tenant_id=$1 AND control_epoch=$3 AND control_enabled
+      WHERE tenant_id=$1 AND control_epoch=$3 AND control_enabled AND EXISTS (SELECT 1 FROM tenants t WHERE t.id=$1 AND t.lifecycle='active')
       RETURNING tenant_id`,
       [action, epoch],
     );
@@ -992,6 +1020,16 @@ export class TenantRuntime {
       throw new Error("Workspace does not match the signed-in account");
     if (this.stopping || this.hub.stopping)
       throw new Error("The controller is stopping");
+    const tenant = (await this.q("SELECT lifecycle FROM tenants WHERE id=$1"))
+      .rows[0];
+    this.lifecycle = tenant?.lifecycle ?? "suspended";
+    if (
+      ["enable_controls", "resume", "topup"].includes(action) &&
+      this.lifecycle !== "active"
+    )
+      throw new Error(
+        "This workspace is suspended. New automation and administration are unavailable.",
+      );
     if (
       ![
         "refresh",

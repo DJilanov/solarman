@@ -39,6 +39,7 @@ test("every literal translation used by the interface exists in both catalogues"
     "account-security.tsx",
     "account-recovery.tsx",
     "access-admin.tsx",
+    "tenant-lifecycle.tsx",
   ]) {
     const source = readFileSync(
       new URL(`../web/${file}`, import.meta.url),
@@ -57,6 +58,7 @@ test("account security errors and event labels have English and Bulgarian transl
     "account-security.mjs",
     "account-recovery.mjs",
     "invitations.mjs",
+    "tenant-lifecycle.mjs",
   ]
     .map((file) =>
       readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"),

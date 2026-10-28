@@ -10,6 +10,7 @@ import {
 } from "./auth.mjs";
 import { AccountRecovery } from "./account-recovery.mjs";
 import { Invitations } from "./invitations.mjs";
+import { TenantLifecycle } from "./tenant-lifecycle.mjs";
 import { summarize, localDay, dayStart, addDays } from "./analytics.mjs";
 import { historyEvidence, writeHistory } from "./command-history.mjs";
 import { readBackupStatus } from "./backup-status.mjs";
@@ -83,6 +84,7 @@ export function createApp({ pool, hub, config }) {
   const security = new AccountSecurity(pool);
   const recovery = new AccountRecovery(pool);
   const invitations = new Invitations(pool);
+  const lifecycle = new TenantLifecycle(pool);
   /** @param {import('node:http').IncomingMessage} request @param {import('node:http').ServerResponse} response @param {string} purpose @returns {string} */
   const limitPublic = (request, response, purpose) => {
     const trusted = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(
@@ -449,10 +451,47 @@ export function createApp({ pool, hub, config }) {
         if (!session.platform_admin)
           throw new HttpError(403, "Administrator access is required");
         const result =
-          await pool.query(`SELECT t.id,t.name,t.created_at,a.connection_status,
+          await pool.query(`SELECT t.id,t.name,t.created_at,t.lifecycle,t.lifecycle_revision::text AS revision,a.connection_status,
+          EXISTS (SELECT 1 FROM users u WHERE u.tenant_id=t.id AND u.platform_admin) AS protected,
+          EXISTS (SELECT 1 FROM device_control_state d WHERE d.tenant_id=t.id AND d.state IN ('uncertain','cleanup-required')) AS cleanup_pending,
           (SELECT count(*)::integer FROM users u WHERE u.tenant_id=t.id) AS members
           FROM tenants t LEFT JOIN solarman_accounts a ON a.tenant_id=t.id ORDER BY t.created_at DESC`);
         json(response, 200, { items: result.rows });
+        return;
+      }
+      if (pathname === "/api/workspace/lifecycle" && request.method === "GET") {
+        json(response, 200, await lifecycle.status(session.tenant_id));
+        return;
+      }
+      const lifecycleMatch =
+        /^\/api\/admin\/tenants\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/lifecycle$/i.exec(
+          pathname,
+        );
+      if (lifecycleMatch && ["GET", "POST"].includes(request.method)) {
+        if (!session.platform_admin)
+          throw new HttpError(403, "Administrator access is required");
+        if (request.method === "POST") {
+          const body = await bodyJson(request);
+          limitSecurity(response, session);
+          const result = await lifecycle.change(
+            session,
+            lifecycleMatch[1],
+            body,
+          );
+          securityLimiter.clear(session.id);
+          if (result.changed) {
+            try {
+              await hub.lifecycleChanged(lifecycleMatch[1], result.appKey);
+            } catch {
+              console.error(
+                JSON.stringify({
+                  event: "workspace_lifecycle_refresh_pending",
+                }),
+              );
+            }
+          }
+        }
+        json(response, 200, await lifecycle.status(lifecycleMatch[1]));
         return;
       }
       if (pathname === "/api/admin/invitations" && request.method === "GET") {

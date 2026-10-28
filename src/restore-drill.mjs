@@ -46,7 +46,7 @@ async function createAuthenticationFixture(pool) {
   const user = randomUUID();
   const email = `restore-${user}@example.invalid`;
   await pool.query(
-    "INSERT INTO tenants(id,name) VALUES ($1,'Isolated restore verification')",
+    "INSERT INTO tenants(id,name,lifecycle,lifecycle_message) VALUES ($1,'Isolated restore verification','suspended','Isolated recovery check')",
     [tenant],
   );
   await pool.query(
@@ -190,6 +190,27 @@ async function verifyAuthentication(pool, { password, user, email }) {
       body: JSON.stringify({ currentPassword: recoveredPassword }),
     });
     assert.equal(revoke.status, 200);
+    const lifecycle = await fetch(origin + "/api/workspace/lifecycle", {
+      headers: { cookie },
+    });
+    assert.equal(lifecycle.status, 200);
+    const lifecycleState = await lifecycle.json();
+    assert.equal(lifecycleState.state, "suspended");
+    assert.equal(lifecycleState.message, "Isolated recovery check");
+    assert.equal(
+      (await fetch(origin + "/api/security", { headers: { cookie } })).status,
+      200,
+    );
+    // Account recovery must preserve suspension rather than making a restored tenant available.
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT lifecycle FROM tenants WHERE id=(SELECT tenant_id FROM users WHERE id=$1)",
+          [user],
+        )
+      ).rows[0].lifecycle,
+      "suspended",
+    );
     const logout = await fetch(origin + "/api/auth/logout", {
       method: "POST",
       headers: {
@@ -382,6 +403,7 @@ export async function restoreDrill(header, dump) {
       authenticationVerified: true,
       accountSecurityVerified: true,
       accountRecoveryVerified: true,
+      tenantLifecycleVerified: true,
       recoveryQuarantined: true,
       schemaUpgradeVerified: true,
       controlQuarantined: true,

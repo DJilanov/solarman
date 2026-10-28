@@ -1,4 +1,6 @@
 export const CONTROL_REASONS = {
+  suspended:
+    "This workspace is suspended. New automation and administration are unavailable.",
   connection: "Connect your account and select an inverter first",
   profile: "This inverter profile supports monitoring only",
   server: "The administrator has disabled changes to the inverter",
@@ -46,9 +48,10 @@ export function matchingControlFirmware(saved, observed) {
   );
 }
 
-/** @param {{ connected: boolean, supported: boolean, serverAllowed: boolean, workspaceEnabled: boolean, verified: boolean, firmwareVerified: boolean, capacityAvailable: boolean, settingsMatch: boolean, clockVerified: boolean, clockFresh: boolean, cleanupVerified: boolean, stopping: boolean }} facts @returns {{ reasons: {code: string, message: string}[], canVerify: boolean, canEnable: boolean, canStart: boolean, canStop: boolean }} */
+/** @param {{ tenantActive?: boolean, connected: boolean, supported: boolean, serverAllowed: boolean, workspaceEnabled: boolean, verified: boolean, firmwareVerified: boolean, capacityAvailable: boolean, settingsMatch: boolean, clockVerified: boolean, clockFresh: boolean, cleanupVerified: boolean, stopping: boolean }} facts @returns {{ reasons: {code: string, message: string}[], canVerify: boolean, canEnable: boolean, canStart: boolean, canStop: boolean }} */
 export function controlReadiness(facts) {
   const codes = [];
+  if (facts.tenantActive === false) codes.push("suspended");
   if (!facts.connected) codes.push("connection");
   if (!facts.supported) codes.push("profile");
   if (!facts.serverAllowed) codes.push("server");
@@ -67,6 +70,7 @@ export function controlReadiness(facts) {
     canVerify: available,
     canEnable:
       available &&
+      facts.tenantActive !== false &&
       facts.serverAllowed &&
       facts.verified &&
       facts.firmwareVerified &&

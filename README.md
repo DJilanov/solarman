@@ -48,6 +48,14 @@ Activity links to each command's recorded device, actor, result, decision and ve
 
 Credential updates pause automation and revoke its activation atomically with the credential change. They preserve any outstanding cleanup obligation. The updated credentials must discover the same inverter before recovery can continue; the host must still allow writes. This recovery authority clears scheduled permission only and does not re-enable workspace control. Inverter, profile and timezone changes are refused while any previous binding has unresolved permission. A cached selected serial is never considered ready unless the latest successful discovery still returns it.
 
+## Workspace availability
+
+Platform administrators can inspect a workspace under **Workspaces → Manage workspace**, then suspend it or make it available using their current dashboard password. State changes use the displayed revision so a stale browser cannot overwrite a newer decision. Administrator workspace availability is managed by the server operator; this panel protects those workspaces from availability changes.
+
+Suspension persists pause, cancels queued starts, revokes workspace control and its saved verification, and retains any scheduled-permission cleanup obligation before runtime reconciliation. Normal starts are checked at acceptance, activation, write preparation and again after provider pacing/quota reservation immediately before dispatch. Already dispatched commands can still arrive later; the journal preserves their uncertain outcome and cleanup remains subject to host permission, account access and API recovery capacity. Suspension is not confirmation that physical charging has stopped.
+
+Suspended members retain monitoring, exports, account security, provider credential repair, diagnostics and Stop. Monitoring keeps its API reservation; normal control capacity is released. Suspended actors cannot issue invitations or administrative recovery links. Making the workspace available leaves automation paused and control disabled; fresh verification and separate activation are required. Settings shows availability, any member-visible administrator message, pending cleanup and the latest 20 changes. Password recovery preserves suspension. Full tenant offboarding, credential deletion and data-retention jobs remain separate unfinished work.
+
 ## Account security
 
 Settings → Account security manages the local dashboard login separately from SOLARMAN credentials. Changing a password requires the current password, accepts 8–1024 characters without trimming, renews the current browser's authentication and CSRF secrets, and invalidates every other session atomically. The new session retains its public browser ID and original sign-in time. Password checks are rate-limited. Login issuance, password changes and revocations serialize on the user row, so a delayed login using a previously verified old password cannot restore access after a change.

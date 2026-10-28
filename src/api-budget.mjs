@@ -209,7 +209,7 @@ export class ApiBudget {
           throw new ApiCapacityError();
         const updated = await client.query(
           `UPDATE controller_state SET control_enabled=true,paused=true,manual_topup=false,topup_expires_at=null,updated_at=now()
-          WHERE tenant_id=$1 AND control_epoch=$2 AND EXISTS (SELECT 1 FROM solarman_accounts a WHERE a.tenant_id=$1 AND a.id=$3 AND a.device_sn=$4 AND a.api_app_key=$5 AND a.monitoring_admitted)
+          WHERE tenant_id=$1 AND control_epoch=$2 AND EXISTS (SELECT 1 FROM tenants t WHERE t.id=$1 AND t.lifecycle='active') AND EXISTS (SELECT 1 FROM solarman_accounts a WHERE a.tenant_id=$1 AND a.id=$3 AND a.device_sn=$4 AND a.api_app_key=$5 AND a.monitoring_admitted)
           RETURNING tenant_id`,
           [
             request.tenantId,

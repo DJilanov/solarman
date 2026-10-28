@@ -3,6 +3,32 @@ export interface Session {
   tenant: { id: string; name: string; timezone: string };
   csrfToken: string;
 }
+export interface TenantLifecycleStatus {
+  state: "active" | "suspended";
+  revision: string;
+  changedAt: string | null;
+  message: string;
+  protected: boolean;
+  cleanupPending: boolean;
+  events: {
+    id: string;
+    revision: string;
+    state: "active" | "suspended";
+    message: string;
+    at: string;
+  }[];
+}
+export interface TenantMetadata {
+  id: string;
+  name: string;
+  created_at: string;
+  members: number;
+  connection_status: string | null;
+  lifecycle: "active" | "suspended";
+  revision: string;
+  protected: boolean;
+  cleanup_pending: boolean;
+}
 export interface BrowserSession {
   id: string;
   current: boolean;

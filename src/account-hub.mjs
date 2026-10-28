@@ -172,6 +172,27 @@ export class AccountHub {
     return next;
   }
 
+  /** @param {string} tenantId @param {string|null} appKey @returns {Promise<void>} */
+  async lifecycleChanged(tenantId, appKey) {
+    const runtime = this.runtimes.get(tenantId);
+    if (runtime) {
+      runtime.inhibitStarts = true;
+      runtime.enableEpoch++;
+      await runtime.initialize();
+      if (runtime.journal.pending)
+        void runtime
+          .queue(() => runtime.clearScheduledPermission(), 10)
+          .catch(() => {
+            console.error(
+              JSON.stringify({ event: "workspace_cleanup_pending" }),
+            );
+          });
+      runtime.reschedulePolling();
+    }
+    for (const key of new Set([appKey, runtime?.appKey].filter(Boolean)))
+      await this.budget.refreshCapacity(key);
+  }
+
   async accountInfo(tenantId) {
     const result = await this.pool.query(
       `SELECT id,email,device_sn,profile,station_id,connection_status,connection_message,

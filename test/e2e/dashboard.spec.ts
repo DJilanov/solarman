@@ -2287,3 +2287,176 @@ test("a delayed identity cannot replace an activated user and recovery preserves
     await context.close();
   }
 });
+
+test("workspace suspension and resumption preserve member access and require separate control activation in Bulgarian", async ({
+  page,
+  browser,
+}) => {
+  await signIn(page);
+  const owner = (await (
+    await page.request.get("/api/auth/session")
+  ).json()) as Session;
+  const name = `Lifecycle browser ${Date.now()}`;
+  const invited = await page.request.post("/api/admin/invitations", {
+    headers: {
+      origin: "http://localhost:3000",
+      "x-csrf-token": owner.csrfToken,
+    },
+    data: {
+      email: `lifecycle-browser-${randomUUID()}@example.test`,
+      tenantName: name,
+    },
+  });
+  expect(invited.status()).toBe(201);
+  const link = (await invited.json()) as { url: string };
+  const memberContext = await browser.newContext({
+    baseURL: "http://localhost:3000",
+  });
+  try {
+    const activated = await memberContext.request.post("/api/auth/activate", {
+      headers: { origin: "http://localhost:3000" },
+      data: {
+        token: new URLSearchParams(new URL(link.url).hash.slice(1)).get(
+          "token",
+        ),
+        password: "lifecycle-browser-fixture-password",
+      },
+    });
+    expect(activated.status()).toBe(200);
+    const memberSession = (await activated.json()) as Session;
+    const member = await memberContext.newPage();
+    await member.goto("/settings");
+    await expect(
+      member.getByRole("heading", { name: "Workspace settings", exact: true }),
+    ).toBeVisible();
+    await page.goto("/workspaces");
+    await page
+      .getByRole("row")
+      .filter({ hasText: name })
+      .getByRole("button", { name: "Manage workspace", exact: true })
+      .click();
+    const panel = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name, exact: true }) });
+    await panel
+      .getByLabel("Current dashboard password", { exact: true })
+      .fill("incorrect-password");
+    await panel
+      .getByRole("button", { name: "Suspend workspace", exact: true })
+      .click();
+    await expect(
+      panel.getByText("Current password is incorrect", { exact: true }),
+    ).toBeVisible();
+    await page.locator(".language-switch select").selectOption("bg");
+    await page.setViewportSize({ width: 320, height: 1000 });
+    await panel
+      .getByLabel("Текуща парола за таблото", { exact: true })
+      .fill(process.env.E2E_PASSWORD!);
+    await panel
+      .getByLabel("Съобщение до членовете на пространството", { exact: true })
+      .fill("Проверка на достъпа за тестовото пространство.");
+    await panel
+      .getByRole("button", { name: "Спри пространството", exact: true })
+      .click();
+    await expect(
+      panel.getByText(
+        "Пространството е спряно. Заявките за стартиране на автоматизация са отменени; премахването на разрешението за зареждане има отделно състояние.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      panel.getByLabel("Текуща парола за таблото", { exact: true }),
+    ).toHaveValue("");
+    await page.screenshot({
+      path: "test-results/workspace-suspension-mobile-bg.png",
+      fullPage: true,
+    });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      ),
+    ).toBe(false);
+    await member.reload();
+    await member.locator(".language-switch select").selectOption("bg");
+    await member.setViewportSize({ width: 320, height: 1000 });
+    await expect(
+      member
+        .getByText(
+          "Наблюдението, износът на данни, сигурността на акаунта и възстановяването остават достъпни. Стартирането на автоматизация не е достъпно.",
+        )
+        .first(),
+    ).toBeVisible();
+    await expect(
+      member
+        .getByText("Проверка на достъпа за тестовото пространство.")
+        .first(),
+    ).toBeVisible();
+    const denied = await member.request.post("/api/commands", {
+      headers: {
+        origin: "http://localhost:3000",
+        "x-csrf-token": memberSession.csrfToken,
+        "idempotency-key": randomUUID(),
+      },
+      data: { action: "topup" },
+    });
+    expect(denied.status()).toBe(409);
+    expect((await member.request.get("/api/security")).status()).toBe(200);
+    expect((await member.request.get("/api/overview")).status()).toBe(200);
+    expect(
+      await member.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      ),
+    ).toBe(false);
+    await member.screenshot({
+      path: "test-results/suspended-workspace-mobile-bg.png",
+      fullPage: true,
+    });
+    // The mutation commits but its response is lost. The UI must show uncertainty and fetch the actual state.
+    await page.route(
+      `**/api/admin/tenants/${memberSession.tenant.id}/lifecycle`,
+      async (route) => {
+        if (route.request().method() !== "POST") {
+          await route.continue();
+          return;
+        }
+        await route.fetch();
+        await route.abort("failed");
+      },
+    );
+    await panel
+      .getByLabel("Текуща парола за таблото", { exact: true })
+      .fill(process.env.E2E_PASSWORD!);
+    await panel
+      .getByRole("button", {
+        name: "Направи пространството достъпно",
+        exact: true,
+      })
+      .click();
+    await expect(
+      panel.getByText(
+        "Промяната на пространството не е потвърдена. Обновете състоянието му, преди да опитате отново.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      panel.getByRole("button", { name: "Спри пространството", exact: true }),
+    ).toBeVisible();
+    const actual = (await (
+      await member.request.get("/api/workspace/lifecycle")
+    ).json()) as { state: string; events: { state: string }[] };
+    expect(actual.state).toBe("active");
+    expect(actual.events.map((e) => e.state)).toEqual(["active", "suspended"]);
+    const overview = (await (
+      await member.request.get("/api/overview")
+    ).json()) as OverviewData;
+    expect(overview.controller.paused).toBe(true);
+    expect(overview.controller.control.workspaceEnabled).toBe(false);
+    expect(overview.controller.control.verification).toBeNull();
+    await member.reload();
+    await expect(
+      member.getByText("Пространството е достъпно", { exact: true }),
+    ).toBeVisible();
+  } finally {
+    await memberContext.close();
+  }
+});

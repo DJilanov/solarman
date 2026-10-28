@@ -19,6 +19,7 @@ import { ControlJournal } from "../../src/control-journal.mjs";
 import { parseFrame, frame } from "../../src/modbus.mjs";
 import { Operations } from "../../src/operations.mjs";
 import { AccountRecovery } from "../../src/account-recovery.mjs";
+import { TenantLifecycle } from "../../src/tenant-lifecycle.mjs";
 import { Invitations, lockInvitationEmail } from "../../src/invitations.mjs";
 import {
   AccountSecurity,
@@ -382,30 +383,30 @@ test("session identifiers are hashed in PostgreSQL and logout revokes them", asy
   assert.equal((await fetchApi("/overview", { auth: fresh })).status, 401);
 });
 
-async function controlFixture(writes = false) {
+async function controlFixture(writes = false, owner = ids.alpha) {
   await pool.query("DELETE FROM operational_incidents WHERE tenant_id=$1", [
-    ids.alpha.tenant,
+    owner.tenant,
   ]);
   await pool.query("DELETE FROM device_health WHERE tenant_id=$1", [
-    ids.alpha.tenant,
+    owner.tenant,
   ]);
   await pool.query("DELETE FROM inverter_write_intents WHERE tenant_id=$1", [
-    ids.alpha.tenant,
+    owner.tenant,
   ]);
   await pool.query("DELETE FROM device_control_state WHERE tenant_id=$1", [
-    ids.alpha.tenant,
+    owner.tenant,
   ]);
   await pool.query(
     "UPDATE solarman_accounts SET profile='bluesun-bse20kh3' WHERE tenant_id=$1",
-    [ids.alpha.tenant],
+    [owner.tenant],
   );
   await pool.query(
     "UPDATE controller_state SET paused=true,manual_topup=false,control_enabled=false,verification=null,topup_expires_at=null WHERE tenant_id=$1",
-    [ids.alpha.tenant],
+    [owner.tenant],
   );
   const row = (
     await pool.query("SELECT * FROM solarman_accounts WHERE tenant_id=$1", [
-      ids.alpha.tenant,
+      owner.tenant,
     ])
   ).rows[0];
   const runtime = new TenantRuntime(
@@ -426,7 +427,7 @@ async function controlFixture(writes = false) {
           ?.monitorMs ?? runtime.monitorPollMs,
       runLimited: async (operation) => operation(),
     },
-    ids.alpha.tenant,
+    owner.tenant,
     { ...row, profile: "bluesun-bse20kh3" },
   );
   await runtime.initialize();
@@ -489,8 +490,8 @@ async function controlFixture(writes = false) {
     calls,
     firmware,
     user: {
-      tenant_id: ids.alpha.tenant,
-      id: ids.alpha.user,
+      tenant_id: owner.tenant,
+      id: owner.user,
       email: "alpha@example.test",
     },
   };
@@ -3980,3 +3981,490 @@ test(
     );
   },
 );
+
+async function lifecycleFixture() {
+  const actor = { tenant: randomUUID(), user: randomUUID() };
+  const target = {
+    tenant: randomUUID(),
+    user: randomUUID(),
+    account: randomUUID(),
+    device: `lifecycle-${randomUUID()}`,
+  };
+  const email = `lifecycle-admin-${actor.user}@example.test`;
+  const targetEmail = `lifecycle-member-${target.user}@example.test`;
+  const hash = await hashPassword(password);
+  for (const [owner, admin, address] of [
+    [actor, true, email],
+    [target, false, targetEmail],
+  ]) {
+    await pool.query("INSERT INTO tenants(id,name) VALUES ($1,$2)", [
+      owner.tenant,
+      admin ? "Lifecycle administrator" : "Lifecycle member",
+    ]);
+    await pool.query(
+      "INSERT INTO users(id,tenant_id,email,password_hash,platform_admin) VALUES ($1,$2,$3,$4,$5)",
+      [owner.user, owner.tenant, address, hash, admin],
+    );
+    await pool.query("INSERT INTO controller_state(tenant_id) VALUES ($1)", [
+      owner.tenant,
+    ]);
+  }
+  await pool.query(
+    `INSERT INTO solarman_accounts(id,tenant_id,email,credentials,device_sn,profile,discovered_devices,validated_at) VALUES ($1,$2,$3,$4,$5,'bluesun-bse20kh3',$6,now())`,
+    [
+      target.account,
+      target.tenant,
+      targetEmail,
+      encryptCredentials(
+        {
+          passwordSha256: "a".repeat(64),
+          appId: `lifecycle-${target.tenant}`,
+          appSecret: "isolated-fixture",
+        },
+        key,
+        target.tenant,
+        target.account,
+      ),
+      target.device,
+      JSON.stringify([{ deviceSn: target.device, stationId: 1 }]),
+    ],
+  );
+  const admin = await login(email);
+  const member = await login(targetEmail);
+  const session = {
+    id: actor.user,
+    token_hash: tokenHash(admin.cookie.split("=")[1]),
+  };
+  return {
+    actor,
+    target,
+    admin,
+    member,
+    session,
+    lifecycle: new TenantLifecycle(pool),
+  };
+}
+
+function lifecycleBody(state = "suspended", revision = "0") {
+  return {
+    state,
+    revision,
+    currentPassword: password,
+    message: "Member-visible fixture message",
+  };
+}
+
+test("workspace lifecycle requires administrator reauthentication, CSRF, current revision and a non-administrator target", async () => {
+  const f = await lifecycleFixture();
+  const route = `/admin/tenants/${f.target.tenant}/lifecycle`;
+  assert.equal(
+    (
+      await fetchApi(route, {
+        auth: f.member,
+        method: "POST",
+        body: lifecycleBody(),
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await fetchApi(route, {
+        auth: f.admin,
+        method: "POST",
+        body: lifecycleBody(),
+        csrf: false,
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await fetchApi(route, {
+        auth: f.admin,
+        method: "POST",
+        body: { ...lifecycleBody(), currentPassword: "wrong" },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await fetchApi(route, {
+        auth: f.admin,
+        method: "POST",
+        body: lifecycleBody("suspended", "9"),
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await fetchApi(`/admin/tenants/${f.actor.tenant}/lifecycle`, {
+        auth: f.admin,
+        method: "POST",
+        body: lifecycleBody(),
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await fetchApi(route, {
+        auth: f.admin,
+        method: "POST",
+        body: { ...lifecycleBody(), state: "offboarding" },
+      })
+    ).status,
+    400,
+  );
+  const response = await fetchApi(route, {
+    auth: f.admin,
+    method: "POST",
+    body: lifecycleBody(),
+  });
+  assert.equal(response.status, 200);
+  const saved = await response.json();
+  assert.equal(saved.state, "suspended");
+  assert.equal(saved.revision, "1");
+  assert.equal(saved.events.length, 1);
+  assert.equal(
+    (
+      await fetchApi(route, {
+        auth: f.admin,
+        method: "POST",
+        body: lifecycleBody("active"),
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (await fetchApi("/workspace/lifecycle", { auth: f.member })).status,
+    200,
+  );
+  assert.equal(
+    (
+      await fetchApi(`/admin/tenants/${f.actor.tenant}/lifecycle`, {
+        auth: f.member,
+      })
+    ).status,
+    403,
+  );
+  assert.equal((await fetchApi("/overview", { auth: f.member })).status, 200);
+  assert.equal((await fetchApi("/security", { auth: f.member })).status, 200);
+  const own = await (
+    await fetchApi("/workspace/lifecycle", { auth: f.member })
+  ).json();
+  assert.equal(own.message, "Member-visible fixture message");
+  const serialized = JSON.stringify(own);
+  assert.equal(serialized.includes(f.actor.user), false);
+  assert.equal(serialized.includes(f.actor.tenant), false);
+});
+
+test("suspension cancels queued starts, persists cleanup and preserves provider credentials and other tenants", async () => {
+  const f = await lifecycleFixture();
+  const before = (
+    await pool.query(
+      "SELECT credentials FROM solarman_accounts WHERE tenant_id=$1",
+      [f.target.tenant],
+    )
+  ).rows[0].credentials;
+  await pool.query(
+    "UPDATE controller_state SET control_enabled=true,paused=false,manual_topup=true,topup_expires_at=now()+interval '1 hour',verification='{}' WHERE tenant_id=$1",
+    [f.target.tenant],
+  );
+  const queued = randomUUID();
+  await pool.query(
+    "INSERT INTO command_executions(id,tenant_id,actor,action,status) VALUES ($1,$2,'fixture','topup','queued')",
+    [queued, f.target.tenant],
+  );
+  await f.lifecycle.change(f.session, f.target.tenant, lifecycleBody());
+  const control = (
+    await pool.query("SELECT * FROM controller_state WHERE tenant_id=$1", [
+      f.target.tenant,
+    ])
+  ).rows[0];
+  assert.equal(control.control_enabled, false);
+  assert.equal(control.paused, true);
+  assert.equal(control.manual_topup, false);
+  assert.equal(control.verification, null);
+  assert.equal(control.topup_expires_at, null);
+  assert.equal(control.control_epoch, "1");
+  assert.equal(
+    (
+      await pool.query("SELECT status FROM command_executions WHERE id=$1", [
+        queued,
+      ])
+    ).rows[0].status,
+    "interrupted",
+  );
+  assert.equal(
+    (await f.lifecycle.status(f.target.tenant)).cleanupPending,
+    true,
+  );
+  assert.deepEqual(
+    (
+      await pool.query(
+        "SELECT credentials FROM solarman_accounts WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0].credentials,
+    before,
+  );
+  assert.equal((await f.lifecycle.status(f.actor.tenant)).state, "active");
+  const journal = new ControlJournal(pool, {
+    tenantId: f.target.tenant,
+    accountId: f.target.account,
+    device: f.target.device,
+  });
+  await assert.rejects(journal.prepare(206, [0, 25], null), /blocked/);
+  await assert.rejects(
+    journal.authorizeDispatch("011000CE00020400000019BFB9"),
+    /blocked/,
+  );
+  const off = "011000CE00020400000009BE75";
+  await journal.authorizeDispatch(off);
+  const write = await journal.prepare(206, [0, 9], null);
+  await journal.verify(write);
+  assert.equal(
+    (await f.lifecycle.status(f.target.tenant)).cleanupPending,
+    false,
+  );
+});
+
+test("workspace resumption preserves pause, requires fresh verification and retains cleanup across restart", async () => {
+  const f = await lifecycleFixture();
+  const { runtime, user, calls } = await controlFixture(true, f.target);
+  let restarted;
+  try {
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    await completeCommand(runtime, "resume", user);
+    const staleEpoch = (
+      await pool.query(
+        "SELECT control_epoch::text FROM controller_state WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0].control_epoch;
+    const owned = await runtime.journal.prepare(206, [0, 25], null);
+    await runtime.journal.verify(owned);
+    const pending = await runtime.journal.prepare(
+      2509,
+      [1, 10, 0, 0, 0, 0, 0, 0],
+      null,
+    );
+    await f.lifecycle.change(f.session, f.target.tenant, lifecycleBody());
+    // A late readback cannot remove the suspension's cleanup obligation.
+    await runtime.journal.verify(pending);
+    runtime.controller.disable = async () => {
+      throw new Error("Isolated cleanup outage");
+    };
+    await AccountHub.prototype.lifecycleChanged.call(
+      {
+        runtimes: new Map([[f.target.tenant, runtime]]),
+        budget: runtime.hub.budget,
+      },
+      f.target.tenant,
+      runtime.appKey,
+    );
+    await runtime.work.idle();
+    assert.equal(runtime.lifecycle, "suspended");
+    assert.equal(runtime.journal.pending, true);
+    assert.equal(runtime.capacity().controlWorkspaces, 0);
+    assert.equal(runtime.readiness().canStart, false);
+    assert.equal(runtime.readiness().canStop, true);
+    for (const action of ["resume", "topup", "enable_controls"])
+      await assert.rejects(
+        runtime.submit(action, user, randomUUID()),
+        /suspended/,
+      );
+    assert.equal(await runtime.applyStartIntent("resume", staleEpoch), false);
+    await assert.rejects(
+      runtime.journal.authorizeDispatch("011000CE00020400000019BFB9"),
+      /blocked/,
+    );
+    const account = (
+      await pool.query("SELECT * FROM solarman_accounts WHERE tenant_id=$1", [
+        f.target.tenant,
+      ])
+    ).rows[0];
+    restarted = new TenantRuntime(runtime.hub, f.target.tenant, account);
+    await restarted.initialize();
+    assert.equal(restarted.lifecycle, "suspended");
+    assert.equal(restarted.journal.pending, true);
+    restarted.controller.disable = async () => {
+      calls.push("lifecycle-recovery-off");
+      return 9;
+    };
+    assert.equal(
+      (await completeCommand(restarted, "stop", user)).status,
+      "succeeded",
+    );
+    assert.equal(restarted.journal.pending, false);
+    await f.lifecycle.change(
+      f.session,
+      f.target.tenant,
+      lifecycleBody("active", "1"),
+    );
+    await restarted.initialize();
+    assert.equal(restarted.lifecycle, "active");
+    assert.equal(restarted.controlEnabled, false);
+    assert.equal(restarted.paused, true);
+    assert.equal(restarted.verification, null);
+    await assert.rejects(
+      restarted.submit("resume", user, randomUUID()),
+      /verified/,
+    );
+    const events = (await f.lifecycle.status(f.target.tenant)).events;
+    assert.deepEqual(
+      events.map((e) => e.state),
+      ["active", "suspended"],
+    );
+    assert.ok(calls.includes("lifecycle-recovery-off"));
+  } finally {
+    await restarted?.close();
+    await runtime.close();
+  }
+});
+
+test("concurrent workspace changes accept one revision and never duplicate lifecycle history", async () => {
+  const f = await lifecycleFixture();
+  const other = await lifecycleFixture();
+  const results = await Promise.allSettled([
+    other.lifecycle.change(other.session, f.target.tenant, lifecycleBody()),
+    f.lifecycle.change(f.session, f.target.tenant, lifecycleBody()),
+  ]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  const failure = results.find((r) => r.status === "rejected");
+  assert.equal(failure.reason.status, 409);
+  const status = await f.lifecycle.status(f.target.tenant);
+  assert.equal(status.events.length, 1);
+  assert.equal(status.revision, "1");
+  assert.equal(
+    (
+      await f.lifecycle.change(
+        f.session,
+        f.target.tenant,
+        lifecycleBody("suspended", "1"),
+      )
+    ).changed,
+    false,
+  );
+  assert.equal((await f.lifecycle.status(f.target.tenant)).events.length, 1);
+});
+
+test("suspension defeats a delayed capacity activation from an independent planner", async () => {
+  const f = await lifecycleFixture();
+  const { runtime } = await controlFixture(true, f.target);
+  try {
+    const request = {
+      appKey: runtime.appKey,
+      tenantId: f.target.tenant,
+      accountId: f.target.account,
+      device: f.target.device,
+      epoch: "0",
+    };
+    await f.lifecycle.change(f.session, f.target.tenant, lifecycleBody());
+    const independent = new ApiBudget(pool, {});
+    assert.equal(await independent.enableControl(request), false);
+    // Even a caller holding the new epoch cannot activate a suspended tenant.
+    assert.equal(
+      await independent.enableControl({ ...request, epoch: "1" }),
+      false,
+    );
+    const state = (
+      await pool.query(
+        "SELECT control_enabled,paused FROM controller_state WHERE tenant_id=$1",
+        [f.target.tenant],
+      )
+    ).rows[0];
+    assert.deepEqual(state, { control_enabled: false, paused: true });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("suspended administrators cannot create invitations or recovery links", async () => {
+  const f = await lifecycleFixture();
+  // Simulate an operator-applied suspension; the panel itself protects admin workspaces.
+  await pool.query("UPDATE tenants SET lifecycle='suspended' WHERE id=$1", [
+    f.actor.tenant,
+  ]);
+  const address = `suspended-invite-${randomUUID()}@example.test`;
+  await assert.rejects(
+    new Invitations(pool).create(f.session, {
+      email: address,
+      tenantName: "Denied",
+    }),
+    /suspended/,
+  );
+  const memberEmail = (
+    await pool.query("SELECT email FROM users WHERE id=$1", [f.target.user])
+  ).rows[0].email;
+  await assert.rejects(
+    new AccountRecovery(pool).administrative(f.session, {
+      email: memberEmail,
+      currentPassword: password,
+      action: "issue",
+    }),
+    /suspended/,
+  );
+  assert.equal((await fetchApi("/security", { auth: f.admin })).status, 200);
+});
+
+test("workspace suspension interrupts an already queued runtime start before device work", async () => {
+  const f = await lifecycleFixture();
+  const { runtime, user, calls } = await controlFixture(true, f.target);
+  let release;
+  try {
+    await completeCommand(runtime, "verify", user);
+    await completeCommand(runtime, "enable_controls", user);
+    const blocker = runtime.queue(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    while (!release) await new Promise((resolve) => setImmediate(resolve));
+    const job = await runtime.submit("resume", user, randomUUID());
+    const before = calls.length;
+    await f.lifecycle.change(f.session, f.target.tenant, lifecycleBody());
+    await AccountHub.prototype.lifecycleChanged.call(
+      {
+        runtimes: new Map([[f.target.tenant, runtime]]),
+        budget: runtime.hub.budget,
+      },
+      f.target.tenant,
+      runtime.appKey,
+    );
+    release();
+    await blocker;
+    await runtime.work.idle();
+    const saved = (
+      await pool.query("SELECT status FROM command_executions WHERE id=$1", [
+        job.id,
+      ])
+    ).rows[0];
+    assert.equal(saved.status, "interrupted");
+    assert.deepEqual(calls.slice(before), ["disable"]);
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.controlEnabled, false);
+  } finally {
+    release?.();
+    await runtime.close();
+  }
+});
+
+test("workspace history retains the newest twenty numeric revisions without exposing administrator identifiers", async () => {
+  const f = await lifecycleFixture();
+  await pool.query(
+    `INSERT INTO tenant_lifecycle_events(tenant_id,revision,state,message,actor_id) SELECT $1,n,CASE WHEN n%2=0 THEN 'active' ELSE 'suspended' END,'History fixture',$2 FROM generate_series(1,30) n`,
+    [f.target.tenant, f.actor.user],
+  );
+  const status = await f.lifecycle.status(f.target.tenant);
+  assert.deepEqual(
+    status.events.map((event) => event.revision),
+    Array.from({ length: 20 }, (_, i) => String(30 - i)),
+  );
+  assert.equal(JSON.stringify(status).includes(f.actor.user), false);
+});

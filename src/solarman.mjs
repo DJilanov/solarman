@@ -49,7 +49,7 @@ export class SolarmanClient {
    * @param {string} config.baseUrl
    * @param {string} config.callbackOrigin
    * @param {number} config.commandTimeoutMs
-   * @param {{ minGapMs?: number, health?: () => object, onRequest?: (kind: string, purpose: 'routine' | 'recovery' | 'balance') => Promise<void>, callbackPrefix?: string, beforeRequest?: () => Promise<void> }} [options]
+   * @param {{ minGapMs?: number, health?: () => object, onRequest?: (kind: string, purpose: 'routine' | 'recovery' | 'balance') => Promise<void>, callbackPrefix?: string, beforeRequest?: () => Promise<void>, authorizeCommand?: (command:string)=>Promise<void> }} [options]
    */
   constructor(config, options = {}) {
     this.config = config;
@@ -58,6 +58,7 @@ export class SolarmanClient {
     this.onRequest = options.onRequest ?? (async () => {});
     this.callbackPrefix = options.callbackPrefix ?? CALLBACK_PREFIX;
     this.beforeRequest = options.beforeRequest ?? (async () => {});
+    this.authorizeCommand = options.authorizeCommand ?? (async () => {});
     this.pending = new Map();
     this.completed = new Map();
     this.tail = Promise.resolve();
@@ -199,6 +200,8 @@ export class SolarmanClient {
       purpose,
     );
     let response;
+    if (path === "/device/v1.0/customControl")
+      await this.authorizeCommand(body.content);
     try {
       response = await fetch(url, {
         method: "POST",

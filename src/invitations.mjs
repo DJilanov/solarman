@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hashPassword, randomToken, tokenHash } from "./auth.mjs";
+import { requireActiveTenant } from "./tenant-lifecycle.mjs";
 import {
   AccountSecurity,
   SecurityError,
@@ -29,6 +30,7 @@ export class Invitations {
       await this.security.activeSession(client, actor);
       if (!user.platform_admin)
         throw new SecurityError(403, "Administrator access is required");
+      await requireActiveTenant(client, user.tenant_id);
       return operation(client, user);
     });
   }

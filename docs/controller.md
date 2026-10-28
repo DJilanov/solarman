@@ -72,6 +72,8 @@ Observed native behavior on 2026-10-28: at 10:15 UTC, SOC was 48% and battery ch
 
 Workspace control is stored separately from the host permission in `controller_state.control_enabled`; new workspaces default to disabled. Device verification is bound to the selected serial number and profile. Credential updates and inverter selection revoke the old verification and activation. Stop/Pause records its intent before waiting for device work, cancels older queued starts and allows cleanup even after a settings verification error. The six-hour expiry of a manual request bounds application intent, not the daily schedule stored inside an unreachable inverter.
 
+Workspace suspension uses the same persisted cancellation and cleanup mechanism, revokes activation and verification, and releases normal control capacity. Monitoring and recovery remain available. Starts are checked again after provider pacing/quota reservation, immediately before dispatch; an already dispatched command can still arrive later and must be reconciled. Making a workspace available does not resume automation or clear an unresolved cleanup obligation. Administrator availability changes require the current dashboard password and the displayed lifecycle revision.
+
 ## Manual recovery
 
 Pause the workspace or stop its controller before changing the same flags manually. **Do not run two controllers for one inverter.** If the API is unavailable, this previously tested Customized Command disables AC charging with the known run/EPS flags:

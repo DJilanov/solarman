@@ -40,6 +40,7 @@ import {
 import { ApiError, request, useData } from "./api";
 import { Context } from "./context";
 import { usePrivateAccess } from "./private-access";
+import { WorkspaceLifecycleNotice } from "./tenant-lifecycle";
 import { age, Loading, Notice, StatusBadge } from "./components";
 import {
   Overview,
@@ -623,6 +624,7 @@ function Dashboard({
             </div>
           </header>
           <main className="main-content">
+            <WorkspaceLifecycleNotice />
             <Routes>
               <Route path="/" element={<Overview />} />
               <Route path="/analytics" element={<AnalyticsPage />} />

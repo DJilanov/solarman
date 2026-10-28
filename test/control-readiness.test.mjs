@@ -29,6 +29,7 @@ test("each control requirement independently blocks starts without blocking a st
   assert.equal(controlReadiness(ready).canStart, true);
   for (const key of [
     "serverAllowed",
+    "tenantActive",
     "workspaceEnabled",
     "verified",
     "firmwareVerified",

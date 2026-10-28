@@ -109,6 +109,26 @@ test("supports a callback arriving before the HTTP submission response, and cach
   assert.notEqual(requests[0].callBackUrl, requests[1].callBackUrl);
 });
 
+test("command authorization is rechecked after pacing and quota reservation, before HTTP dispatch", async (t) => {
+  const { client, requests } = await fixture(t);
+  let reserved = false;
+  let allowed = false;
+  client.onRequest = async (kind) => {
+    if (kind === "command") reserved = true;
+  };
+  client.authorizeCommand = async (raw) => {
+    assert.equal(raw, command);
+    assert.equal(reserved, true);
+    if (!allowed) throw new Error("Workspace suspended");
+  };
+  await assert.rejects(client.command(command), /Workspace suspended/);
+  assert.equal(requests.length, 0);
+  assert.equal(client.pending.size, 0);
+  allowed = true;
+  assert.equal(await client.command(command), ack);
+  assert.equal(requests.length, 1);
+});
+
 test("rejects wrong device, wrong request and stale callbacks before accepting a valid result", async (t) => {
   const { client } = await fixture(
     t,

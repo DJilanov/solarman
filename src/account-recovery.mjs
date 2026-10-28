@@ -1,4 +1,5 @@
 import { hashPassword, randomToken, tokenHash } from "./auth.mjs";
+import { requireActiveTenant } from "./tenant-lifecycle.mjs";
 import {
   AccountSecurity,
   SecurityError,
@@ -104,6 +105,7 @@ export class AccountRecovery {
       async (client, actor) => {
         if (!actor.platform_admin)
           throw new SecurityError(403, "Administrator access is required");
+        await requireActiveTenant(client, actor.tenant_id);
         // Administrative recovery targets ordinary users; these disjoint role locks cannot cycle.
         const target = (
           await client.query(

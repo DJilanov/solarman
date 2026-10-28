@@ -64,6 +64,11 @@ import { IncidentSummary } from "./incident-summary";
 import { BackupNotice } from "./backup-health";
 import { CapacityNotice, CapacityDetails } from "./api-capacity";
 import AccessAdministration from "./access-admin";
+import {
+  TenantAdministration,
+  WorkspaceLifecyclePanel,
+} from "./tenant-lifecycle";
+import type { TenantMetadata } from "./types";
 
 export function Overview(): ReactNode {
   const {
@@ -1314,6 +1319,7 @@ export function SettingsPage(): ReactNode {
           {message.text}
         </Notice>
       )}
+      <WorkspaceLifecyclePanel />
       <div className="settings-grid">
         <Panel
           title={tr("SOLARMAN account")}
@@ -1793,15 +1799,9 @@ function InfoBlock(): ReactNode {
 
 export function WorkspacesPage(): ReactNode {
   const { session } = useWorkspace();
-  const { data, loading, error, reload } = useData<{
-    items: {
-      id: string;
-      name: string;
-      created_at: string;
-      members: number;
-      connection_status: string | null;
-    }[];
-  }>("/admin/tenants");
+  const { data, loading, error, reload } = useData<{ items: TenantMetadata[] }>(
+    "/admin/tenants",
+  );
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [pending, setPending] = useState(false);
@@ -1964,47 +1964,11 @@ export function WorkspacesPage(): ReactNode {
         revision={invitationRevision}
         clearCreatedLink={() => setInvitation(null)}
       />
-      <Panel
-        title={tr("Workspaces")}
-        subtitle={tr(
-          "Platform account metadata only; inverter data stays private",
-        )}
-      >
-        {!data ? (
-          loading ? (
-            <Loading />
-          ) : null
-        ) : (
-          <div className="readings-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>{tr("Workspace")}</th>
-                  <th>{tr("Members")}</th>
-                  <th>{tr("Connection")}</th>
-                  <th>{tr("Created")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.items.map((item) => (
-                  <tr key={item.id}>
-                    <td>
-                      <strong>{item.name}</strong>
-                    </td>
-                    <td>{item.members}</td>
-                    <td>
-                      <StatusBadge
-                        status={item.connection_status ?? "pending"}
-                      />
-                    </td>
-                    <td>{when(item.created_at, session.tenant.timezone)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
+      <TenantAdministration
+        items={data?.items ?? null}
+        loading={loading}
+        onChanged={reload}
+      />
     </>
   );
 }

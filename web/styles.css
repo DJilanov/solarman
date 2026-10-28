@@ -30,12 +30,14 @@ body {
 }
 button,
 input,
+textarea,
 select {
   font: inherit;
 }
 button,
 a,
 input,
+textarea,
 select {
   touch-action: manipulation;
 }
@@ -60,6 +62,7 @@ button {
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
+textarea:focus-visible,
 select:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--accent);
@@ -1340,6 +1343,7 @@ label {
   margin-bottom: 18px;
 }
 input,
+textarea,
 select {
   display: block;
   width: 100%;
@@ -1357,6 +1361,7 @@ input::placeholder {
   color: #607a8c;
 }
 input:focus,
+textarea:focus,
 select:focus {
   border-color: #a4c18a;
 }
@@ -3139,4 +3144,37 @@ html[lang="bg"] .segmented button {
 .badge.expired,
 .badge.replaced {
   color: var(--muted);
+}
+.lifecycle-history {
+  margin-top: 22px;
+  overflow-wrap: anywhere;
+}
+.lifecycle-history ol {
+  padding-left: 22px;
+}
+.lifecycle-history li {
+  padding: 8px 0;
+}
+.lifecycle-history small {
+  display: block;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.lifecycle-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.lifecycle-actions .button {
+  white-space: normal;
+}
+.lifecycle-actions button {
+  max-width: 100%;
+}
+
+textarea {
+  resize: vertical;
+  max-width: 100%;
+  min-height: 84px;
 }

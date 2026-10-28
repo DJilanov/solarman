@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { parseFrame } from "./modbus.mjs";
 
 /** @param {number} address @param {number[]} values @returns {'enable' | 'disable' | 'window'} */
 function operation(address, values) {
@@ -112,6 +113,11 @@ export class ControlJournal {
         )
       ).rows[0];
       const recovering = lease && lease.state !== "clear";
+      const tenant = (
+        await connection.query("SELECT lifecycle FROM tenants WHERE id=$1", [
+          this.context.tenantId,
+        ])
+      ).rows[0];
       if (
         !account ||
         !account.validated_at ||
@@ -119,6 +125,7 @@ export class ControlJournal {
         (action === "disable"
           ? !account.control_enabled && !recovering
           : !account.control_enabled ||
+            tenant?.lifecycle !== "active" ||
             (account.paused && !account.manual_topup) ||
             ["uncertain", "cleanup-required"].includes(lease?.state))
       )
@@ -150,6 +157,45 @@ export class ControlJournal {
     }
     await this.load();
     return id;
+  }
+
+  /** @param {string} command @returns {Promise<void>} */
+  async authorizeDispatch(command) {
+    const data = parseFrame(command);
+    if ([3, 4].includes(data[1])) return;
+    if (
+      data[1] !== 16 ||
+      data.length < 11 ||
+      data[6] !== data.readUInt16BE(4) * 2 ||
+      data.length !== data[6] + 9
+    )
+      throw new Error(
+        "This inverter write is not supported by the control journal",
+      );
+    const values = Array.from({ length: data.readUInt16BE(4) }, (_, i) =>
+      data.readUInt16BE(7 + i * 2),
+    );
+    const action = operation(data.readUInt16BE(2), values);
+    const row = (
+      await this.pool.query(
+        `SELECT c.control_enabled,c.paused,c.manual_topup,t.lifecycle,d.state
+      FROM controller_state c JOIN tenants t ON t.id=c.tenant_id JOIN solarman_accounts a ON a.tenant_id=c.tenant_id
+      LEFT JOIN device_control_state d ON d.tenant_id=a.tenant_id AND d.account_id=a.id AND d.device=a.device_sn
+      WHERE a.tenant_id=$1 AND a.id=$2 AND a.device_sn=$3 AND a.validated_at IS NOT NULL AND a.profile='bluesun-bse20kh3'
+      AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.discovered_devices) v WHERE v->>'deviceSn'=a.device_sn)`,
+        this.binding,
+      )
+    ).rows[0];
+    if (
+      !row ||
+      (action === "disable"
+        ? !row.control_enabled && (!row.state || row.state === "clear")
+        : row.lifecycle !== "active" ||
+          !row.control_enabled ||
+          (row.paused && !row.manual_topup) ||
+          row.state === "cleanup-required")
+    )
+      throw new Error("Inverter write blocked by the current workspace state");
   }
 
   /** @param {string} id @returns {Promise<void>} */
