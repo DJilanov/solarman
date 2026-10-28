@@ -13,6 +13,7 @@ import {
 } from "./auth.mjs";
 import { summarize, localDay, dayStart, addDays } from "./analytics.mjs";
 import { historyEvidence, writeHistory } from "./command-history.mjs";
+import { readBackupStatus } from "./backup-status.mjs";
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -422,6 +423,9 @@ export function createApp({ pool, hub, config }) {
           today: stats,
           recent: recent.rows,
           alerts,
+          ...(session.platform_admin
+            ? { backup: await readBackupStatus(config.backupStatusFile) }
+            : {}),
         });
         return;
       }
@@ -479,7 +483,13 @@ export function createApp({ pool, hub, config }) {
           hub.operations.list(session.tenant_id, filter, Number(offsetText)),
           hub.operations.deviceStatus(session.tenant_id),
         ]);
-        json(response, 200, { ...history, deviceHealth });
+        json(response, 200, {
+          ...history,
+          deviceHealth,
+          ...(session.platform_admin
+            ? { backup: await readBackupStatus(config.backupStatusFile) }
+            : {}),
+        });
         return;
       }
       const incidentMatch =

@@ -33,6 +33,7 @@ export interface AlertSummary {
   monitor: MonitorStatus;
 }
 export interface OperationsData {
+  backup?: BackupStatus;
   items: Incident[];
   hasMore: boolean;
   offset: number;
@@ -50,6 +51,37 @@ export interface OperationsData {
     controlFault: boolean;
     staleAfterSeconds: number;
   } | null;
+}
+export type BackupIssue =
+  | "backup_failed"
+  | "restore_failed"
+  | "backup_missing"
+  | "restore_missing"
+  | "backup_overdue"
+  | "restore_overdue"
+  | "backup_stalled"
+  | "restore_stalled";
+export interface BackupStatus {
+  state: "healthy" | "attention" | "running" | "not-configured" | "unavailable";
+  issues?: BackupIssue[];
+  lastBackupAt?: string | null;
+  lastRestoreAt?: string | null;
+  retentionDays?: number;
+  backup?: {
+    state: "running" | "verified" | "failed" | "never";
+    startedAt: string | null;
+    completedAt: string | null;
+    offsiteVerified: boolean;
+  };
+  restore?: {
+    state: "running" | "verified" | "failed" | "never";
+    startedAt: string | null;
+    completedAt: string | null;
+    inventoryVerified: boolean;
+    credentialsVerified: boolean;
+    authenticationVerified: boolean;
+    controlQuarantined: boolean;
+  };
 }
 export interface WriteSummary {
   id: string;
@@ -225,6 +257,7 @@ export interface CommandDetails extends Command, WriteHistoryData {
   };
 }
 export interface OverviewData {
+  backup?: BackupStatus;
   latest: Measurement | null;
   controller: ControllerStatus;
   today: Analytics;

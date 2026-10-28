@@ -61,6 +61,7 @@ import type {
 } from "./types";
 import { WriteHistory } from "./write-history";
 import { IncidentSummary } from "./incident-summary";
+import { BackupNotice } from "./backup-health";
 
 export function Overview(): ReactNode {
   const {
@@ -116,6 +117,7 @@ export function Overview(): ReactNode {
       />
       {error && <Notice tone="danger">{error}</Notice>}
       <SetupNotice controller={controller} />
+      {session.user.platformAdmin && <BackupNotice status={data.backup} />}
       <IncidentSummary
         alerts={data.alerts}
         timezone={session.tenant.timezone}

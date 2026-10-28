@@ -14,6 +14,7 @@ import { formatNumber, when } from "./format";
 import { Heading, Loading, Notice, Panel } from "./components";
 import { incidentDescription, incidentTitle } from "./incident-summary";
 import type { OperationsData } from "./types";
+import { BackupHealth } from "./backup-health";
 
 export default function SystemHealthPage(): ReactNode {
   const { session } = useWorkspace();
@@ -149,6 +150,9 @@ export default function SystemHealthPage(): ReactNode {
               )}
             </p>
           </Panel>
+          {session.user.platformAdmin && data.backup && (
+            <BackupHealth status={data.backup} timezone={timezone} />
+          )}
           <div className="activity-toolbar">
             <label className="health-filter">
               {tr("Show alerts")}
@@ -263,7 +267,7 @@ export default function SystemHealthPage(): ReactNode {
               <p className="command-empty">
                 {tr(
                   filter === "active"
-                    ? "No active alerts recorded."
+                    ? "No active workspace alerts recorded."
                     : "No alerts match this filter.",
                 )}
               </p>

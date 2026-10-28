@@ -10,6 +10,7 @@ import type {
   Command,
   OperationsData,
   Incident,
+  BackupStatus,
 } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
@@ -1290,6 +1291,107 @@ test("health request failure offers retry and a delayed monitor never appears as
   );
   await expect(page.locator(".health-facts")).toBeVisible();
   await expect(
-    page.getByText("No active alerts recorded.", { exact: true }),
+    page.getByText("No active workspace alerts recorded.", { exact: true }),
   ).toBeVisible();
+});
+
+test("recovery health distinguishes a failed latest test from previous success in both languages on mobile", async ({
+  page,
+}) => {
+  await signIn(page);
+  const overview = (await (
+    await page.request.get("/api/overview")
+  ).json()) as OverviewData;
+  const health = (await (
+    await page.request.get("/api/operations")
+  ).json()) as OperationsData;
+  const now = new Date().toISOString();
+  const before = new Date(Date.now() - 12 * 3600000).toISOString();
+  const backup: BackupStatus = {
+    state: "attention",
+    issues: ["restore_failed"],
+    lastBackupAt: before,
+    lastRestoreAt: before,
+    retentionDays: 30,
+    backup: {
+      state: "verified",
+      startedAt: before,
+      completedAt: before,
+      offsiteVerified: true,
+    },
+    restore: {
+      state: "failed",
+      startedAt: now,
+      completedAt: now,
+      inventoryVerified: false,
+      credentialsVerified: false,
+      authenticationVerified: false,
+      controlQuarantined: false,
+    },
+  };
+  overview.backup = backup;
+  health.backup = backup;
+  await page.route("**/api/overview", (route) =>
+    route.fulfill({ json: overview }),
+  );
+  await page.route("**/api/operations?**", (route) =>
+    route.fulfill({ json: health }),
+  );
+  await page.reload();
+  await expect(
+    page.getByText("Backup and recovery need attention."),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Review recovery status" }).click();
+  const panel = page
+    .locator(".health-facts")
+    .filter({
+      has: page.getByRole("heading", {
+        name: "Backup and recovery",
+        exact: true,
+      }),
+    });
+  await expect(panel).toContainText("The latest recovery test failed.");
+  await expect(panel).toContainText("Last successful recovery test");
+  await expect(panel).not.toContainText("Recovery verified database inventory");
+  await page.getByLabel("Language").selectOption("bg");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const bulgarianPanel = page
+    .locator(".health-facts")
+    .filter({
+      has: page.getByRole("heading", {
+        name: "Архивиране и възстановяване",
+        exact: true,
+      }),
+    });
+  await expect(bulgarianPanel).toContainText(
+    "Последният тест за възстановяване е неуспешен.",
+  );
+  backup.state = "healthy";
+  backup.issues = [];
+  backup.lastRestoreAt = now;
+  backup.restore = {
+    state: "verified",
+    startedAt: now,
+    completedAt: now,
+    inventoryVerified: true,
+    credentialsVerified: true,
+    authenticationVerified: true,
+    controlQuarantined: true,
+  };
+  await page
+    .getByRole("button", { name: "Обновяване на състоянието", exact: true })
+    .click();
+  await expect(bulgarianPanel).toContainText(
+    "Проверките за възстановяване са успешни",
+  );
+  await expect(bulgarianPanel).toContainText("без достъп до устройства");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    ),
+  ).toBe(false);
+  await page.screenshot({
+    path: "test-results/recovery-health-mobile-bg.png",
+    fullPage: true,
+  });
 });

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Solarman offsite backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 Europe/Sofia
+RandomizedDelaySec=120
+Persistent=true
+Unit=solarman-backup.service
+
+[Install]
+WantedBy=timers.target

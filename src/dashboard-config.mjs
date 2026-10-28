@@ -1,3 +1,5 @@
+import path from "node:path";
+
 /** @param {Record<string, string | undefined>} env @returns {object} */
 export function dashboardConfig(env) {
   const required = (key) => {
@@ -27,6 +29,11 @@ export function dashboardConfig(env) {
   const ssl = env.DB_SSL ?? "false";
   if (!["true", "false"].includes(ssl))
     throw new Error("DB_SSL must be true or false");
+  const backupStatusFile =
+    env.BACKUP_STATUS_FILE?.trim() ||
+    "/var/lib/solarman-backup/public/status.json";
+  if (!path.isAbsolute(backupStatusFile))
+    throw new Error("BACKUP_STATUS_FILE must be an absolute path");
   return {
     origin: publicUrl.origin,
     secure: publicUrl.protocol === "https:",
@@ -34,6 +41,7 @@ export function dashboardConfig(env) {
     host: env.LISTEN_HOST ?? "127.0.0.1",
     adminEmail: required("DASHBOARD_ADMIN_EMAIL").toLowerCase(),
     adminPasswordHash: required("DASHBOARD_ADMIN_PASSWORD_HASH"),
+    backupStatusFile,
     encryptionSecret: required("CREDENTIAL_ENCRYPTION_KEY"),
     database: {
       host: env.DB_HOST ?? "127.0.0.1",

@@ -194,6 +194,12 @@ test("overview, analytics and CSV remain scoped to the signed-in workspace", asy
   const b = await (await fetchApi("/overview", { auth: beta })).json();
   assert.equal(a.latest.pvW, 7109);
   assert.equal(b.latest.pvW, 2333);
+  assert.ok(a.backup);
+  assert.equal(Object.hasOwn(b, "backup"), false);
+  const healthA = await (await fetchApi("/operations", { auth: alpha })).json();
+  const healthB = await (await fetchApi("/operations", { auth: beta })).json();
+  assert.ok(healthA.backup);
+  assert.equal(Object.hasOwn(healthB, "backup"), false);
   const from = localDay(Date.now() - 86400_000);
   const to = localDay(Date.now());
   const csv = await (

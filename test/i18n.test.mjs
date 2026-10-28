@@ -34,6 +34,7 @@ test("every literal translation used by the interface exists in both catalogues"
     "write-history.tsx",
     "system-health.tsx",
     "incident-summary.tsx",
+    "backup-health.tsx",
   ]) {
     const source = readFileSync(
       new URL(`../web/${file}`, import.meta.url),
@@ -72,4 +73,16 @@ test("Bulgarian plurals and diagnostic placeholders render without losing values
   await instance.changeLanguage("en");
   assert.equal(instance.t("{{count}} readings", { count: 1 }), "1 reading");
   assert.equal(instance.t("Energy overview"), "Energy overview");
+});
+
+test("recovery state and issue messages have English and Bulgarian translations", () => {
+  const source = readFileSync(
+    new URL("../web/backup-health.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const match of source.matchAll(/:\s*("(?:[^"\\]|\\.)*")/g)) {
+    const key = JSON.parse(match[1]);
+    assert.ok(Object.hasOwn(english, key), key);
+    assert.ok(Object.hasOwn(bulgarian, key), key);
+  }
 });
