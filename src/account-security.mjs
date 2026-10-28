@@ -44,11 +44,17 @@ export async function createBrowserSession(
   return { token, csrfToken };
 }
 
-/** @param {import('pg').PoolClient} client @param {{id:string,tenant_id:string}} user @param {'signed_in'|'signed_out'|'password_changed'|'session_revoked'|'other_sessions_revoked'} kind @param {number} count @returns {Promise<void>} */
-export async function recordSecurityEvent(client, user, kind, count) {
+/** @param {import('pg').PoolClient} client @param {{id:string,tenant_id:string}} user @param {'signed_in'|'signed_out'|'password_changed'|'session_revoked'|'other_sessions_revoked'|'recovery_key_created'|'recovery_access_revoked'|'recovery_link_created'|'recovery_link_revoked'|'password_recovered'} kind @param {number} count @param {string|null} [actorId] @returns {Promise<void>} */
+export async function recordSecurityEvent(
+  client,
+  user,
+  kind,
+  count,
+  actorId = user.id,
+) {
   await client.query(
-    "INSERT INTO account_security_events (tenant_id,user_id,kind,affected_sessions) VALUES ($1,$2,$3,$4)",
-    [user.tenant_id, user.id, kind, count],
+    "INSERT INTO account_security_events (tenant_id,user_id,kind,affected_sessions,actor_id) VALUES ($1,$2,$3,$4,$5)",
+    [user.tenant_id, user.id, kind, count, actorId],
   );
 }
 
@@ -65,7 +71,7 @@ export class AccountSecurity {
       await client.query("BEGIN");
       const user = (
         await client.query(
-          "SELECT id,tenant_id,password_hash FROM users WHERE id=$1 FOR UPDATE",
+          "SELECT id,tenant_id,email,password_hash,platform_admin FROM users WHERE id=$1 FOR UPDATE",
           [userId],
         )
       ).rows[0];
@@ -85,12 +91,27 @@ export class AccountSecurity {
   async activeSession(client, session) {
     const row = (
       await client.query(
-        "SELECT id,created_at FROM sessions WHERE user_id=$1 AND token_hash=$2 AND expires_at>now()",
+        "SELECT id,created_at FROM sessions WHERE user_id=$1 AND token_hash=$2 AND expires_at>clock_timestamp()",
         [session.id, session.token_hash],
       )
     ).rows[0];
     if (!row) throw new SecurityError(401, "Sign in to continue");
     return row;
+  }
+
+  /** @param {string} userId @param {unknown} password @returns {Promise<string>} */
+  async confirmedPassword(userId, password) {
+    const row = (
+      await this.pool.query("SELECT password_hash FROM users WHERE id=$1", [
+        userId,
+      ])
+    ).rows[0];
+    if (
+      typeof password !== "string" ||
+      !(await verifyPassword(password, row?.password_hash ?? null))
+    )
+      throw new SecurityError(400, "Current password is incorrect");
+    return row.password_hash;
   }
 
   /** @param {{id:string,password_hash:string}} verified @param {unknown} agent @returns {Promise<{token:string,csrfToken:string}>} */
@@ -119,21 +140,16 @@ export class AccountSecurity {
         400,
         "Enter your current password and a new password of 8 to 1024 characters",
       );
-    const snapshot = (
-      await this.pool.query("SELECT password_hash FROM users WHERE id=$1", [
-        session.id,
-      ])
-    ).rows[0];
-    if (
-      !(await verifyPassword(currentPassword, snapshot?.password_hash ?? null))
-    )
-      throw new SecurityError(400, "Current password is incorrect");
+    const verifiedHash = await this.confirmedPassword(
+      session.id,
+      currentPassword,
+    );
     if (newPassword === currentPassword)
       throw new SecurityError(400, "Choose a different password");
     const replacement = await hashPassword(newPassword);
     return this.withUser(session.id, async (client, user) => {
       const current = await this.activeSession(client, session);
-      if (user.password_hash !== snapshot.password_hash)
+      if (user.password_hash !== verifiedHash)
         throw new SecurityError(
           409,
           "Account security changed. Refresh and try again.",
@@ -144,6 +160,10 @@ export class AccountSecurity {
       );
       const removed = await client.query(
         "DELETE FROM sessions WHERE user_id=$1",
+        [user.id],
+      );
+      await client.query(
+        "UPDATE account_recovery_tokens SET revoked_at=now() WHERE user_id=$1 AND kind='admin_link' AND used_at IS NULL AND revoked_at IS NULL",
         [user.id],
       );
       // The public browser ID is stable; its authentication token and CSRF secret are renewed.
@@ -208,7 +228,7 @@ export class AccountSecurity {
 
   /** @param {{id:string,token_hash:string}} session @param {number} offset @returns {Promise<object>} */
   async list(session, offset) {
-    const [user, browsers, count, events] = await Promise.all([
+    const [user, browsers, count, events, recovery] = await Promise.all([
       this.pool.query("SELECT password_changed_at FROM users WHERE id=$1", [
         session.id,
       ]),
@@ -225,9 +245,21 @@ export class AccountSecurity {
         "SELECT id,kind,affected_sessions,occurred_at FROM account_security_events WHERE user_id=$1 ORDER BY occurred_at DESC,id DESC LIMIT 20",
         [session.id],
       ),
+      this.pool.query(
+        "SELECT kind,created_at,expires_at FROM account_recovery_tokens WHERE user_id=$1 AND used_at IS NULL AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>now())",
+        [session.id],
+      ),
     ]);
     return {
       passwordChangedAt: user.rows[0]?.password_changed_at ?? null,
+      recovery: {
+        keyCreatedAt:
+          recovery.rows.find((row) => row.kind === "saved_key")?.created_at ??
+          null,
+        linkExpiresAt:
+          recovery.rows.find((row) => row.kind === "admin_link")?.expires_at ??
+          null,
+      },
       sessions: browsers.rows.slice(0, 20).map((row) => ({
         id: row.id,
         current: row.current,

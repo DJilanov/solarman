@@ -145,6 +145,10 @@ export function StatusBadge({ status }: { status: string }): ReactNode {
         interrupted: "Unconfirmed",
         connected: "Connected",
         pending: "Pending",
+        accepted: "Accepted",
+        revoked: "Revoked",
+        expired: "Expired",
+        replaced: "Replaced",
         capacity: "Waiting for capacity",
       } as Record<string, string>
     )[status] ?? status;

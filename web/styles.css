@@ -3087,3 +3087,56 @@ html[lang="bg"] .segmented button {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.auth-recovery-link {
+  display: inline-block;
+  margin-top: 20px;
+}
+.private-access-result {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.private-access-result label {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+  min-width: 0;
+}
+.private-access-result input {
+  width: 100%;
+  min-width: 0;
+}
+.private-access-result .button,
+.security-form .button,
+.recovery-card .button {
+  white-space: normal;
+  height: auto;
+  min-height: 40px;
+}
+.recovery-card {
+  width: min(100%, 520px);
+}
+.invitation-entry {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border);
+}
+.invitation-entry:first-child {
+  padding-top: 0;
+}
+.invitation-entry:last-child {
+  border-bottom: 0;
+}
+.invitation-entry strong {
+  overflow-wrap: anywhere;
+}
+.invitation-entry p {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+.badge.revoked,
+.badge.expired,
+.badge.replaced {
+  color: var(--muted);
+}

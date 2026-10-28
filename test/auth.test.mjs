@@ -15,6 +15,8 @@ import {
   encryptionKey,
 } from "../src/credentials.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 test("passwords are salted and special characters remain significant", async () => {
   const password = "test-password=with-spaces ";
@@ -80,4 +82,20 @@ test("login limiter bounds failed attempts and clears after a successful login",
   assert.equal(limiter.allow("another-client"), true);
   limiter.clear("client");
   assert.equal(limiter.allow("client"), true);
+});
+
+test("operator recovery refuses noninteractive input without echoing a password", () => {
+  const secret = "noninteractive-fixture-password";
+  const result = spawnSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL("../scripts/recover-account.mjs", import.meta.url)),
+      "--email",
+      "fixture@example.test",
+    ],
+    { input: secret + "\n", encoding: "utf8", timeout: 5000 },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /interactive terminal/);
+  assert.equal((result.stdout + result.stderr).includes(secret), false);
 });

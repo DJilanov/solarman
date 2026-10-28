@@ -13,6 +13,7 @@ export interface BrowserSession {
 }
 export interface AccountSecurityData {
   passwordChangedAt: string | null;
+  recovery: { keyCreatedAt: string | null; linkExpiresAt: string | null };
   sessions: BrowserSession[];
   sessionCount: number;
   hasMoreSessions: boolean;
@@ -24,7 +25,12 @@ export interface AccountSecurityData {
       | "signed_out"
       | "password_changed"
       | "session_revoked"
-      | "other_sessions_revoked";
+      | "other_sessions_revoked"
+      | "recovery_key_created"
+      | "recovery_access_revoked"
+      | "recovery_link_created"
+      | "recovery_link_revoked"
+      | "password_recovered";
     affectedSessions: number;
     at: string;
   }[];

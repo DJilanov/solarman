@@ -147,6 +147,8 @@ async function main() {
       report.inventoryVerified !== true ||
       report.authenticationVerified !== true ||
       report.accountSecurityVerified !== true ||
+      report.accountRecoveryVerified !== true ||
+      report.recoveryQuarantined !== true ||
       report.schemaUpgradeVerified !== true ||
       report.credentialsVerified !== true ||
       report.controlQuarantined !== true ||

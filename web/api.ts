@@ -9,6 +9,15 @@ export class ApiError extends Error {
   }
 }
 
+export function isUnconfirmedResponse(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    (error.status === 0 ||
+      error.status >= 500 ||
+      (error.status >= 200 && error.status < 300))
+  );
+}
+
 export async function request<T>(
   path: string,
   options: RequestInit = {},

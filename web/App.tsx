@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 import { ApiError, request, useData } from "./api";
 import { Context } from "./context";
+import { usePrivateAccess } from "./private-access";
 import { age, Loading, Notice, StatusBadge } from "./components";
 import {
   Overview,
@@ -53,6 +54,7 @@ import type { Action, Command, OverviewData, Session } from "./types";
 const CommandDetailsPage = lazy(() => import("./command-details"));
 const SystemHealthPage = lazy(() => import("./system-health"));
 const AccountSecurityPage = lazy(() => import("./account-security"));
+const RecoverAccountPage = lazy(() => import("./account-recovery"));
 const WriteHistoryPage = lazy(() =>
   import("./command-details").then((module) => ({
     default: module.WriteHistoryPage,
@@ -203,6 +205,9 @@ function SignIn({
               )}
             </span>
           </div>
+          <Link className="text-link auth-recovery-link" to="/recover">
+            {tr("Forgot your dashboard password?")}
+          </Link>
           <p className="invite-note">
             {tr("New here? Ask your administrator for a workspace invitation.")}
           </p>
@@ -220,16 +225,61 @@ function Activate({
 }: {
   onSignedIn: (session: Session) => void;
 }): ReactNode {
-  const token = new URLSearchParams(useLocation().search).get("token") ?? "";
-  const { data, error, loading } = useData<{
+  const { token } = usePrivateAccess();
+  const [data, setData] = useState<{
     email: string;
     tenant_name: string;
-  }>(`/invitation?token=${encodeURIComponent(token)}`, 60_000);
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  const [retryable, setRetryable] = useState(false);
+  useEffect(() => {
+    const abort = new AbortController();
+    let active = true;
+    setLoading(true);
+    setError(null);
+    request<{ email: string; tenant_name: string }>("/invitation/inspect", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+      signal: abort.signal,
+    })
+      .then((result) => {
+        if (active) setData(result);
+      })
+      .catch((cause: unknown) => {
+        if (active) {
+          setData(null);
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Unable to inspect this invitation",
+          );
+          setRetryable(
+            cause instanceof ApiError &&
+              (cause.status === 0 || cause.status >= 500),
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+      abort.abort();
+    };
+  }, [token, retry]);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [pending, setPending] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const navigate = useNavigate();
+  useEffect(() => {
+    setPassword("");
+    setConfirm("");
+    setFormError(null);
+  }, [token]);
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (password !== confirm) {
@@ -271,6 +321,14 @@ function Activate({
           <>
             <h1>{tr("Invitation unavailable")}</h1>
             <Notice tone="danger">{error}</Notice>
+            {retryable && (
+              <button
+                className="button secondary full"
+                onClick={() => setRetry((value) => value + 1)}
+              >
+                {tr("Retry invitation check")}
+              </button>
+            )}
             <Link className="button secondary full" to="/">
               {tr("Back to sign in")}
             </Link>
@@ -651,16 +709,28 @@ export default function App(): ReactNode {
   useTranslation();
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
+  const authenticationVersion = useRef(0);
+  const identify = (next: Session | null): void => {
+    authenticationVersion.current++;
+    setSession(next);
+    setChecking(false);
+  };
   const [error, setError] = useState<string | null>(null);
   const location = useLocation();
   useEffect(() => {
     let active = true;
+    const version = authenticationVersion.current;
     request<Session>("/auth/session")
       .then((result) => {
-        if (active) setSession(result);
+        if (active && version === authenticationVersion.current)
+          setSession(result);
       })
       .catch((cause: unknown) => {
-        if (active && !(cause instanceof ApiError && cause.status === 401))
+        if (
+          active &&
+          version === authenticationVersion.current &&
+          !(cause instanceof ApiError && cause.status === 401)
+        )
           setError(
             cause instanceof Error ? cause.message : "Unable to connect",
           );
@@ -669,7 +739,7 @@ export default function App(): ReactNode {
         if (active) setChecking(false);
       });
     const expired = (): void => {
-      setSession(null);
+      identify(null);
       setError("Your session expired. Please sign in again.");
     };
     window.addEventListener("solarman-session-expired", expired);
@@ -679,7 +749,7 @@ export default function App(): ReactNode {
     };
   }, []);
   if (location.pathname === "/activate")
-    return <Activate onSignedIn={setSession} />;
+    return <Activate onSignedIn={identify} />;
   if (checking)
     return (
       <main className="app-starting">
@@ -687,14 +757,30 @@ export default function App(): ReactNode {
         <Loading />
       </main>
     );
-  if (!session) return <SignIn onSignedIn={setSession} initialError={error} />;
+  if (location.pathname === "/recover")
+    return (
+      <Suspense fallback={<Loading />}>
+        <RecoverAccountPage
+          currentSession={session}
+          onRecovered={(email) => {
+            setSession((current) =>
+              current?.user.email.toLowerCase() === email.trim().toLowerCase()
+                ? null
+                : current,
+            );
+            setError(null);
+          }}
+        />
+      </Suspense>
+    );
+  if (!session) return <SignIn onSignedIn={identify} initialError={error} />;
   return (
     <Dashboard
       key={session.tenant.id}
       session={session}
-      onSession={setSession}
+      onSession={identify}
       onLogout={() => {
-        setSession(null);
+        identify(null);
         setError(null);
       }}
     />

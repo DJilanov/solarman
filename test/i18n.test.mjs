@@ -37,6 +37,8 @@ test("every literal translation used by the interface exists in both catalogues"
     "backup-health.tsx",
     "api-capacity.tsx",
     "account-security.tsx",
+    "account-recovery.tsx",
+    "access-admin.tsx",
   ]) {
     const source = readFileSync(
       new URL(`../web/${file}`, import.meta.url),
@@ -51,10 +53,15 @@ test("every literal translation used by the interface exists in both catalogues"
 });
 
 test("account security errors and event labels have English and Bulgarian translations", () => {
-  const backend = readFileSync(
-    new URL("../src/account-security.mjs", import.meta.url),
-    "utf8",
-  );
+  const backend = [
+    "account-security.mjs",
+    "account-recovery.mjs",
+    "invitations.mjs",
+  ]
+    .map((file) =>
+      readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"),
+    )
+    .join("\n");
   const frontend = readFileSync(
     new URL("../web/account-security.tsx", import.meta.url),
     "utf8",
@@ -65,7 +72,7 @@ test("account security errors and event labels have English and Bulgarian transl
     ].map((match) => JSON.parse(match[1])),
     ...[
       ...frontend.matchAll(
-        /(?:signed_in|signed_out|password_changed|session_revoked|other_sessions_revoked):\s*("(?:[^"\\]|\\.)*")/g,
+        /(?:signed_in|signed_out|password_changed|session_revoked|other_sessions_revoked|recovery_key_created|recovery_access_revoked|recovery_link_created|recovery_link_revoked|password_recovered):\s*("(?:[^"\\]|\\.)*")/g,
       ),
     ].map((match) => JSON.parse(match[1])),
     "Passwords do not match",
@@ -73,6 +80,8 @@ test("account security errors and event labels have English and Bulgarian transl
     "Browser session signed out",
     "Other browser sessions signed out",
     "Unable to update account security",
+    "Recovery details are invalid or no longer available",
+    "Return to dashboard",
   ];
   for (const key of keys) {
     assert.ok(Object.hasOwn(english, key), key);

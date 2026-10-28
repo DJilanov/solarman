@@ -63,6 +63,7 @@ import { WriteHistory } from "./write-history";
 import { IncidentSummary } from "./incident-summary";
 import { BackupNotice } from "./backup-health";
 import { CapacityNotice, CapacityDetails } from "./api-capacity";
+import AccessAdministration from "./access-admin";
 
 export function Overview(): ReactNode {
   const {
@@ -1805,6 +1806,7 @@ export function WorkspacesPage(): ReactNode {
   const [name, setName] = useState("");
   const [pending, setPending] = useState(false);
   const [invitation, setInvitation] = useState<string | null>(null);
+  const [invitationRevision, setInvitationRevision] = useState(0);
   const [formError, setFormError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
@@ -1822,6 +1824,7 @@ export function WorkspacesPage(): ReactNode {
         body: JSON.stringify({ email, tenantName: name }),
       });
       setInvitation(result.url);
+      setInvitationRevision((value) => value + 1);
       setCopied(false);
       setEmail("");
       setName("");
@@ -1957,6 +1960,10 @@ export function WorkspacesPage(): ReactNode {
           </div>
         </Panel>
       </div>
+      <AccessAdministration
+        revision={invitationRevision}
+        clearCreatedLink={() => setInvitation(null)}
+      />
       <Panel
         title={tr("Workspaces")}
         subtitle={tr(

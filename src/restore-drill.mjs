@@ -38,8 +38,9 @@ export function validateDrill(header, dump) {
       throw new BackupError("drill_inventory_invalid");
 }
 
-/** @param {import('pg').Pool} pool @returns {Promise<void>} */
-async function verifyAuthentication(pool) {
+/** @typedef {{password:string,user:string,email:string}} AuthenticationFixture */
+/** @param {import('pg').Pool} pool @returns {Promise<AuthenticationFixture>} */
+async function createAuthenticationFixture(pool) {
   const password = randomBytes(32).toString("base64url");
   const tenant = randomUUID();
   const user = randomUUID();
@@ -52,6 +53,11 @@ async function verifyAuthentication(pool) {
     "INSERT INTO users(id,tenant_id,email,password_hash) VALUES ($1,$2,$3,$4)",
     [user, tenant, email, await hashPassword(password)],
   );
+  return { password, user, email };
+}
+
+/** @param {import('pg').Pool} pool @param {AuthenticationFixture} fixture @returns {Promise<void>} */
+async function verifyAuthentication(pool, { password, user, email }) {
   let accessAttempts = 0;
   const hub = {
     forTenant: async () => {
@@ -96,6 +102,7 @@ async function verifyAuthentication(pool) {
     });
     assert.equal(second.status, 200);
     const previous = [cookie, second.headers.get("set-cookie").split(";")[0]];
+    const replacementPassword = randomBytes(32).toString("base64url");
     const changed = await fetch(origin + "/api/security/password", {
       method: "POST",
       headers: {
@@ -106,7 +113,7 @@ async function verifyAuthentication(pool) {
       },
       body: JSON.stringify({
         currentPassword: password,
-        newPassword: randomBytes(32).toString("base64url"),
+        newPassword: replacementPassword,
       }),
     });
     assert.equal(changed.status, 200);
@@ -130,6 +137,59 @@ async function verifyAuthentication(pool) {
     const state = await security.json();
     assert.equal(state.sessionCount, 1);
     assert.ok(state.events.some((event) => event.kind === "password_changed"));
+    const keyResponse = await fetch(origin + "/api/security/recovery/key", {
+      method: "POST",
+      headers: {
+        cookie,
+        origin: "http://localhost",
+        "content-type": "application/json",
+        "x-csrf-token": session.csrfToken,
+      },
+      body: JSON.stringify({ currentPassword: replacementPassword }),
+    });
+    assert.equal(keyResponse.status, 200);
+    const saved = await keyResponse.json();
+    const recoveredPassword = randomBytes(32).toString("base64url");
+    const recovered = await fetch(origin + "/api/auth/recover", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        email,
+        key: saved.key,
+        newPassword: recoveredPassword,
+      }),
+    });
+    assert.equal(recovered.status, 200);
+    assert.equal(
+      (await fetch(origin + "/api/auth/session", { headers: { cookie } }))
+        .status,
+      401,
+    );
+    const signedIn = await fetch(origin + "/api/auth/login", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ email, password: recoveredPassword }),
+    });
+    assert.equal(signedIn.status, 200);
+    session = await signedIn.json();
+    cookie = signedIn.headers.get("set-cookie").split(";")[0];
+    const revoke = await fetch(origin + "/api/security/recovery/revoke", {
+      method: "POST",
+      headers: {
+        cookie,
+        origin: "http://localhost",
+        "content-type": "application/json",
+        "x-csrf-token": session.csrfToken,
+      },
+      body: JSON.stringify({ currentPassword: recoveredPassword }),
+    });
+    assert.equal(revoke.status, 200);
     const logout = await fetch(origin + "/api/auth/logout", {
       method: "POST",
       headers: {
@@ -268,6 +328,25 @@ export async function restoreDrill(header, dump) {
       .map((row) => row.version)
       .filter((version) => !header.contents.migrations.includes(version));
     stage = "quarantine";
+    const authenticationFixture = await createAuthenticationFixture(pool);
+    await pool.query(
+      `INSERT INTO account_recovery_tokens (user_id,token_hash,kind,expires_at) VALUES
+      ($1,$2,'saved_key',null),($1,$3,'admin_link',clock_timestamp()+interval '1 hour')`,
+      [
+        authenticationFixture.user,
+        createHash("sha256").update(randomBytes(32)).digest("hex"),
+        createHash("sha256").update(randomBytes(32)).digest("hex"),
+      ],
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM account_recovery_tokens WHERE user_id=$1 AND used_at IS NULL AND revoked_at IS NULL",
+          [authenticationFixture.user],
+        )
+      ).rows[0].n,
+      2,
+    );
     await pool.query(
       "UPDATE controller_state SET paused=true,manual_topup=false,control_enabled=false,verification=null,topup_expires_at=null,control_epoch=control_epoch+1",
     );
@@ -275,6 +354,17 @@ export async function restoreDrill(header, dump) {
       "UPDATE device_control_state SET state='cleanup-required' WHERE state<>'clear'",
     );
     await pool.query("DELETE FROM sessions");
+    await pool.query(
+      "UPDATE account_recovery_tokens SET revoked_at=now() WHERE used_at IS NULL AND revoked_at IS NULL",
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM account_recovery_tokens WHERE used_at IS NULL AND revoked_at IS NULL",
+        )
+      ).rows[0].n,
+      0,
+    );
     assert.equal(
       (
         await pool.query(
@@ -284,13 +374,15 @@ export async function restoreDrill(header, dump) {
       0,
     );
     stage = "authentication";
-    await verifyAuthentication(pool);
+    await verifyAuthentication(pool, authenticationFixture);
     Object.assign(report, {
       state: "verified",
       inventoryVerified: true,
       credentialsVerified: true,
       authenticationVerified: true,
       accountSecurityVerified: true,
+      accountRecoveryVerified: true,
+      recoveryQuarantined: true,
       schemaUpgradeVerified: true,
       controlQuarantined: true,
       deviceAccessAttempts: 0,

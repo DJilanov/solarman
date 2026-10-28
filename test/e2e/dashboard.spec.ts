@@ -63,7 +63,9 @@ test("account security renews the current browser and revokes other browsers wit
     const activation = await firstContext.request.post("/api/auth/activate", {
       headers: { origin: "http://localhost:3000" },
       data: {
-        token: new URL(invitationData.url).searchParams.get("token"),
+        token: new URLSearchParams(
+          new URL(invitationData.url).hash.slice(1),
+        ).get("token"),
         password: initial,
       },
     });
@@ -185,6 +187,7 @@ test("account security offers retry, session pagination and an honest unknown pa
   let offset = 0;
   const fixture: AccountSecurityData = {
     passwordChangedAt: null,
+    recovery: { keyCreatedAt: null, linkExpiresAt: null },
     sessionCount: 22,
     offset: 0,
     hasMoreSessions: true,
@@ -1831,4 +1834,456 @@ test("recovery health distinguishes a failed latest test from previous success i
     path: "test-results/recovery-health-mobile-bg.png",
     fullPage: true,
   });
+});
+
+async function privateInvitation(
+  page: Page,
+  email: string,
+  name: string,
+): Promise<{ url: string }> {
+  const session = (await (
+    await page.request.get("/api/auth/session")
+  ).json()) as Session;
+  const response = await page.request.post("/api/admin/invitations", {
+    headers: {
+      origin: "http://localhost:3000",
+      "x-csrf-token": session.csrfToken,
+    },
+    data: { email, tenantName: name },
+  });
+  expect(response.status()).toBe(201);
+  return (await response.json()) as { url: string };
+}
+
+test("saved recovery works through the public page and downloads a Bulgarian key without URL secrets", async ({
+  page,
+  browser,
+}) => {
+  await signIn(page);
+  const email = `saved-recovery-${randomUUID()}@example.test`;
+  const initial = "saved-recovery-fixture-password";
+  const replacement = "recovered-fixture-password= ";
+  const invitation = await privateInvitation(
+    page,
+    email,
+    "Saved recovery fixture",
+  );
+  const context = await browser.newContext({
+    baseURL: "http://localhost:3000",
+    locale: "en-GB",
+  });
+  try {
+    const user = await context.newPage();
+    const requests: string[] = [];
+    user.on("request", (request) => requests.push(request.url()));
+    await user.goto(invitation.url);
+    await expect(user.getByLabel("Password", { exact: true })).toBeVisible();
+    await expect(user).toHaveURL("http://localhost:3000/activate");
+    await user.getByLabel("Password", { exact: true }).fill(initial);
+    await user.getByLabel("Confirm password", { exact: true }).fill(initial);
+    await user
+      .getByRole("button", { name: "Create my workspace", exact: true })
+      .click();
+    await expect(
+      user.getByRole("heading", { name: "Energy overview", exact: true }),
+    ).toBeVisible();
+    await user.goto("/settings/security");
+    await user
+      .getByLabel("Current dashboard password", { exact: true })
+      .fill(initial);
+    await user
+      .getByRole("button", { name: "Generate recovery key", exact: true })
+      .click();
+    const key = await user
+      .getByLabel("Recovery key", { exact: true })
+      .inputValue();
+    expect(key).toMatch(/^[a-f0-9]{64}$/);
+    await user.locator(".language-switch select").selectOption("bg");
+    const downloading = user.waitForEvent("download");
+    await user
+      .getByRole("button", {
+        name: "Изтегли ключа за възстановяване",
+        exact: true,
+      })
+      .click();
+    const download = await downloading;
+    const file = await download.path();
+    expect(file).not.toBeNull();
+    const content = readFileSync(file!, "utf8");
+    expect(content).toContain(key);
+    expect(content).toContain(email);
+    expect(content).toContain("Ключ за възстановяване");
+    await user
+      .getByRole("button", { name: "Запазих ключа", exact: true })
+      .click();
+    await expect(
+      user.getByLabel("Ключ за възстановяване", { exact: true }),
+    ).toHaveCount(0);
+    await user.setViewportSize({ width: 320, height: 740 });
+    await user.getByRole("button", { name: "Изход", exact: true }).click();
+    await user
+      .getByRole("link", { name: "Забравена парола за таблото?", exact: true })
+      .click();
+    await expect(
+      user.getByRole("heading", {
+        name: "Възстановяване на достъпа до таблото",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await user.getByLabel("Имейл адрес", { exact: true }).fill(email);
+    await user
+      .getByLabel("Ключ за възстановяване", { exact: true })
+      .fill("0".repeat(64));
+    await user.getByLabel("Нова парола", { exact: true }).fill(replacement);
+    await user
+      .getByLabel("Потвърдете новата парола", { exact: true })
+      .fill(replacement);
+    await user
+      .getByRole("button", { name: "Смени паролата за таблото", exact: true })
+      .click();
+    await expect(user.getByRole("alert")).toContainText(
+      "Данните за възстановяване са невалидни",
+    );
+    await user.getByLabel("Ключ за възстановяване", { exact: true }).fill(key);
+    await user
+      .getByRole("button", { name: "Смени паролата за таблото", exact: true })
+      .click();
+    await expect(
+      user.getByText(
+        "Паролата е сменена. Всички предишни сесии в браузър и данни за възстановяване са невалидни.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    const next = await user
+      .getByLabel("Ключ за възстановяване", { exact: true })
+      .inputValue();
+    expect(next).not.toBe(key);
+    expect((await user.request.get("/api/auth/session")).status()).toBe(401);
+    expect(
+      requests.some(
+        (url) =>
+          url.includes(key) ||
+          url.includes(next) ||
+          url.includes(
+            new URLSearchParams(new URL(invitation.url).hash.slice(1)).get(
+              "token",
+            )!,
+          ),
+      ),
+    ).toBe(false);
+    expect(
+      await user.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      ),
+    ).toBe(false);
+    await user.screenshot({
+      path: "test-results/recovered-key-mobile-bg.png",
+      fullPage: true,
+    });
+    await user
+      .getByRole("link", { name: "Обратно към входа", exact: true })
+      .click();
+    await user.getByLabel("Имейл адрес", { exact: true }).fill(email);
+    await user.getByLabel("Парола", { exact: true }).fill(replacement);
+    await user.getByRole("button", { name: "Вход", exact: true }).click();
+    await expect(
+      user.getByRole("heading", { name: "Преглед на енергията", exact: true }),
+    ).toBeVisible();
+    await user.goto("/settings/security");
+    await user
+      .getByLabel("Текуща парола за таблото", { exact: true })
+      .fill(replacement);
+    await user
+      .getByRole("button", {
+        name: "Отмени достъпа за възстановяване",
+        exact: true,
+      })
+      .click();
+    await expect(
+      user.getByText("Няма запазен ключ за възстановяване.", { exact: true }),
+    ).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+test("administrators revoke and reissue invitations and provide a single-use private recovery link", async ({
+  page,
+  browser,
+}) => {
+  await signIn(page);
+  const email = `invitation-access-${randomUUID()}@example.test`;
+  const initial = "invitation-access-fixture-password";
+  await page.getByRole("link", { name: "Workspaces", exact: true }).click();
+  await page
+    .getByLabel("Workspace name", { exact: true })
+    .fill("Access lifecycle fixture");
+  await page.getByLabel("User email", { exact: true }).fill(email);
+  await page
+    .getByRole("button", { name: "Create private invitation", exact: true })
+    .click();
+  const original = await page
+    .getByLabel("Invitation link", { exact: true })
+    .inputValue();
+  const entry = page.locator(".invitation-entry").filter({ hasText: email });
+  await expect(entry).toHaveCount(1);
+  await entry
+    .getByRole("button", { name: "Revoke invitation", exact: true })
+    .click();
+  await expect(entry.locator(".badge")).toHaveText("Revoked");
+  const context = await browser.newContext({
+    baseURL: "http://localhost:3000",
+    locale: "en-GB",
+  });
+  try {
+    const user = await context.newPage();
+    const requests: string[] = [];
+    user.on("request", (request) => requests.push(request.url()));
+    await user.goto(original);
+    await expect(
+      user.getByRole("heading", {
+        name: "Invitation unavailable",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await entry
+      .getByRole("button", { name: "Reissue invitation", exact: true })
+      .click();
+    const current = await page
+      .getByLabel("Invitation link", { exact: true })
+      .inputValue();
+    expect(current).not.toBe(original);
+    await user.goto(current);
+    await user.getByLabel("Password", { exact: true }).fill(initial);
+    await user.getByLabel("Confirm password", { exact: true }).fill(initial);
+    await user
+      .getByRole("button", { name: "Create my workspace", exact: true })
+      .click();
+    await expect(
+      user.getByRole("heading", { name: "Energy overview", exact: true }),
+    ).toBeVisible();
+    await page.getByLabel("Account email", { exact: true }).fill(email);
+    await page
+      .getByLabel("Administrator password", { exact: true })
+      .fill(process.env.E2E_PASSWORD!);
+    await page
+      .getByRole("button", {
+        name: "Create private recovery link",
+        exact: true,
+      })
+      .click();
+    const link = await page
+      .getByLabel("Account recovery link", { exact: true })
+      .inputValue();
+    const secret = new URLSearchParams(new URL(link).hash.slice(1)).get("key")!;
+    expect(new URL(link).search).toBe("");
+    await page.locator(".language-switch select").selectOption("bg");
+    await page.setViewportSize({ width: 320, height: 740 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      ),
+    ).toBe(false);
+    await page.screenshot({
+      path: "test-results/private-access-admin-mobile-bg.png",
+      fullPage: true,
+    });
+    await user.goto(link);
+    await expect(user).toHaveURL("http://localhost:3000/recover");
+    await expect(user.getByLabel("Email address", { exact: true })).toHaveValue(
+      email,
+    );
+    await expect(user.getByLabel("Recovery key", { exact: true })).toHaveValue(
+      secret,
+    );
+    await user
+      .getByLabel("New password", { exact: true })
+      .fill("admin-recovery-replacement");
+    await user
+      .getByLabel("Confirm new password", { exact: true })
+      .fill("admin-recovery-replacement");
+    await user
+      .getByRole("button", { name: "Reset dashboard password", exact: true })
+      .click();
+    await expect(
+      user.getByText(
+        "Password reset completed. All previous browser sessions and recovery credentials are invalid.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    expect((await user.request.get("/api/auth/session")).status()).toBe(401);
+    expect(requests.some((url) => url.includes(secret))).toBe(false);
+    await page
+      .getByLabel("Парола на администратора", { exact: true })
+      .fill(process.env.E2E_PASSWORD!);
+    await page
+      .getByRole("button", {
+        name: "Създай лична връзка за възстановяване",
+        exact: true,
+      })
+      .click();
+    const cancelled = await page
+      .getByLabel("Връзка за възстановяване на акаунта", { exact: true })
+      .inputValue();
+    await page
+      .getByLabel("Парола на администратора", { exact: true })
+      .fill(process.env.E2E_PASSWORD!);
+    await page
+      .getByRole("button", {
+        name: "Отмени неизползваните връзки за възстановяване",
+        exact: true,
+      })
+      .click();
+    await expect(
+      page.getByText(
+        "Неизползваните администраторски връзки за възстановяване са отменени",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await user.goto(cancelled);
+    await user
+      .getByLabel("New password", { exact: true })
+      .fill("cancelled-link-replacement");
+    await user
+      .getByLabel("Confirm new password", { exact: true })
+      .fill("cancelled-link-replacement");
+    await user
+      .getByRole("button", { name: "Reset dashboard password", exact: true })
+      .click();
+    await expect(user.getByRole("alert")).toContainText(
+      "Recovery details are invalid",
+    );
+  } finally {
+    await context.close();
+  }
+});
+
+test("public recovery reports an unconfirmed response in Bulgarian instead of claiming a failed reset", async ({
+  page,
+}) => {
+  await page.goto(
+    "/recover#key=" + "a".repeat(64) + "&email=fixture%40example.test",
+  );
+  await expect(page).toHaveURL("http://localhost:3000/recover");
+  await page.route("**/api/auth/recover", (route) => route.abort("failed"));
+  await page
+    .getByLabel("New password", { exact: true })
+    .fill("unconfirmed-recovery-fixture");
+  await page
+    .getByLabel("Confirm new password", { exact: true })
+    .fill("unconfirmed-recovery-fixture");
+  await page.locator(".language-switch select").selectOption("bg");
+  await page
+    .getByRole("button", { name: "Смени паролата за таблото", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Възстановяването не може да бъде потвърдено",
+  );
+});
+
+test("a delayed identity cannot replace an activated user and recovery preserves another signed-in account", async ({
+  page,
+  browser,
+}) => {
+  await signIn(page);
+  const owner = (await (
+    await page.request.get("/api/auth/session")
+  ).json()) as Session;
+  const email = `identity-recovery-${randomUUID()}@example.test`;
+  const initial = "identity-recovery-fixture";
+  const invitation = await privateInvitation(
+    page,
+    email,
+    "Identity recovery fixture",
+  );
+  const context = await browser.newContext({
+    baseURL: "http://localhost:3000",
+    locale: "en-GB",
+  });
+  await context.addCookies(await page.context().cookies());
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let completed: () => void = () => {};
+  const finished = new Promise<void>((resolve) => {
+    completed = resolve;
+  });
+  let intercepted = false;
+  await context.route("**/api/auth/session", async (route) => {
+    if (intercepted) {
+      await route.continue();
+      return;
+    }
+    intercepted = true;
+    try {
+      const original = await route.fetch();
+      await gate;
+      await route.fulfill({ response: original });
+    } finally {
+      completed();
+    }
+  });
+  try {
+    const user = await context.newPage();
+    await user.goto(invitation.url);
+    await user.getByLabel("Password", { exact: true }).fill(initial);
+    await user.getByLabel("Confirm password", { exact: true }).fill(initial);
+    await user
+      .getByRole("button", { name: "Create my workspace", exact: true })
+      .click();
+    await expect(
+      user.getByRole("heading", { name: "Energy overview", exact: true }),
+    ).toBeVisible();
+    release();
+    await finished;
+    await expect(
+      user.getByRole("link", { name: "Workspaces", exact: true }),
+    ).toHaveCount(0);
+    const session = (await (
+      await user.request.get("/api/auth/session")
+    ).json()) as Session;
+    expect(session.user.email).toBe(email);
+    const generated = await user.request.post("/api/security/recovery/key", {
+      headers: {
+        origin: "http://localhost:3000",
+        "x-csrf-token": session.csrfToken,
+      },
+      data: { currentPassword: initial },
+    });
+    expect(generated.status()).toBe(200);
+    const saved = (await generated.json()) as { key: string };
+    await page.goto(
+      "/recover#" + new URLSearchParams({ email, key: saved.key }).toString(),
+    );
+    await page
+      .getByLabel("New password", { exact: true })
+      .fill("identity-recovered-password");
+    await page
+      .getByLabel("Confirm new password", { exact: true })
+      .fill("identity-recovered-password");
+    await page
+      .getByRole("button", { name: "Reset dashboard password", exact: true })
+      .click();
+    await expect(
+      page.getByText(
+        `This browser is signed in as ${owner.user.email}. Sign out in the dashboard to switch accounts.`,
+        { exact: true },
+      ),
+    ).toBeVisible();
+    const remaining = await page.request.get("/api/auth/session");
+    expect(remaining.status()).toBe(200);
+    expect(((await remaining.json()) as Session).user.id).toBe(owner.user.id);
+    expect((await user.request.get("/api/auth/session")).status()).toBe(401);
+    await page
+      .getByRole("link", { name: "Return to dashboard", exact: true })
+      .click();
+    await expect(
+      page.getByRole("link", { name: "Workspaces", exact: true }),
+    ).toBeVisible();
+  } finally {
+    release();
+    if (intercepted) await finished;
+    await context.close();
+  }
 });

@@ -18,6 +18,8 @@ import { ApiCapacityError } from "../../src/api-capacity.mjs";
 import { ControlJournal } from "../../src/control-journal.mjs";
 import { parseFrame, frame } from "../../src/modbus.mjs";
 import { Operations } from "../../src/operations.mjs";
+import { AccountRecovery } from "../../src/account-recovery.mjs";
+import { Invitations, lockInvitationEmail } from "../../src/invitations.mjs";
 import {
   AccountSecurity,
   SecurityError,
@@ -44,6 +46,7 @@ async function fetchApi(
     originHeader = true,
     idempotency,
     agent,
+    clientIp,
   } = {},
 ) {
   const headers = {
@@ -53,6 +56,7 @@ async function fetchApi(
     ...(auth && csrf ? { "x-csrf-token": auth.csrfToken } : {}),
     ...(idempotency ? { "idempotency-key": idempotency } : {}),
     ...(agent ? { "user-agent": agent } : {}),
+    ...(clientIp ? { "x-real-ip": clientIp } : {}),
   };
   return fetch(`${origin}/api${path}`, {
     method,
@@ -332,7 +336,9 @@ test("platform administration is restricted and invitation activation is single 
     body: { email: "invited@example.test", tenantName: "Invited workspace" },
   });
   assert.equal(invite.status, 201);
-  const token = new URL((await invite.json()).url).searchParams.get("token");
+  const token = new URLSearchParams(
+    new URL((await invite.json()).url).hash.slice(1),
+  ).get("token");
   const response = await fetchApi("/auth/activate", {
     method: "POST",
     body: { token, password },
@@ -3218,3 +3224,759 @@ test("password reauthentication is rate-limited without ending the valid browser
   assert.equal(limited.headers.get("retry-after"), "900");
   assert.equal((await fetchApi("/security", { auth: current })).status, 200);
 });
+
+async function savedRecoveryKey(auth, currentPassword = password) {
+  const response = await fetchApi("/security/recovery/key", {
+    auth,
+    method: "POST",
+    body: { currentPassword },
+  });
+  assert.equal(response.status, 200);
+  return (await response.json()).key;
+}
+function privateToken(url, name = "key") {
+  return new URLSearchParams(new URL(url).hash.slice(1)).get(name);
+}
+async function recoveryLink(email) {
+  const response = await fetchApi("/admin/recovery", {
+    auth: alpha,
+    method: "POST",
+    body: { email, currentPassword: password, action: "issue" },
+  });
+  assert.equal(response.status, 200);
+  return await response.json();
+}
+
+test("saved recovery keys rotate, remain private and reset access without changing inverter intent", async (t) => {
+  const user = await securityUser(t),
+    other = await securityUser(t);
+  const current = await login(user.email),
+    second = await login(user.email),
+    separate = await login(other.email);
+  await pool.query(
+    "UPDATE controller_state SET paused=false,control_enabled=true WHERE tenant_id=$1",
+    [user.tenant],
+  );
+  assert.equal(
+    (
+      await fetchApi("/security/recovery/key", {
+        auth: current,
+        method: "POST",
+        csrf: false,
+        body: { currentPassword: password },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await fetchApi("/security/recovery/key", {
+        auth: current,
+        method: "POST",
+        body: { currentPassword: "incorrect" },
+      })
+    ).status,
+    400,
+  );
+  const first = await savedRecoveryKey(current),
+    key = await savedRecoveryKey(current);
+  assert.match(key, /^[a-f0-9]{64}$/);
+  assert.notEqual(first, key);
+  const metadata = await (
+    await fetchApi("/security", { auth: current })
+  ).json();
+  assert.ok(metadata.recovery.keyCreatedAt);
+  assert.equal(JSON.stringify(metadata).includes(key), false);
+  const stored = (
+    await pool.query(
+      "SELECT token_hash FROM account_recovery_tokens WHERE user_id=$1 AND kind='saved_key' AND revoked_at IS NULL AND used_at IS NULL",
+      [user.id],
+    )
+  ).rows[0];
+  assert.equal(stored.token_hash, tokenHash(key));
+  assert.notEqual(stored.token_hash, key);
+  const admin = await recoveryLink(user.email);
+  assert.equal(new URL(admin.url).search, "");
+  assert.equal(privateToken(admin.url, "email"), user.email);
+  const response = await fetchApi("/auth/recover", {
+    method: "POST",
+    clientIp: "198.51.100.41",
+    body: { email: user.email, key, newPassword: "recovered-password= " },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("set-cookie"), null);
+  const recovered = await response.json();
+  assert.match(recovered.recoveryKey, /^[a-f0-9]{64}$/);
+  assert.notEqual(recovered.recoveryKey, key);
+  assert.equal(
+    (await fetchApi("/auth/session", { auth: current })).status,
+    401,
+  );
+  assert.equal((await fetchApi("/auth/session", { auth: second })).status, 401);
+  assert.equal(
+    (await fetchApi("/auth/session", { auth: separate })).status,
+    200,
+  );
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int AS n FROM sessions WHERE user_id=$1",
+        [user.id],
+      )
+    ).rows[0].n,
+    0,
+  );
+  for (const previous of [first, key, privateToken(admin.url)])
+    assert.equal(
+      (
+        await fetchApi("/auth/recover", {
+          method: "POST",
+          clientIp: "198.51.100.41",
+          body: {
+            email: user.email,
+            key: previous,
+            newPassword: "another-replacement",
+          },
+        })
+      ).status,
+      400,
+    );
+  const renewed = await login(user.email, "recovered-password= ");
+  const events = await (await fetchApi("/security", { auth: renewed })).json();
+  assert.equal(
+    events.events.find((event) => event.kind === "password_recovered")
+      .affectedSessions,
+    2,
+  );
+  assert.equal(JSON.stringify(events).includes(ids.alpha.user), false);
+  const active = (
+    await pool.query(
+      "SELECT token_hash FROM account_recovery_tokens WHERE user_id=$1 AND used_at IS NULL AND revoked_at IS NULL",
+      [user.id],
+    )
+  ).rows;
+  assert.deepEqual(active, [{ token_hash: tokenHash(recovered.recoveryKey) }]);
+  assert.deepEqual(
+    (
+      await pool.query(
+        "SELECT paused,control_enabled FROM controller_state WHERE tenant_id=$1",
+        [user.tenant],
+      )
+    ).rows[0],
+    { paused: false, control_enabled: true },
+  );
+  assert.equal(hub.runtimes.has(user.tenant), false);
+});
+
+test("administrator recovery requires fresh credentials and cannot recover platform administrators", async (t) => {
+  const user = await securityUser(t);
+  const current = await login(user.email);
+  assert.equal(
+    (
+      await fetchApi("/admin/recovery", {
+        auth: current,
+        method: "POST",
+        body: { email: user.email, currentPassword: password, action: "issue" },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await fetchApi("/admin/recovery", {
+        auth: alpha,
+        method: "POST",
+        csrf: false,
+        body: { email: user.email, currentPassword: password, action: "issue" },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await fetchApi("/admin/recovery", {
+        auth: alpha,
+        method: "POST",
+        body: {
+          email: user.email,
+          currentPassword: "incorrect",
+          action: "issue",
+        },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await fetchApi("/admin/recovery", {
+        auth: alpha,
+        method: "POST",
+        body: {
+          email: "alpha@example.test",
+          currentPassword: password,
+          action: "issue",
+        },
+      })
+    ).status,
+    404,
+  );
+  const saved = await savedRecoveryKey(current);
+  const first = await recoveryLink(user.email),
+    second = await recoveryLink(user.email);
+  assert.ok(Date.parse(second.expiresAt) > Date.now() + 29 * 60000);
+  assert.ok(Date.parse(second.expiresAt) < Date.now() + 31 * 60000);
+  const reset = (key) =>
+    fetchApi("/auth/recover", {
+      method: "POST",
+      clientIp: "198.51.100.42",
+      body: { email: user.email, key, newPassword: "recovered-through-link" },
+    });
+  assert.equal((await reset(privateToken(first.url))).status, 400);
+  assert.equal(
+    (
+      await fetchApi("/admin/recovery", {
+        auth: alpha,
+        method: "POST",
+        body: {
+          email: user.email,
+          currentPassword: password,
+          action: "revoke",
+        },
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await reset(privateToken(second.url))).status, 400);
+  const expired = await recoveryLink(user.email);
+  await pool.query(
+    "UPDATE account_recovery_tokens SET expires_at=now()-interval '1 second' WHERE token_hash=$1",
+    [tokenHash(privateToken(expired.url))],
+  );
+  assert.equal((await reset(privateToken(expired.url))).status, 400);
+  const beforeChange = await recoveryLink(user.email);
+  const changed = await fetchApi("/security/password", {
+    auth: current,
+    method: "POST",
+    body: { currentPassword: password, newPassword: "routine-replacement" },
+  });
+  assert.equal(changed.status, 200);
+  const renewed = {
+    ...(await changed.json()),
+    cookie: changed.headers.get("set-cookie").split(";")[0],
+  };
+  assert.equal((await reset(privateToken(beforeChange.url))).status, 400);
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int AS n FROM account_recovery_tokens WHERE user_id=$1 AND token_hash=$2 AND revoked_at IS NULL AND used_at IS NULL",
+        [user.id, tokenHash(saved)],
+      )
+    ).rows[0].n,
+    1,
+  );
+  const beforeNewKey = await recoveryLink(user.email);
+  await savedRecoveryKey(renewed, "routine-replacement");
+  assert.equal((await reset(privateToken(beforeNewKey.url))).status, 400);
+  const promoted = await recoveryLink(user.email);
+  await pool.query("UPDATE users SET platform_admin=true WHERE id=$1", [
+    user.id,
+  ]);
+  assert.equal((await reset(privateToken(promoted.url))).status, 400);
+});
+
+test(
+  "concurrent recovery consumption has one winner and delayed old-password logins cannot return",
+  { timeout: 15000 },
+  async (t) => {
+    const user = await securityUser(t);
+    const current = await login(user.email),
+      key = await savedRecoveryKey(current);
+    const original = (
+      await pool.query("SELECT id,password_hash FROM users WHERE id=$1", [
+        user.id,
+      ])
+    ).rows[0];
+    let release,
+      ready,
+      arrived = 0;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const both = new Promise((resolve) => {
+      ready = resolve;
+    });
+    t.after(() => release());
+    const services = [new AccountRecovery(pool), new AccountRecovery(pool)];
+    for (const service of services) {
+      const locked = service.security.withUser.bind(service.security);
+      service.security.withUser = async (...args) => {
+        if (++arrived === 2) ready();
+        await gate;
+        return locked(...args);
+      };
+    }
+    const results = Promise.allSettled(
+      services.map((service, index) =>
+        service.consume(user.email, key, `concurrent-replacement-${index}`),
+      ),
+    );
+    await both;
+    release();
+    const outcomes = await results;
+    assert.equal(
+      outcomes.filter((outcome) => outcome.status === "fulfilled").length,
+      1,
+    );
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    assert.ok(rejected.reason instanceof SecurityError);
+    assert.equal(rejected.reason.status, 400);
+    await assert.rejects(
+      new AccountSecurity(pool).login(original, "late browser"),
+      (error) => error instanceof SecurityError && error.status === 401,
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM sessions WHERE user_id=$1",
+          [user.id],
+        )
+      ).rows[0].n,
+      0,
+    );
+  },
+);
+
+test(
+  "a delayed recovery-key issuance cannot outlive revocation of its browser",
+  { timeout: 15000 },
+  async (t) => {
+    const user = await securityUser(t),
+      current = await login(user.email);
+    const key = await savedRecoveryKey(current),
+      context = await securityContext(current);
+    const service = new AccountRecovery(pool);
+    let release, ready;
+    const gate = new Promise((resolve) => {
+        release = resolve;
+      }),
+      verified = new Promise((resolve) => {
+        ready = resolve;
+      });
+    t.after(() => release());
+    const confirm = service.security.confirmedPassword.bind(service.security);
+    service.security.confirmedPassword = async (...args) => {
+      const result = await confirm(...args);
+      ready();
+      await gate;
+      return result;
+    };
+    const attempt = Promise.allSettled([service.createKey(context, password)]);
+    await verified;
+    await new AccountRecovery(pool).consume(
+      user.email,
+      key,
+      "new-after-recovery",
+    );
+    release();
+    const result = (await attempt)[0];
+    assert.equal(result.status, "rejected");
+    assert.equal(result.reason.status, 401);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM account_recovery_tokens WHERE user_id=$1 AND used_at IS NULL AND revoked_at IS NULL",
+          [user.id],
+        )
+      ).rows[0].n,
+      1,
+    );
+  },
+);
+
+test("recovery rejects unknown details uniformly and bounds unauthenticated attempts", async (t) => {
+  const user = await securityUser(t);
+  const invalid = "a".repeat(64);
+  const unknown = await fetchApi("/auth/recover", {
+    method: "POST",
+    clientIp: "198.51.100.44",
+    body: {
+      email: "unknown@example.test",
+      key: invalid,
+      newPassword: "replacement-password",
+    },
+  });
+  const known = await fetchApi("/auth/recover", {
+    method: "POST",
+    clientIp: "198.51.100.45",
+    body: {
+      email: user.email,
+      key: invalid,
+      newPassword: "replacement-password",
+    },
+  });
+  assert.equal(unknown.status, 400);
+  assert.equal(known.status, 400);
+  assert.deepEqual(await unknown.json(), await known.json());
+  for (let i = 0; i < 8; i++)
+    assert.equal(
+      (
+        await fetchApi("/auth/recover", {
+          method: "POST",
+          clientIp: "198.51.100.46",
+          body: {
+            email: user.email,
+            key: invalid,
+            newPassword: "replacement-password",
+          },
+        })
+      ).status,
+      400,
+    );
+  const limited = await fetchApi("/auth/recover", {
+    method: "POST",
+    clientIp: "198.51.100.46",
+    body: {
+      email: user.email,
+      key: invalid,
+      newPassword: "replacement-password",
+    },
+  });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("retry-after"), "900");
+});
+
+test("operator recovery replaces credentials, revokes saved access and never creates a browser", async (t) => {
+  const user = await securityUser(t),
+    current = await login(user.email);
+  const key = await savedRecoveryKey(current);
+  await new AccountRecovery(pool).operatorReset(
+    user.email,
+    "operator-replacement",
+  );
+  assert.equal(
+    (await fetchApi("/auth/session", { auth: current })).status,
+    401,
+  );
+  assert.equal(
+    (
+      await fetchApi("/auth/recover", {
+        method: "POST",
+        clientIp: "198.51.100.47",
+        body: { email: user.email, key, newPassword: "old-key-replay" },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*)::int AS n FROM sessions WHERE user_id=$1",
+        [user.id],
+      )
+    ).rows[0].n,
+    0,
+  );
+  const auth = await login(user.email, "operator-replacement");
+  assert.equal((await fetchApi("/security", { auth })).status, 200);
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT actor_id FROM account_security_events WHERE user_id=$1 AND kind='password_recovered'",
+        [user.id],
+      )
+    ).rows[0].actor_id,
+    null,
+  );
+});
+
+test("invitation history keeps bearer secrets private while revoke and reissue invalidate old links", async () => {
+  const email = `lifecycle-${randomUUID()}@example.test`;
+  const create = () =>
+    fetchApi("/admin/invitations", {
+      auth: alpha,
+      method: "POST",
+      body: { email, tenantName: "Invitation lifecycle" },
+    });
+  const created = await create();
+  assert.equal(created.status, 201);
+  const first = await created.json();
+  assert.equal(new URL(first.url).search, "");
+  const token = privateToken(first.url, "token");
+  assert.match(token, /^[a-f0-9]{64}$/);
+  assert.equal((await create()).status, 409);
+  assert.equal(
+    (await fetchApi("/admin/invitations", { auth: beta })).status,
+    403,
+  );
+  const list = await (
+    await fetchApi("/admin/invitations", { auth: alpha })
+  ).json();
+  assert.equal(JSON.stringify(list).includes(token), false);
+  assert.equal(JSON.stringify(list).includes("token_hash"), false);
+  assert.equal(
+    (await fetchApi("/invitation/inspect", { method: "POST", body: { token } }))
+      .status,
+    200,
+  );
+  assert.equal(
+    (
+      await fetchApi(`/admin/invitations/${first.id}/revoke`, {
+        auth: alpha,
+        method: "POST",
+        csrf: false,
+        body: {},
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await fetchApi(`/admin/invitations/${first.id}/revoke`, {
+        auth: alpha,
+        method: "POST",
+        body: {},
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await fetchApi("/invitation/inspect", { method: "POST", body: { token } }))
+      .status,
+    404,
+  );
+  assert.equal(
+    (
+      await fetchApi("/auth/activate", {
+        method: "POST",
+        body: { token, password },
+      })
+    ).status,
+    400,
+  );
+  const renewed = await fetchApi(`/admin/invitations/${first.id}/reissue`, {
+    auth: alpha,
+    method: "POST",
+    body: {},
+  });
+  assert.equal(renewed.status, 200);
+  const second = await renewed.json();
+  assert.notEqual(second.id, first.id);
+  assert.notEqual(privateToken(second.url, "token"), token);
+  assert.equal(
+    (
+      await fetchApi(`/admin/invitations/${first.id}/reissue`, {
+        auth: alpha,
+        method: "POST",
+        body: {},
+      })
+    ).status,
+    409,
+  );
+  const parallel = await Promise.all(
+    [0, 1].map(() =>
+      fetchApi(`/admin/invitations/${second.id}/reissue`, {
+        auth: alpha,
+        method: "POST",
+        body: {},
+      }),
+    ),
+  );
+  assert.deepEqual(parallel.map((r) => r.status).sort(), [200, 409]);
+  const final = await parallel.find((r) => r.status === 200).json();
+  assert.equal(
+    (
+      await fetchApi("/auth/activate", {
+        method: "POST",
+        body: { token: privateToken(final.url, "token"), password },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await fetchApi(`/admin/invitations/${final.id}/revoke`, {
+        auth: alpha,
+        method: "POST",
+        body: {},
+      })
+    ).status,
+    409,
+  );
+  assert.equal((await create()).status, 409);
+  const stored = (
+    await pool.query(
+      "SELECT revoked_at,replaced_by_id FROM invitations WHERE id=$1",
+      [first.id],
+    )
+  ).rows[0];
+  assert.ok(stored.revoked_at);
+  assert.equal(stored.replaced_by_id, second.id);
+});
+
+test(
+  "invitation activation and revocation serialize on the email and leave one outcome",
+  { timeout: 15000 },
+  async () => {
+    const email = `race-${randomUUID()}@example.test`;
+    const first = await (
+      await fetchApi("/admin/invitations", {
+        auth: alpha,
+        method: "POST",
+        body: { email, tenantName: "Invitation race" },
+      })
+    ).json();
+    const connection = await pool.connect();
+    let attempts;
+    try {
+      await connection.query("BEGIN");
+      await lockInvitationEmail(connection, email);
+      const activated = fetchApi("/auth/activate", {
+        method: "POST",
+        body: { token: privateToken(first.url, "token"), password },
+      });
+      const revoked = fetchApi(`/admin/invitations/${first.id}/revoke`, {
+        auth: alpha,
+        method: "POST",
+        body: {},
+      });
+      attempts = Promise.all([activated, revoked]);
+      let waiting = false;
+      for (let i = 0; i < 100; i++) {
+        const count = (
+          await pool.query(
+            "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%pg_advisory_xact_lock(193402,%' AND pid<>pg_backend_pid()",
+          )
+        ).rows[0].n;
+        if (count >= 2) {
+          waiting = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.equal(waiting, true);
+    } finally {
+      await connection.query("ROLLBACK");
+      connection.release();
+    }
+    const [activated, revoked] = await attempts;
+    assert.ok(
+      (activated.status === 200 && revoked.status === 409) ||
+        (activated.status === 400 && revoked.status === 200),
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM users WHERE lower(email)=$1",
+          [email],
+        )
+      ).rows[0].n,
+      activated.status === 200 ? 1 : 0,
+    );
+  },
+);
+
+test("private-access migration preserves invitation history while retiring duplicate pending links", async () => {
+  const connection = await pool.connect();
+  const schema = `access_fixture_${randomUUID().replaceAll("-", "")}`;
+  try {
+    await connection.query("BEGIN");
+    await connection.query(`CREATE SCHEMA "${schema}"`);
+    await connection.query(`SET LOCAL search_path="${schema}",pg_catalog`);
+    await connection.query(`CREATE TABLE users (id uuid PRIMARY KEY,email text NOT NULL);
+      CREATE TABLE account_security_events (kind text CONSTRAINT account_security_events_kind_check CHECK (kind IN ('signed_in')));
+      CREATE TABLE invitations (token_hash text PRIMARY KEY,email text NOT NULL,tenant_name text,created_at timestamptz NOT NULL,used_at timestamptz);`);
+    await connection.query(
+      "INSERT INTO users VALUES ($1,'existing@example.test')",
+      [randomUUID()],
+    );
+    await connection.query(`INSERT INTO invitations VALUES
+      ('older','DUPLICATE@example.test','Original',now()-interval '2 hours',null),
+      ('newer','duplicate@example.test','Latest',now()-interval '1 hour',null),
+      ('used','accepted@example.test','Accepted',now()-interval '3 hours',now()-interval '2 hours'),
+      ('existing','existing@example.test','Existing account',now(),null)`);
+    await connection.query(
+      await readFile(
+        new URL("../../migrations/013_private_access.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    const rows = (
+      await connection.query(
+        "SELECT token_hash,id,tenant_name,used_at,revoked_at,replaced_by_id FROM invitations ORDER BY token_hash",
+      )
+    ).rows;
+    assert.equal(rows.length, 4);
+    const old = rows.find((row) => row.token_hash === "older"),
+      latest = rows.find((row) => row.token_hash === "newer");
+    assert.ok(old.revoked_at);
+    assert.equal(old.replaced_by_id, latest.id);
+    assert.equal(latest.revoked_at, null);
+    assert.equal(old.tenant_name, "Original");
+    assert.equal(latest.tenant_name, "Latest");
+    assert.ok(rows.find((row) => row.token_hash === "used").used_at);
+    assert.equal(
+      rows.find((row) => row.token_hash === "used").revoked_at,
+      null,
+    );
+    assert.ok(rows.find((row) => row.token_hash === "existing").revoked_at);
+  } finally {
+    await connection.query("ROLLBACK");
+    connection.release();
+  }
+});
+
+test(
+  "recovery expiry uses the authorization time after a blocked user lock",
+  { timeout: 15000 },
+  async (t) => {
+    const user = await securityUser(t),
+      current = await login(user.email),
+      issued = await recoveryLink(user.email);
+    const service = new AccountRecovery(pool),
+      connection = await pool.connect();
+    let pending;
+    try {
+      await connection.query("BEGIN");
+      await connection.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [
+        user.id,
+      ]);
+      pending = Promise.allSettled([
+        service.consume(
+          user.email,
+          privateToken(issued.url),
+          "expired-while-waiting",
+        ),
+      ]);
+      let waiting = false;
+      for (let i = 0; i < 100; i++) {
+        const rows = (
+          await pool.query(
+            "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FROM users WHERE id=$1 FOR UPDATE%' AND pid<>pg_backend_pid()",
+          )
+        ).rows;
+        if (rows[0].n > 0) {
+          waiting = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.equal(waiting, true);
+      await connection.query(
+        "UPDATE account_recovery_tokens SET expires_at=clock_timestamp()+interval '100 milliseconds' WHERE token_hash=$1",
+        [tokenHash(privateToken(issued.url))],
+      );
+      await connection.query("SELECT pg_sleep(0.15)");
+      await connection.query("COMMIT");
+    } finally {
+      await connection.query("ROLLBACK");
+      connection.release();
+    }
+    const outcome = (await pending)[0];
+    assert.equal(outcome.status, "rejected");
+    assert.equal(outcome.reason.status, 400);
+    assert.equal(
+      (await fetchApi("/auth/session", { auth: current })).status,
+      200,
+    );
+  },
+);

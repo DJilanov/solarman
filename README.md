@@ -54,9 +54,23 @@ Settings → Account security manages the local dashboard login separately from 
 
 Browser sessions show sign-in, expiry and approximate activity times, with paginated access to every active session. Activity is recorded at most every five minutes without extending the seven-day authentication expiry. Browser descriptions come from client-provided User-Agent metadata, capped at 256 characters; old unknown activity remains unrecorded until that browser makes a request. Session lists expose public IDs and never authentication/CSRF secrets or password hashes. Users can end another browser or every other browser; the current browser uses the existing Sign out action. The latest 20 sign-in, sign-out, password-change and revocation events are private to that user.
 
-Changing dashboard credentials or signing out browsers does not pause inverter automation or cancel accepted commands. Use Stop scheduled top-ups when charging intent must be paused. If a connection fails during a password change, the interface reports an unconfirmed outcome rather than promising failure. The bootstrap password hash in the environment is used to create the initial account; it does not replace an existing user's changed password on restart. Forgotten-password recovery remains a separate pending workflow.
+Changing dashboard credentials, recovering access or signing out browsers does not pause inverter automation or cancel accepted commands. Use Stop scheduled top-ups when charging intent must be paused. If a connection fails during a credential change, the interface reports an unconfirmed outcome rather than promising failure. The bootstrap password hash in the environment is used to create the initial account; it does not replace an existing user's changed password on restart.
 
 Session renewal follows the [OWASP session management guidance](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html). Account-security requests use PostgreSQL only and do not initialize a provider runtime or dispatch inverter commands.
+
+Settings → Account security can create a 256-bit saved recovery key after verifying the current dashboard password. The key is shown once and can be downloaded privately in the selected language; only its SHA-256 verifier is stored. Creating a new key invalidates older keys and pending administrator links. Ordinary password changes preserve the saved key and cancel administrator links. Users can revoke all recovery access using their current password.
+
+The sign-in screen's **Forgot your dashboard password?** page accepts the account email and saved key. Administrators can issue a 30-minute private link for an ordinary user under Workspaces after re-entering their own password, or cancel pending links. Platform administrators recover with their own saved key or the server operator. Recovery consumes its key/link once, invalidates every previous browser session and recovery credential, and returns a replacement saved key. It does not automatically sign in or change another account already signed in in the browser. Rate limits and current-time expiry checks apply after lock waits. The saved-key pattern is described in [NIST's account-recovery guidance](https://pages.nist.gov/800-63-4/sp800-63b.html#saved-recovery-codes).
+
+Workspaces → Invitation history provides pagination, expiry/acceptance status, revocation and reissue. Reissue creates a new private link and invalidates the old one. Activation and administration serialize on the invitation email, so an accepted invitation cannot be rearmed or create a duplicate workspace. New invitation/recovery links carry secrets in a URL fragment, which the browser captures and removes from history. Inspection uses a POST body. Legacy query-based invitations remain accepted. Raw recovery keys, invitation secrets and recovery URLs are never returned by history endpoints; private links are shared manually by the administrator.
+
+If the sole administrator loses both password and saved key, a server operator with the existing private application/database access can reset the account interactively:
+
+```sh
+ssh -t mitko@92.247.242.86 'cd /home/mitko/solarman/current && /opt/jilanov-node/node-v24.22.1-linux-x64/bin/node --env-file=/home/mitko/.config/solarman/app.env scripts/recover-account.mjs --email account@example.com'
+```
+
+The command prompts twice without echoing the password and refuses noninteractive input. It invalidates sessions and recovery credentials, records an operator recovery event and leaves inverter intent unchanged. Sign in afterward to prepare a new saved key. No password belongs in a command argument or environment variable for this operation.
 
 ## Monitoring and source timestamps
 

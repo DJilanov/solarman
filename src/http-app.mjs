@@ -1,24 +1,21 @@
-import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   LoginLimiter,
   verifyPassword,
-  hashPassword,
   tokenHash,
-  randomToken,
   readCookie,
   equalToken,
 } from "./auth.mjs";
+import { AccountRecovery } from "./account-recovery.mjs";
+import { Invitations } from "./invitations.mjs";
 import { summarize, localDay, dayStart, addDays } from "./analytics.mjs";
 import { historyEvidence, writeHistory } from "./command-history.mjs";
 import { readBackupStatus } from "./backup-status.mjs";
 import {
   AccountSecurity,
   SecurityError,
-  createBrowserSession,
-  recordSecurityEvent,
   browserDescription,
 } from "./account-security.mjs";
 
@@ -84,6 +81,31 @@ export function createApp({ pool, hub, config }) {
   const limiter = new LoginLimiter();
   const securityLimiter = new LoginLimiter();
   const security = new AccountSecurity(pool);
+  const recovery = new AccountRecovery(pool);
+  const invitations = new Invitations(pool);
+  /** @param {import('node:http').IncomingMessage} request @param {import('node:http').ServerResponse} response @param {string} purpose @returns {string} */
+  const limitPublic = (request, response, purpose) => {
+    const trusted = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(
+      request.socket.remoteAddress,
+    );
+    const address =
+      trusted && typeof request.headers["x-real-ip"] === "string"
+        ? request.headers["x-real-ip"]
+        : request.socket.remoteAddress;
+    const key = `${purpose}:${address ?? "unknown"}`;
+    if (!limiter.allow(key)) {
+      response.setHeader("retry-after", "900");
+      throw new HttpError(429, "Too many attempts. Try again in 15 minutes.");
+    }
+    return key;
+  };
+  /** @param {import('node:http').ServerResponse} response @param {{id:string}} session @returns {void} */
+  const limitSecurity = (response, session) => {
+    if (!securityLimiter.allow(session.id)) {
+      response.setHeader("retry-after", "900");
+      throw new HttpError(429, "Too many attempts. Try again in 15 minutes.");
+    }
+  };
   const cookieName = config.secure
     ? "__Host-solarman_session"
     : "solarman_session";
@@ -296,109 +318,48 @@ export function createApp({ pool, hub, config }) {
         return;
       }
       if (pathname === "/api/invitation" && request.method === "GET") {
-        const token = url.searchParams.get("token");
-        if (!token || !/^[a-f0-9]{64}$/.test(token))
-          throw new HttpError(404, "Invitation is invalid or expired");
-        const invite = (
-          await pool.query(
-            "SELECT email,tenant_name FROM invitations WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now()",
-            [tokenHash(token)],
-          )
-        ).rows[0];
-        if (!invite)
-          throw new HttpError(404, "Invitation is invalid or expired");
-        json(response, 200, invite);
+        json(
+          response,
+          200,
+          await invitations.inspect(url.searchParams.get("token")),
+        );
+        return;
+      }
+      if (pathname === "/api/invitation/inspect" && request.method === "POST") {
+        const limitKey = limitPublic(request, response, "invitation");
+        const body = await bodyJson(request);
+        const result = await invitations.inspect(body.token);
+        limiter.clear(limitKey);
+        json(response, 200, result);
         return;
       }
       if (pathname === "/api/auth/activate" && request.method === "POST") {
+        const limitKey = limitPublic(request, response, "activation");
         const body = await bodyJson(request);
-        if (
-          typeof body.token !== "string" ||
-          !/^[a-f0-9]{64}$/.test(body.token) ||
-          typeof body.password !== "string" ||
-          body.password.length < 8 ||
-          body.password.length > 1024
-        )
-          throw new HttpError(
-            400,
-            "Use a valid invitation and a password of at least 8 characters",
-          );
-        if (
-          !(
-            await pool.query(
-              "SELECT 1 FROM invitations WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now()",
-              [tokenHash(body.token)],
-            )
-          ).rowCount
-        )
-          throw new HttpError(400, "Invitation is invalid or expired");
-        const passwordHash = await hashPassword(body.password);
-        const client = await pool.connect();
-        let user;
-        let sessionToken;
-        let csrfToken;
-        try {
-          await client.query("BEGIN");
-          const invitation = (
-            await client.query(
-              "SELECT * FROM invitations WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now() FOR UPDATE",
-              [tokenHash(body.token)],
-            )
-          ).rows[0];
-          if (!invitation)
-            throw new HttpError(400, "Invitation is invalid or expired");
-          const tenantId = randomUUID();
-          const id = randomUUID();
-          await client.query("INSERT INTO tenants (id,name) VALUES ($1,$2)", [
-            tenantId,
-            invitation.tenant_name,
-          ]);
-          await client.query(
-            "INSERT INTO users (id,tenant_id,email,password_hash) VALUES ($1,$2,$3,$4)",
-            [id, tenantId, invitation.email, passwordHash],
-          );
-          await client.query(
-            "INSERT INTO controller_state (tenant_id) VALUES ($1)",
-            [tenantId],
-          );
-          await client.query(
-            "UPDATE invitations SET used_at=now() WHERE token_hash=$1",
-            [tokenHash(body.token)],
-          );
-          const browserSession = await createBrowserSession(
-            client,
-            id,
-            request.headers["user-agent"],
-          );
-          sessionToken = browserSession.token;
-          csrfToken = browserSession.csrfToken;
-          await recordSecurityEvent(
-            client,
-            { id, tenant_id: tenantId },
-            "signed_in",
-            1,
-          );
-          await client.query("COMMIT");
-          user = {
-            id,
-            email: invitation.email,
-            tenant_id: tenantId,
-            tenant_name: invitation.tenant_name,
-            platform_admin: false,
-          };
-        } catch (error) {
-          await client.query("ROLLBACK");
-          if (error?.code === "23505")
-            throw new HttpError(
-              409,
-              "This account already exists. Sign in instead.",
-            );
-          throw error;
-        } finally {
-          client.release();
-        }
-        response.setHeader("set-cookie", cookie(sessionToken));
-        json(response, 200, sessionData(user, csrfToken));
+        const result = await invitations.activate(
+          body.token,
+          body.password,
+          request.headers["user-agent"],
+        );
+        response.setHeader("set-cookie", cookie(result.token));
+        limiter.clear(limitKey);
+        json(response, 200, sessionData(result.user, result.csrfToken));
+        return;
+      }
+      if (pathname === "/api/auth/recover" && request.method === "POST") {
+        const limitKey = limitPublic(request, response, "recovery");
+        const body = await bodyJson(request);
+        const next = await recovery.consume(
+          body.email,
+          body.key,
+          body.newPassword,
+        );
+        limiter.clear(limitKey);
+        json(response, 200, {
+          ok: true,
+          recoveryKey: next.key,
+          createdAt: next.createdAt,
+        });
         return;
       }
       const session = await getSession(request);
@@ -425,15 +386,36 @@ export function createApp({ pool, hub, config }) {
         json(response, 200, await security.list(session, Number(offset)));
         return;
       }
+      if (
+        [
+          "/api/security/recovery/key",
+          "/api/security/recovery/revoke",
+        ].includes(pathname) &&
+        request.method === "POST"
+      ) {
+        const body = await bodyJson(request);
+        limitSecurity(response, session);
+        const result = pathname.endsWith("/key")
+          ? await recovery.createKey(session, body.currentPassword)
+          : {
+              revoked: await recovery.revokeAccess(
+                session,
+                body.currentPassword,
+              ),
+            };
+        securityLimiter.clear(session.id);
+        json(
+          response,
+          200,
+          result.key
+            ? { key: result.key, createdAt: result.createdAt }
+            : result,
+        );
+        return;
+      }
       if (pathname === "/api/security/password" && request.method === "POST") {
         const body = await bodyJson(request);
-        if (!securityLimiter.allow(session.id)) {
-          response.setHeader("retry-after", "900");
-          throw new HttpError(
-            429,
-            "Too many attempts. Try again in 15 minutes.",
-          );
-        }
+        limitSecurity(response, session);
         const { token, csrfToken } = await security.changePassword(
           session,
           {
@@ -461,6 +443,89 @@ export function createApp({ pool, hub, config }) {
         json(response, 200, {
           revoked: await security.revoke(session, target),
         });
+        return;
+      }
+      if (pathname === "/api/admin/tenants" && request.method === "GET") {
+        if (!session.platform_admin)
+          throw new HttpError(403, "Administrator access is required");
+        const result =
+          await pool.query(`SELECT t.id,t.name,t.created_at,a.connection_status,
+          (SELECT count(*)::integer FROM users u WHERE u.tenant_id=t.id) AS members
+          FROM tenants t LEFT JOIN solarman_accounts a ON a.tenant_id=t.id ORDER BY t.created_at DESC`);
+        json(response, 200, { items: result.rows });
+        return;
+      }
+      if (pathname === "/api/admin/invitations" && request.method === "GET") {
+        if (!session.platform_admin)
+          throw new HttpError(403, "Administrator access is required");
+        const offset = url.searchParams.get("offset") ?? "0";
+        if (!/^\d{1,6}$/.test(offset))
+          throw new HttpError(400, "Choose a valid invitation page");
+        json(response, 200, await invitations.list(Number(offset)));
+        return;
+      }
+      if (pathname === "/api/admin/invitations" && request.method === "POST") {
+        if (!session.platform_admin)
+          throw new HttpError(403, "Administrator access is required");
+        const result = await invitations.create(
+          session,
+          await bodyJson(request),
+        );
+        json(response, 201, {
+          id: result.id,
+          url: `${config.origin}/activate#token=${result.token}`,
+          expiresAt: result.expiresAt,
+          expiresInHours: 24,
+        });
+        return;
+      }
+      const invitationAction =
+        /^\/api\/admin\/invitations\/([a-f0-9-]{36})\/(revoke|reissue)$/.exec(
+          pathname,
+        );
+      if (invitationAction && request.method === "POST") {
+        if (!session.platform_admin)
+          throw new HttpError(403, "Administrator access is required");
+        const result = await invitations.change(
+          session,
+          invitationAction[1],
+          invitationAction[2],
+        );
+        json(
+          response,
+          200,
+          result.token
+            ? {
+                id: result.id,
+                url: `${config.origin}/activate#token=${result.token}`,
+                expiresAt: result.expiresAt,
+                expiresInHours: 24,
+              }
+            : result,
+        );
+        return;
+      }
+      if (pathname === "/api/admin/recovery" && request.method === "POST") {
+        if (!session.platform_admin)
+          throw new HttpError(403, "Administrator access is required");
+        const body = await bodyJson(request);
+        limitSecurity(response, session);
+        const result = await recovery.administrative(session, {
+          email: body.email,
+          currentPassword: body.currentPassword,
+          action: body.action,
+        });
+        securityLimiter.clear(session.id);
+        json(
+          response,
+          200,
+          result.key
+            ? {
+                url: `${config.origin}/recover#${new URLSearchParams({ email: result.email, key: result.key })}`,
+                expiresAt: result.expiresAt,
+              }
+            : result,
+        );
         return;
       }
       const runtime = await hub.forTenant(session.tenant_id);
@@ -685,49 +750,6 @@ export function createApp({ pool, hub, config }) {
           );
         }
         json(response, 200, await hub.accountInfo(session.tenant_id));
-        return;
-      }
-      if (pathname === "/api/admin/tenants" && request.method === "GET") {
-        if (!session.platform_admin)
-          throw new HttpError(403, "Administrator access is required");
-        const result =
-          await pool.query(`SELECT t.id,t.name,t.created_at,a.connection_status,
-          (SELECT count(*)::integer FROM users u WHERE u.tenant_id=t.id) AS members
-          FROM tenants t LEFT JOIN solarman_accounts a ON a.tenant_id=t.id ORDER BY t.created_at DESC`);
-        json(response, 200, { items: result.rows });
-        return;
-      }
-      if (pathname === "/api/admin/invitations" && request.method === "POST") {
-        if (!session.platform_admin)
-          throw new HttpError(403, "Administrator access is required");
-        const body = await bodyJson(request);
-        if (
-          typeof body.email !== "string" ||
-          !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email) ||
-          body.email.length > 254 ||
-          typeof body.tenantName !== "string" ||
-          !body.tenantName.trim() ||
-          body.tenantName.length > 100
-        )
-          throw new HttpError(400, "Enter an email and a workspace name");
-        const email = body.email.trim().toLowerCase();
-        if (
-          (
-            await pool.query("SELECT 1 FROM users WHERE lower(email)=$1", [
-              email,
-            ])
-          ).rowCount
-        )
-          throw new HttpError(409, "This email already has an account");
-        const token = randomToken();
-        await pool.query(
-          "INSERT INTO invitations (token_hash,email,tenant_name,created_by,expires_at) VALUES ($1,$2,$3,$4,now()+interval '24 hours')",
-          [tokenHash(token), email, body.tenantName.trim(), session.id],
-        );
-        json(response, 201, {
-          url: `${config.origin}/activate?token=${token}`,
-          expiresInHours: 24,
-        });
         return;
       }
       if (pathname === "/api/commands" && request.method === "POST") {

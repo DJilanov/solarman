@@ -8,12 +8,13 @@ import {
   RefreshCw,
   LogOut,
 } from "lucide-react";
-import { ApiError, request, useData } from "./api";
+import { isUnconfirmedResponse, request, useData } from "./api";
 import { useWorkspace } from "./context";
 import { tr } from "./i18n";
 import { when, formatNumber } from "./format";
 import { Heading, Loading, Notice, Panel } from "./components";
 import type { AccountSecurityData, Session } from "./types";
+import { RecoverySettings } from "./account-recovery";
 
 export default function AccountSecurityPage(): ReactNode {
   const { session, updateSession } = useWorkspace();
@@ -66,13 +67,11 @@ export default function AccountSecurityPage(): ReactNode {
       });
     } catch (cause) {
       setMessage({
-        text:
-          cause instanceof ApiError &&
-          (cause.status === 0 || cause.status === 200 || cause.status >= 500)
-            ? "The password change could not be confirmed. It may have completed; try signing in with the new password before retrying."
-            : cause instanceof Error
-              ? cause.message
-              : "Unable to update account security",
+        text: isUnconfirmedResponse(cause)
+          ? "The password change could not be confirmed. It may have completed; try signing in with the new password before retrying."
+          : cause instanceof Error
+            ? cause.message
+            : "Unable to update account security",
         error: true,
       });
     } finally {
@@ -124,6 +123,11 @@ export default function AccountSecurityPage(): ReactNode {
     password_changed: "Password changed and browser access renewed",
     session_revoked: "Browser session signed out",
     other_sessions_revoked: "Other browser sessions signed out",
+    recovery_key_created: "Recovery key created",
+    recovery_access_revoked: "Recovery access revoked",
+    recovery_link_created: "Administrator recovery link created",
+    recovery_link_revoked: "Administrator recovery links revoked",
+    password_recovered: "Dashboard password recovered",
   };
   return (
     <>
@@ -345,6 +349,7 @@ export default function AccountSecurityPage(): ReactNode {
               {tr("Open controls")}
             </Link>
           </Notice>
+          <RecoverySettings status={data.recovery} onChanged={reload} />
           <Panel
             title={tr("Recent account security events")}
             subtitle={tr("The latest 20 account events.")}
@@ -355,11 +360,13 @@ export default function AccountSecurityPage(): ReactNode {
                   <li key={event.id}>
                     <div>
                       <strong>{tr(eventTitles[event.kind])}</strong>
-                      <span>
-                        {tr("Sessions affected: {{count}}", {
-                          count: event.affectedSessions,
-                        })}
-                      </span>
+                      {event.affectedSessions > 0 && (
+                        <span>
+                          {tr("Sessions affected: {{count}}", {
+                            count: event.affectedSessions,
+                          })}
+                        </span>
+                      )}
                     </div>
                     <time dateTime={event.at}>{date(event.at)}</time>
                   </li>
