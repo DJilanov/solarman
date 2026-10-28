@@ -1,6 +1,6 @@
 # Solarman completion plan
 
-Updated 2026-10-29. Commissioning, tenant notifications and the independent-watchdog implementation are deployed through release `af876fbde39dc2fd29ad55755cc8aae87a3536cb`. The watchdog still needs its own server and selected recipient. This is the current finish plan; [dashboard-plan.md](dashboard-plan.md) retains the original requirements and historical implementation notes.
+Updated 2026-10-29. Commissioning, tenant notifications, the independent-watchdog implementation and firmware evidence reporting are deployed through release `46c643431b22433d8fe45d3e595c1f1f6a1a39b4`. The watchdog still needs its own server and selected recipient. This is the current finish plan; [dashboard-plan.md](dashboard-plan.md) retains the original requirements and historical implementation notes.
 
 ## What is actually locked
 
@@ -13,7 +13,7 @@ The quoted Bulgarian monitoring-only notice is an unused translation entry. The 
 | Physical changes | Zero application inverter-write intents and zero unresolved bindings; scheduled permission is confirmed off. | Attended write/recovery tests have not been performed. |
 | Policy observations | A real, device-bound run had 36 accepted samples and no collector failure at 23:24 UTC on October 28, surviving the commissioning and notification deployments. | Above-50% solar charging/discharging, the reserve transition and a full day/night cycle remain unproven. |
 | Alerts | Durable in-app incidents and tenant-configured Telegram delivery are deployed. The independent watchdog implementation adds fresh health challenges, TCP context, durable retries and restore quarantine. | Select a real destination, provide an accessible separate monitoring host and prove outage/recovery delivery. |
-| Hosted tenants | Isolation, private invitations, account security/recovery, suspension, export, retention and closure/erasure are implemented. Production has migrations 001–021. | Complete a disposable-tenant rehearsal including commissioning and notifications. |
+| Hosted tenants | Isolation, private invitations, account security/recovery, suspension, export, retention and closure/erasure are implemented. Production has migrations 001–021. A connected test-database rehearsal now covers one invited tenant through attended commands, notifications and erasure. | Verify the deployed customer browser journey, real provider entitlement and operator handover; physical acceptance remains separate. |
 | Recovery | Notification release passed both schema-020 upgrade and fresh schema-021 restores, with zero device or delivery calls. Backup healthy; erasure-receipt service verified. | Maintain recurring recovery drills and perform an actual operator handover. |
 
 **Baseline audit finding:** the inspected release gated starts on settings, firmware, clock, capacity and permissions without a physical-commissioning approval gate. Observation runs deliberately grant no control permission. The implementation below adds the missing gate; hardware acceptance and independent source-limit verification remain open.
@@ -99,13 +99,15 @@ Primary files: `src/operations.mjs`, `src/account-hub.mjs`, `src/http-app.mjs`, 
 
 ## 4. Finish the hosted product and dashboard
 
-- Rehearse a disposable tenant through invitation → sign-in → provider link → discovery → monitoring → commissioning → activation → suspension/resumption → export → closure/erasure. Verify access isolation at every step; use fixtures for physical commands.
+- The [connected tenant rehearsal](tenant-rehearsal.md) exercises invitation → sign-in → provider link → discovery → monitoring → attended commissioning → blocked unattended activation → notifications → suspension/resumption → export → closure/erasure through real application HTTP and database records. Provider/hardware/delivery/receipt boundaries use fixtures; no approval is manufactured. Complete the deployed browser journey and real approved activation after the firmware and physical requirements pass.
 - Confirm the licensed shared App-ID allowance before admitting more controlled homes. Current activation preview reserves 187,245 regular requests/year against 188,000 planned. Telemetry is five minutes; scheduled checks are 17 minutes and reserve-assessment eligibility is 32 minutes. Present these cloud response intervals accurately and preserve recovery capacity.
 - Complete a desktop/mobile EN/BG journey audit across setup, controls, observations, analytics, Activity, health and account administration. Verify unavailable/stale/partial data, command rejection/uncertainty, focus behavior and translated validation errors.
 - Keep energy estimates and coverage visible. Tariff/savings, forecasting and time-to-full features require their own validated inputs and acceptance criteria if added later.
 - Replace initial test credentials before customer hosting and verify recovery-key custody and operator handover.
 
 **Exit:** the tenant journey passes with disposable accounts; actual provider allowance supports admission; every visible action has a complete state and translated outcome.
+
+The connected rehearsal passed both its focused run and the complete 165-test PostgreSQL integration suite. A final focused rerun also passed after giving CSV export an explicit date range that crosses a possible local-midnight boundary. Type/syntax checks and 162 local unit tests passed, with three Linux-only skips. This increment changes tests and documentation; application, schema and frontend code are unchanged. The existing 39 browser cases were not repeated for this increment.
 
 ## 5. Validate, release and observe
 

@@ -19,6 +19,7 @@ import { localDay } from "../../src/analytics.mjs";
 import { TenantRuntime } from "../../src/tenant-runtime.mjs";
 import { decide } from "../../src/controller.mjs";
 import { providerPayload } from "../fixtures/provider.mjs";
+import { TenantJourneyCloud } from "../fixtures/tenant-journey.mjs";
 import { ApiBudget, ApiBudgetError, apiAppKey } from "../../src/api-budget.mjs";
 import { ApiCapacityError } from "../../src/api-capacity.mjs";
 import { quarantineControlsForRollback } from "../../src/control-quarantine.mjs";
@@ -8164,5 +8165,577 @@ test("public health echoes only a fresh bounded probe and retains its existing r
     const response = await fetch(origin + "/healthz?" + query);
     assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), { error: "Invalid health probe" });
+  }
+});
+
+test("an invited tenant completes the connected home journey through attended control, alerts, export and fenced erasure", async (t) => {
+  const fixture = {
+    origin,
+    device: "journey-" + randomUUID(),
+    providerEmail: "journey-provider@example.test",
+    providerPassword: "journey-provider-password",
+    appId: "journey-app-" + randomUUID(),
+    appSecret: "journey-private-app-secret",
+    botToken: "123456789:" + "j".repeat(35),
+    chatId: "-1001234567890",
+  };
+  const cloud = new TenantJourneyCloud(fixture, globalThis.fetch);
+  t.mock.method(globalThis, "fetch", cloud.fetch.bind(cloud));
+  t.mock.method(hub, "reserveRequest", async () => {});
+  const previousEnv = hub.env;
+  const previousGuard = hub.offboarding.guardFile;
+  const previousRoot = hub.offboarding.requireRoot;
+  const previousPlatformAt = hub.notifications.platformAt;
+  const directory = await mkdtemp(path.join(tmpdir(), "solarman-journey-"));
+  const guardFile = path.join(directory, "guard.json");
+  hub.env = {
+    ...previousEnv,
+    WRITES_ENABLED: "true",
+    CALLBACK_PUBLIC_URL: "https://journey.example.test",
+  };
+  hub.offboarding.guardFile = guardFile;
+  hub.offboarding.requireRoot = false;
+  hub.notifications.platformAt = Date.now();
+  /** @type {string|null} */
+  let tenantId = null;
+  const address = "journey-" + randomUUID() + "@example.test";
+  const memberPassword = "journey-workspace-password";
+  const name = "Journey home";
+  /** @param {string} route @param {Parameters<typeof fetchApi>[1]} [options] @param {number} [expected] @returns {Promise<object>} */
+  const json = async (route, options, expected = 200) => {
+    const response = await fetchApi(route, options);
+    const data = await response.json();
+    assert.equal(
+      response.status,
+      expected,
+      route + ": " + (data.error ?? "unexpected status"),
+    );
+    return data;
+  };
+  try {
+    await writeFile(
+      guardFile,
+      JSON.stringify({
+        version: 1,
+        state: "verified",
+        checkedAt: new Date().toISOString(),
+        records: [],
+      }),
+      { mode: 0o600 },
+    );
+    const admin = await login("alpha@example.test");
+    const invitation = await json(
+      "/admin/invitations",
+      {
+        auth: admin,
+        method: "POST",
+        body: { email: address, tenantName: name },
+      },
+      201,
+    );
+    const invitationToken = new URLSearchParams(
+      new URL(invitation.url).hash.slice(1),
+    ).get("token");
+    const activation = await fetchApi("/auth/activate", {
+      method: "POST",
+      body: { token: invitationToken, password: memberPassword },
+    });
+    assert.equal(activation.status, 200);
+    const member = {
+      ...(await activation.json()),
+      cookie: activation.headers.get("set-cookie").split(";")[0],
+    };
+    tenantId = member.tenant.id;
+    assert.equal(member.user.platformAdmin, false);
+    assert.notEqual(tenantId, admin.tenant.id);
+    await json(
+      "/auth/activate",
+      {
+        method: "POST",
+        body: { token: invitationToken, password: memberPassword },
+      },
+      400,
+    );
+    await json("/admin/tenants", { auth: member }, 403);
+    const initial = await json("/overview", { auth: member });
+    assert.equal(initial.latest, null);
+    assert.equal(initial.controller.control.workspaceEnabled, false);
+    assert.equal((await json("/settings", { auth: member })).account, null);
+    await json("/account/link", {
+      auth: member,
+      method: "POST",
+      body: {
+        email: fixture.providerEmail,
+        password: fixture.providerPassword,
+        appId: fixture.appId,
+        appSecret: fixture.appSecret,
+      },
+    });
+    const found = await json("/account/discover", {
+      auth: member,
+      method: "POST",
+      body: {},
+    });
+    assert.deepEqual(
+      found.account.discovered_devices.map((device) => device.deviceSn),
+      [fixture.device],
+    );
+    await json("/account/device", {
+      auth: member,
+      method: "POST",
+      body: {
+        deviceSn: fixture.device,
+        profile: "bluesun-bse20kh3",
+        timezone: "Europe/Sofia",
+      },
+    });
+    const runtime = await hub.forTenant(tenantId);
+    runtime.client.minGapMs = 0;
+    runtime.controller.now = () => new Date("2026-10-27T10:00:00Z");
+    await runtime.work.idle();
+    /** @param {string} [expected] @returns {Promise<object>} */
+    const poll = async (expected = "succeeded") => {
+      clearTimeout(runtime.timer);
+      await runtime.pollCallback();
+      await runtime.work.idle();
+      const cycle = (
+        await pool.query(
+          "SELECT status,message FROM command_executions WHERE tenant_id=$1 AND action='evaluate' ORDER BY created_at DESC,id DESC LIMIT 1",
+          [tenantId],
+        )
+      ).rows[0];
+      assert.equal(cycle.status, expected, cycle.message);
+      return cycle;
+    };
+    /** @param {string} action @param {string} [expected] @returns {Promise<object>} */
+    const command = async (action, expected = "succeeded") => {
+      const job = await json(
+        "/commands",
+        {
+          auth: member,
+          method: "POST",
+          idempotency: randomUUID(),
+          body: { action },
+        },
+        202,
+      );
+      await runtime.work.idle();
+      const completed = await json("/commands/" + job.id, { auth: member });
+      assert.equal(
+        completed.status,
+        expected,
+        action + ": " + completed.message,
+      );
+      await json("/commands/" + job.id, { auth: admin }, 404);
+      return completed;
+    };
+    const verification = await command("verify");
+    const report = await json("/activity/" + verification.id, { auth: member });
+    assert.equal(report.evidence.verification.checks.length, 9);
+    assert.equal(report.evidence.verification.passed, true);
+    assert.equal(cloud.writes.length, 0);
+    const monitoring = await json("/overview", { auth: member });
+    assert.equal(monitoring.latest.soc, 30);
+    assert.equal(monitoring.controller.policy.solarPowerCapVerified, false);
+    assert.equal(JSON.stringify(monitoring).includes(ids.alpha.device), false);
+    const selected = await json("/settings", { auth: member });
+    assert.equal(selected.account.email, fixture.providerEmail);
+    assert.equal(selected.account.device_sn, fixture.device);
+    const observation = await json("/policy-observations", {
+      auth: member,
+      method: "POST",
+      body: { action: "start", currentPassword: memberPassword },
+    });
+    assert.equal(observation.run.state, "observing");
+    /** @param {string} action @param {object} [patch] @param {number} [expected] @returns {Promise<object>} */
+    const commission = async (action, patch = {}, expected = 200) => {
+      const current = await json("/commissioning", { auth: member });
+      return json(
+        "/commissioning",
+        {
+          auth: member,
+          method: "POST",
+          body: {
+            action,
+            currentPassword: memberPassword,
+            id: current.run?.id,
+            revision: current.run?.revision,
+            ...patch,
+          },
+        },
+        expected,
+      );
+    };
+    const prepared = await commission("create");
+    assert.equal(prepared.run.state, "preparing");
+    assert.equal(
+      prepared.run.requirements.find((r) => r.code === "sourceLimits").passed,
+      false,
+    );
+    await commission("attend", { attending: true });
+    await command("commission_controls");
+    assert.equal(
+      (await json("/overview", { auth: member })).controller.paused,
+      true,
+    );
+    await json(
+      "/commands",
+      {
+        auth: member,
+        method: "POST",
+        idempotency: randomUUID(),
+        body: { action: "resume" },
+      },
+      409,
+    );
+    await command("commission_topup");
+    assert.equal(cloud.holding.get(207), 25);
+    const stopped = await command("stop");
+    assert.equal(cloud.holding.get(207), 9);
+    const stopEvidence = await json("/activity/" + stopped.id, {
+      auth: member,
+    });
+    assert.ok(
+      stopEvidence.writes.some(
+        (write) =>
+          write.address === 206 &&
+          write.status === "verified" &&
+          write.registerValues[1] === 9,
+      ),
+    );
+    await command("commission_topup");
+    assert.equal(cloud.holding.get(207), 25);
+    cloud.advance({ soc: 50 });
+    const writesBeforeRefresh = cloud.writes.length;
+    await command("refresh");
+    assert.equal(cloud.writes.length, writesBeforeRefresh);
+    await poll();
+    assert.equal(cloud.holding.get(207), 9);
+    const target = (await json("/overview", { auth: member })).controller;
+    assert.equal(target.manualTopup, false);
+    assert.equal(target.paused, true);
+    cloud.advance({
+      soc: 65,
+      pvW: 4000,
+      loadW: 1000,
+      gridW: 0,
+      batteryW: -3000,
+    });
+    await command("refresh");
+    const solar = (await json("/overview", { auth: member })).latest;
+    assert.equal(solar.soc, 65);
+    assert.equal(solar.batteryW, -3000);
+    assert.equal(cloud.holding.get(207), 9);
+    const csvRange = new URLSearchParams({
+      from: localDay(Date.now() - 86400000, "Europe/Sofia"),
+      to: localDay(Date.now() + 86400000, "Europe/Sofia"),
+    });
+    const csv = await fetchApi("/export.csv?" + csvRange, { auth: member });
+    assert.equal(csv.status, 200);
+    assert.match(await csv.text(), /,4000,1000,0,-3000,65,17/);
+    cloud.advance({ soc: 60, pvW: 0, loadW: 1200, gridW: 0, batteryW: 1200 });
+    await command("refresh");
+    assert.equal(
+      (await json("/overview", { auth: member })).latest.batteryW,
+      1200,
+    );
+    await hub.policyObservations.runOnce();
+    const evidence = await commission("evidence", {
+      observationRunId: observation.run.id,
+      recoveryCommandId: stopped.id,
+    });
+    assert.equal(evidence.run.evidence.recovery.commandId, stopped.id);
+    await commission("end");
+    await commission("approve", {}, 409);
+    const writesBeforeActivation = cloud.writes.length;
+    await command("enable_controls", "failed");
+    assert.equal(cloud.writes.length, writesBeforeActivation);
+    assert.equal(
+      (await json("/overview", { auth: member })).controller.control
+        .workspaceEnabled,
+      false,
+    );
+
+    /** @param {string} action @param {object} [patch] @returns {Promise<object>} */
+    const notify = async (action, patch = {}) => {
+      const state = await json("/notifications", { auth: member });
+      return json("/notifications", {
+        auth: member,
+        method: "POST",
+        body: {
+          action,
+          revision: state.channel?.revision ?? "0",
+          currentPassword: memberPassword,
+          ...(action === "save"
+            ? {
+                botToken: fixture.botToken,
+                chatId: fixture.chatId,
+                language: "bg",
+              }
+            : {}),
+          ...(action === "test" ? { requestId: randomUUID() } : {}),
+          ...patch,
+        },
+      });
+    };
+    await notify("save");
+    await notify("test");
+    await hub.notifications.runOnce();
+    const enabled = await notify("enable");
+    assert.equal(enabled.channel.enabled, true);
+    assert.equal(enabled.deliveries[0].state, "delivered");
+    assert.equal(cloud.deliveries.length, 1);
+    cloud.online = false;
+    cloud.advance({});
+    const offline = await poll("failed");
+    assert.match(offline.message, /offline/i);
+    await hub.operations.refresh();
+    const incident = (await json("/operations", { auth: member })).items.find(
+      (item) => item.kind === "device_offline",
+    );
+    assert.ok(incident);
+    await json("/incidents/" + incident.id + "/acknowledge", {
+      auth: member,
+      method: "POST",
+      body: { revision: incident.revision },
+    });
+    await hub.notifications.runOnce();
+    cloud.online = true;
+    cloud.advance({});
+    await poll();
+    await hub.operations.refresh();
+    await hub.notifications.runOnce();
+    const alerts = await json("/notifications", { auth: member });
+    assert.deepEqual(alerts.deliveries.map((item) => item.kind).sort(), [
+      "opened",
+      "resolved",
+      "test",
+    ]);
+    assert.ok(alerts.deliveries.every((item) => item.state === "delivered"));
+    assert.equal(cloud.deliveries.length, 3);
+    assert.equal((await json("/notifications", { auth: admin })).channel, null);
+    assert.equal(JSON.stringify(alerts).includes(fixture.botToken), false);
+
+    const lifecyclePath = "/admin/tenants/" + tenantId + "/lifecycle";
+    let lifecycle = await json(lifecyclePath, { auth: admin });
+    lifecycle = await json(lifecyclePath, {
+      auth: admin,
+      method: "POST",
+      body: {
+        state: "suspended",
+        revision: lifecycle.revision,
+        currentPassword: password,
+        message: "Journey suspension",
+      },
+    });
+    assert.equal(lifecycle.state, "suspended");
+    let control = (await json("/overview", { auth: member })).controller;
+    assert.equal(control.control.workspaceEnabled, false);
+    assert.equal(control.control.verification, null);
+    await json(
+      "/commands",
+      {
+        auth: member,
+        method: "POST",
+        idempotency: randomUUID(),
+        body: { action: "commission_topup" },
+      },
+      409,
+    );
+    await json(lifecyclePath, {
+      auth: admin,
+      method: "POST",
+      body: {
+        state: "active",
+        revision: lifecycle.revision,
+        currentPassword: password,
+        message: "",
+      },
+    });
+    control = (await json("/overview", { auth: member })).controller;
+    assert.equal(control.paused, true);
+    assert.equal(control.manualTopup, false);
+    assert.equal(control.control.workspaceEnabled, false);
+    assert.equal(control.control.verification, null);
+    await command("verify");
+    const retention = await json("/workspace/retention", { auth: member });
+    await json("/workspace/retention", {
+      auth: member,
+      method: "POST",
+      body: {
+        enabled: true,
+        measurementDays: 365,
+        activityDays: 730,
+        revision: retention.revision,
+        currentPassword: memberPassword,
+      },
+    });
+    const archiveResponse = await fetchApi("/workspace/archive", {
+      auth: member,
+      method: "POST",
+      body: { currentPassword: memberPassword },
+    });
+    assert.equal(archiveResponse.status, 200);
+    const archive = await archiveResponse.text();
+    const lines = archive.trimEnd().split("\n");
+    const entries = lines.map((line) => JSON.parse(line));
+    const complete = entries.at(-1);
+    assert.equal(complete.type, "complete");
+    assert.equal(
+      complete.sha256,
+      createHash("sha256")
+        .update(lines.slice(0, -1).join("\n") + "\n")
+        .digest("hex"),
+    );
+    for (const section of [
+      "measurements",
+      "commands",
+      "writes",
+      "observations",
+      "commissioning",
+      "notificationChannels",
+      "notifications",
+      "notificationAttempts",
+      "workspaceChanges",
+    ])
+      assert.ok(
+        complete.counts[section] > 0,
+        section + " is missing from the journey archive",
+      );
+    for (const forbidden of [
+      fixture.appSecret,
+      fixture.providerPassword,
+      fixture.botToken,
+      createHash("sha256").update(fixture.providerPassword).digest("hex"),
+      member.csrfToken,
+      member.cookie.split("=")[1],
+      ids.alpha.device,
+      ids.alpha.tenant,
+    ])
+      assert.equal(
+        archive.includes(forbidden),
+        false,
+        "The journey archive exposed private data",
+      );
+    const closurePath = "/admin/tenants/" + tenantId + "/offboarding";
+    /** @param {string} action @returns {Promise<object>} */
+    const close = async (action) => {
+      const current = await json(lifecyclePath, { auth: admin });
+      return json(closurePath, {
+        auth: admin,
+        method: "POST",
+        body: {
+          action,
+          revision: current.revision,
+          currentPassword: password,
+          confirmation: name,
+          eraseConfirmed: action === "erase",
+        },
+      });
+    };
+    const closed = await close("close");
+    assert.equal(closed.phase, "ready");
+    await json("/auth/session", { auth: member }, 401);
+    const closingMember = await login(address, memberPassword);
+    assert.equal(
+      (await json("/workspace/offboarding", { auth: closingMember })).phase,
+      "ready",
+    );
+    const authorized = await close("erase");
+    assert.equal(authorized.phase, "awaiting-receipt");
+    await json("/auth/session", { auth: closingMember }, 401);
+    const receipt = {
+      version: 1,
+      id: authorized.id,
+      tenantId,
+      authorizedAt: authorized.authorizedAt,
+    };
+    await writeFile(
+      guardFile,
+      JSON.stringify({
+        version: 1,
+        state: "verified",
+        checkedAt: new Date().toISOString(),
+        records: [receipt],
+      }),
+      { mode: 0o600 },
+    );
+    await pool.query(
+      "UPDATE workspace_offboarding SET offsite_acknowledged_at=clock_timestamp() WHERE tenant_id=$1",
+      [tenantId],
+    );
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await hub.offboarding.runOnce();
+      if ((await json(closurePath, { auth: admin })).phase === "removed") break;
+    }
+    assert.equal((await json(closurePath, { auth: admin })).phase, "removed");
+    for (const table of [
+      "users",
+      "solarman_accounts",
+      "controller_state",
+      "measurements",
+      "command_executions",
+      "inverter_write_intents",
+      "policy_observation_runs",
+      "control_commissioning",
+      "notification_channels",
+      "notification_outbox",
+      "notification_attempts",
+    ])
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT count(*)::int AS n FROM " + table + " WHERE tenant_id=$1",
+            [tenantId],
+          )
+        ).rows[0].n,
+        0,
+        table + " retained erased tenant records",
+      );
+    const ledger = (
+      await pool.query(
+        "SELECT count(*)::int AS total,count(*) FILTER(WHERE tenant_id IS NULL AND account_id IS NULL)::int AS anonymous FROM api_requests WHERE app_key=$1",
+        [apiAppKey(fixture.appId)],
+      )
+    ).rows[0];
+    assert.ok(ledger.total > 0);
+    assert.equal(ledger.anonymous, ledger.total);
+    await json(
+      "/auth/login",
+      { method: "POST", body: { email: address, password: memberPassword } },
+      401,
+    );
+    assert.equal(
+      (await json("/overview", { auth: admin })).controller.lifecycle,
+      "active",
+    );
+    assert.ok(cloud.callbacks.length > 20);
+    assert.ok(cloud.callbacks.every((status) => status === 200));
+    for (const endpoint of [
+      "/account/v1.0/token",
+      "/station/v1.0/list",
+      "/station/v1.0/device",
+      "/device/v1.0/currentData",
+      "/device/v1.0/customControl",
+    ])
+      assert.ok(
+        cloud.requests.includes(endpoint),
+        endpoint + " was not exercised",
+      );
+    assert.equal(cloud.rejectedNetworkAttempts, 0);
+    assert.equal(cloud.holding.get(3005), 1000);
+    assert.equal(cloud.holding.get(2505), 500);
+    assert.equal(cloud.holding.get(3036), 500);
+    assert.equal(cloud.holding.get(207), 9);
+  } finally {
+    if (tenantId) {
+      await hub.runtimes.get(tenantId)?.close();
+      hub.runtimes.delete(tenantId);
+    }
+    hub.env = previousEnv;
+    hub.offboarding.guardFile = previousGuard;
+    hub.offboarding.requireRoot = previousRoot;
+    hub.notifications.platformAt = previousPlatformAt;
+    await rm(directory, { recursive: true, force: true });
   }
 });
