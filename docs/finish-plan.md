@@ -70,6 +70,14 @@ The commissioning page now provides an EN/BG firmware clarification request befo
 
 Verification passed: type/syntax checks, production build, 162 local unit tests with three Linux-only skips, all 164 PostgreSQL integration tests and all 39 browser tests. The added browser cases cover saved/expired/malformed evidence, unavailable clipboard and recovery, UTF-8 download, privacy exclusions, profile specificity, EN/BG and a visually inspected 320 px layout. An initial integration assertion incorrectly expected raw words in Activity's filtered projection; the corrected test proves runtime status, durable settings and stored command evidence. The complete database rerun passed after that correction.
 
+## Read-only delivery recovery
+
+The transport now retries a valid function-3/4 read once after a correlated provider delivery error 530, with a one-second delay and a separate callback identity. Each attempt repeats pacing, quota reservation and authorization with its original purpose. Invalid/nonstandard frames, failed order correlation, other errors and writes are excluded. Client shutdown prevents a pending retry from dispatching; the existing snapshot and attendance deadlines remain enforced.
+
+The connected tenant rehearsal injects one such failure during settings verification, then verifies all nine checks, seven accounted native attempts and zero writes. Unit regressions also cover late callbacks from the first attempt, exhausted retries, routine/recovery accounting, quota/authorization revocation, both shutdown timings and single/multiple-register writes. No polling cadence, configured charging limit or control permission is changed by this increment.
+
+Verification passed type/syntax checks, production build, 176 local unit tests with three Linux-only skips, all 167 PostgreSQL integration tests and all 40 browser tests. The focused retry regression failed against the previous transport. Source/build scanning found no configured secret values. A disconnected test-database tunnel was re-established after confirming its listener was absent; the focused and complete database runs then passed.
+
 ## 1. Complete commissioning and activation
 
 The commissioning lifecycle, attended-control path, dispatch gates, translated states, persistence/export and restore quarantine are implemented in the increment above. Physical acceptance remains separate.

@@ -37,6 +37,8 @@ export class TenantJourneyCloud {
     /** @type {{chatId:string,text:string}[]} */
     this.deliveries = [];
     this.rejectedNetworkAttempts = 0;
+    this.readFailuresRemaining = 0;
+    this.readFailuresSent = 0;
   }
 
   /** @param {Partial<JourneyTelemetry>} patch @returns {void} */
@@ -202,6 +204,13 @@ export class TenantJourneyCloud {
         );
         const orderId = this.callbacks.length + 1;
         const now = Date.now();
+        const failedRead =
+          [3, 4].includes(parseFrame(body.content)[1]) &&
+          this.readFailuresRemaining > 0;
+        if (failedRead) {
+          this.readFailuresRemaining--;
+          this.readFailuresSent++;
+        }
         const delivered = await this.transport(
           new URL(callback.pathname, this.config.origin),
           {
@@ -211,11 +220,12 @@ export class TenantJourneyCloud {
             body: JSON.stringify({
               deviceSn: this.config.device,
               content: body.content,
-              success: true,
               createTime: now,
               updateTime: now,
               orderId,
-              ack: this.reply(body.content),
+              ...(failedRead
+                ? { success: false, errorCode: "530" }
+                : { success: true, ack: this.reply(body.content) }),
             }),
           },
         );

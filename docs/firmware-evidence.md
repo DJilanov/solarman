@@ -23,7 +23,13 @@ Afore.communication.protocol.v1.4.xlsx
 4ab1b17179f90f128770cdc29b5d5a858a22a49e496bcfea0230b192fa80c39d
 ```
 
-Earlier device replies indicated words 3022–3023 combining to raw 100, while measured battery charging was approximately 1.95 kW. That is insufficient to treat the generic watt entry as this firmware's effective charging cap. Possible mode/BMS dependencies, ignored settings, scaling differences or another interpretation must be resolved by the manufacturer rather than selected by guesswork.
+Earlier device replies indicated words 3022–3023 combining to raw 100, while measured battery charging was approximately 1.95 kW. That is insufficient to treat the generic watt entry as this firmware's effective charging cap. Possible mode/BMS dependencies, ignored settings, scaling differences or another interpretation remain unresolved. Establish the supported mapping from applicable documentation and verified behavior before configuring this limit.
+
+## Cached SOLARMAN parameters
+
+The October 29 read-only review of stored provider metadata found `MAX_C_C_1` (Maximum Charging Current1) at 50 A and `MAX_C_V_1` at 224 V. These current/voltage fields do not establish an independent 5 kW solar charging setting. Generic provider points `MAX_C_SOC` and `MIN_C_SOC` reported zero, while the separate native checks verified the 100% overall SOC maximum and 50% reserve. Those generic labels and zeros are not interpreted as a changed native policy.
+
+SOLARMAN's [control FAQ](https://helpcenter.solarmanpv.com/portal/en/kb/articles/how-to-control-inverter-via-api) and [custom-command documentation](https://doc.solarmanpv.com/%E8%AE%BE%E5%A4%87%E6%8E%A5%E5%8F%A3/3.9%E8%87%AA%E5%AE%9A%E4%B9%89%E6%8C%87%E4%BB%A4%EF%BC%88%E6%8C%87%E4%BB%A4%E9%80%8F%E4%BC%A0%EF%BC%89Custom_commands) describe a transport for device commands and raw responses. This review obtained no firmware-specific charging-limit register mapping from those documents or the cached metadata. No new provider endpoint or inverter setting was used during this metadata review.
 
 ## Saved diagnostic evidence
 

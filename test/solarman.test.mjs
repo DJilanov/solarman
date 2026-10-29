@@ -5,7 +5,7 @@ import {
   SolarmanClient,
   SolarmanAuthenticationError,
 } from "../src/solarman.mjs";
-import { readCommand } from "../src/modbus.mjs";
+import { frame, readCommand, writeCommand } from "../src/modbus.mjs";
 
 const command = readCommand(3, 206, 2);
 const ack = "010304000000093A35";
@@ -112,6 +112,204 @@ test("supports a callback arriving before the HTTP submission response, and cach
   assert.notEqual(requests[0].callBackUrl, requests[1].callBackUrl);
 });
 
+for (const fn of [3, 4]) {
+  test(`retries a function ${fn} read once after a correlated 530 callback`, async (t) => {
+    const expected =
+      fn === 3 ? ack : frame(Buffer.from([1, 4, 4, 0, 0, 78, 32]));
+    const read = readCommand(fn, fn === 3 ? 206 : 7, 2);
+    let failedCallback;
+    const { client, requests, tokenCount } = await fixture(
+      t,
+      async ({ response, callback, orderId, requestIndex }) => {
+        if (requestIndex === 1) {
+          failedCallback = callback;
+          await callback({ success: false, errorCode: "530" });
+        } else {
+          assert.equal(requestIndex, 2);
+          await failedCallback({
+            ack: frame(Buffer.from([1, fn, 4, 0, 0, 0, 1])),
+          });
+          await callback({ ack: expected });
+        }
+        response.end(JSON.stringify({ success: true, orderId }));
+      },
+    );
+    const purpose = fn === 3 ? "routine" : "recovery";
+    const reservations = [];
+    client.onRequest = async (kind, reservedPurpose) => {
+      reservations.push({ kind, purpose: reservedPurpose });
+    };
+    assert.equal(await client.command(read, { purpose }), expected);
+    assert.deepEqual(requests.map((request) => request.content), [read, read]);
+    assert.notEqual(requests[0].callBackUrl, requests[1].callBackUrl);
+    assert.equal(tokenCount(), 1);
+    assert.deepEqual(reservations, [
+      { kind: "token", purpose },
+      { kind: "command", purpose },
+      { kind: "command", purpose },
+    ]);
+    assert.equal(client.pending.size, 0);
+  });
+}
+
+test("bounds a 530 read failure to two attempts", async (t) => {
+  const { client, requests } = await fixture(
+    t,
+    async ({ response, callback, orderId }) => {
+      await callback({ success: false, errorCode: "530" });
+      response.end(JSON.stringify({ success: true, orderId }));
+    },
+  );
+  await assert.rejects(
+    client.command(command),
+    /Device command failed \(code 530\)/,
+  );
+  assert.equal(requests.length, 2);
+  assert.equal(client.pending.size, 0);
+});
+
+for (const write of [
+  frame(Buffer.from([1, 6, 9, 201, 1, 244])),
+  writeCommand(206, [0, 25]),
+]) {
+  test(`a function ${Buffer.from(write, "hex")[1]} write is never replayed after 530`, async (t) => {
+    const { client, requests } = await fixture(
+      t,
+      async ({ response, callback, orderId }) => {
+        await callback({ success: false, errorCode: "530" });
+        response.end(JSON.stringify({ success: true, orderId }));
+      },
+    );
+    await assert.rejects(
+      client.command(write),
+      /Device command failed \(code 530\)/,
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(client.pending.size, 0);
+  });
+}
+
+test("nonstandard or invalid read frames are never replayed after 530", async (t) => {
+  for (const bytes of [
+    [1, 3, 0, 206, 0, 2, 0],
+    [1, 3, 0, 206, 0, 0],
+    [1, 3, 0, 0, 0, 126],
+    [1, 4, 255, 255, 0, 2],
+  ]) {
+    const { client, requests } = await fixture(
+      t,
+      async ({ response, callback, orderId }) => {
+        await callback({ success: false, errorCode: "530" });
+        response.end(JSON.stringify({ success: true, orderId }));
+      },
+    );
+    await assert.rejects(
+      client.command(frame(Buffer.from(bytes))),
+      /Device command failed \(code 530\)/,
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(client.pending.size, 0);
+  }
+});
+
+test("a 530 submission rejection is not a correlated device failure", async (t) => {
+  const { client, requests } = await fixture(t, async ({ response }) => {
+    response.end(JSON.stringify({ success: false, code: "530" }));
+  });
+  await assert.rejects(
+    client.command(command),
+    /SOLARMAN rejected request \(code 530\)/,
+  );
+  assert.equal(requests.length, 1);
+});
+
+test("a 530 callback with a mismatched order cannot trigger a read retry", async (t) => {
+  const { client, requests } = await fixture(
+    t,
+    async ({ response, callback, orderId }) => {
+      await callback({ success: false, errorCode: "530" });
+      response.end(JSON.stringify({ success: true, orderId: orderId + 100 }));
+    },
+  );
+  await assert.rejects(client.command(command), /Command order ID mismatch/);
+  assert.equal(requests.length, 1);
+  assert.equal(client.pending.size, 0);
+});
+
+for (const gate of ["allowance", "authorization"]) {
+  test(`a 530 read retry rechecks ${gate} before dispatch`, async (t) => {
+    const { client, requests } = await fixture(
+      t,
+      async ({ response, callback, orderId }) => {
+        await callback({ success: false, errorCode: "530" });
+        response.end(JSON.stringify({ success: true, orderId }));
+      },
+    );
+    let reservations = 0;
+    let authorizations = 0;
+    client.onRequest = async (kind) => {
+      if (kind !== "command") return;
+      reservations++;
+      if (gate === "allowance" && reservations === 2)
+        throw new Error("Retry allowance unavailable");
+    };
+    client.authorizeCommand = async () => {
+      authorizations++;
+      if (gate === "authorization" && authorizations === 2)
+        throw new Error("Retry authorization revoked");
+    };
+    await assert.rejects(client.command(command), /Retry .* (unavailable|revoked)/);
+    assert.equal(reservations, 2);
+    assert.equal(authorizations, gate === "allowance" ? 1 : 2);
+    assert.equal(requests.length, 1);
+    assert.equal(client.pending.size, 0);
+  });
+}
+
+test("shutdown stops a pending read retry without another submission", async (t) => {
+  let failureAccepted;
+  const failed = new Promise((resolve) => {
+    failureAccepted = resolve;
+  });
+  const { client, requests } = await fixture(
+    t,
+    async ({ response, callback, orderId }) => {
+      await callback({ success: false, errorCode: "530" });
+      response.end(JSON.stringify({ success: true, orderId }));
+      failureAccepted();
+    },
+  );
+  const outcome = client.command(command).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+  await failed;
+  await client.close();
+  const result = await outcome;
+  assert.match(result.error?.message ?? "", /Service shutting down/);
+  assert.equal(requests.length, 1);
+  assert.equal(client.pending.size, 0);
+});
+
+test("a read retry stops when shutdown occurs during shared pacing", async (t) => {
+  const { client, requests } = await fixture(
+    t,
+    async ({ response, callback, orderId }) => {
+      await callback({ success: false, errorCode: "530" });
+      response.end(JSON.stringify({ success: true, orderId }));
+    },
+  );
+  let reservations = 0;
+  client.beforeRequest = async () => {
+    reservations++;
+    if (reservations === 3) await client.close();
+  };
+  await assert.rejects(client.command(command), /Service shutting down/);
+  assert.equal(reservations, 3);
+  assert.equal(requests.length, 1);
+  assert.equal(client.pending.size, 0);
+});
+
 test("command authorization is rechecked after pacing and quota reservation, before HTTP dispatch", async (t) => {
   const { client, requests } = await fixture(t);
   let reserved = false;
@@ -133,11 +331,17 @@ test("command authorization is rechecked after pacing and quota reservation, bef
 });
 
 test("rejects wrong device, wrong request and stale callbacks before accepting a valid result", async (t) => {
-  const { client } = await fixture(
+  const { client, requests } = await fixture(
     t,
     async ({ response, callback, orderId }) => {
       assert.equal(
-        (await callback({ deviceSn: "OTHER-INVERTER" })).status,
+        (
+          await callback({
+            deviceSn: "OTHER-INVERTER",
+            success: false,
+            errorCode: "530",
+          })
+        ).status,
         403,
       );
       assert.equal(
@@ -159,6 +363,7 @@ test("rejects wrong device, wrong request and stale callbacks before accepting a
     },
   );
   assert.equal(await client.command(command), ack);
+  assert.equal(requests.length, 1);
 });
 
 test("HTTP success cannot hide a corrupt device reply; next command can still run", async (t) => {
@@ -180,7 +385,12 @@ test("rejects callback failure and mismatched order ID", async (t) => {
       await callback(
         requestIndex === 1 ? { success: false, errorCode: "573" } : {},
       );
-      response.end(JSON.stringify({ success: true, orderId: orderId + 100 }));
+      response.end(
+        JSON.stringify({
+          success: true,
+          orderId: requestIndex === 1 ? orderId : orderId + 100,
+        }),
+      );
     },
   );
   await assert.rejects(client.command(command), /573/);

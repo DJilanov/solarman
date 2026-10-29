@@ -34,6 +34,16 @@ function safeCode(code) {
   return /^[0-9]{1,12}$/.test(String(code)) ? String(code) : "unspecified";
 }
 
+class SolarmanDeviceCommandError extends Error {
+  /** @param {unknown} code @param {unknown} orderId */
+  constructor(code, orderId) {
+    const value = safeCode(code);
+    super(`Device command failed (code ${value})`);
+    this.code = value;
+    this.orderId = orderId;
+  }
+}
+
 /** @param {import('node:http').IncomingMessage} request @returns {Promise<unknown>} */
 async function readJson(request) {
   const chunks = [];
@@ -67,6 +77,7 @@ export class SolarmanClient {
     this.callbackPrefix = options.callbackPrefix ?? CALLBACK_PREFIX;
     this.beforeRequest = options.beforeRequest ?? (async () => {});
     this.authorizeCommand = options.authorizeCommand ?? (async () => {});
+    this.closing = false;
     this.pending = new Map();
     this.completed = new Map();
     this.tail = Promise.resolve();
@@ -99,6 +110,7 @@ export class SolarmanClient {
 
   /** @returns {Promise<void>} */
   async close() {
+    this.closing = true;
     for (const pending of this.pending.values())
       pending.finish(new Error("Service shutting down"));
     this.completed.clear();
@@ -171,9 +183,7 @@ export class SolarmanClient {
     let result;
     try {
       if (body.success !== true)
-        throw new Error(
-          `Device command failed (code ${safeCode(body.errorCode)})`,
-        );
+        throw new SolarmanDeviceCommandError(body.errorCode, body.orderId);
       if (typeof body.ack !== "string")
         throw new Error("Missing device acknowledgment");
       decodeReply(pending.command, body.ack);
@@ -291,8 +301,29 @@ export class SolarmanClient {
       return Promise.reject(
         new Error("Choose an inverter before sending device commands"),
       );
-    const normalized = parseFrame(command).toString("hex").toUpperCase();
-    const result = this.tail.then(() => this.send(normalized, purpose));
+    const request = parseFrame(command);
+    const normalized = request.toString("hex").toUpperCase();
+    const count = request.length === 8 ? request.readUInt16BE(4) : 0;
+    const retryableRead =
+      [3, 4].includes(request[1]) &&
+      count >= 1 &&
+      count <= 125 &&
+      request.readUInt16BE(2) + count <= 65536;
+    const result = this.tail.then(async () => {
+      try {
+        return await this.send(normalized, purpose);
+      } catch (error) {
+        // A correlated delivery failure permits one read retry; write outcomes remain uncertain.
+        if (
+          !retryableRead ||
+          !(error instanceof SolarmanDeviceCommandError) ||
+          error.code !== "530"
+        )
+          throw error;
+        await delay(1000);
+        return this.send(normalized, purpose);
+      }
+    });
     // A failed command must not prevent a subsequent attempt to disable AC charging.
     this.tail = result.then(
       () => undefined,
@@ -304,8 +335,10 @@ export class SolarmanClient {
   /** @param {string} command @param {'routine' | 'recovery'} [purpose] @returns {Promise<string>} */
   async send(command, purpose = "routine") {
     await delay(Math.max(0, this.minGapMs - (Date.now() - this.lastRequestAt)));
+    if (this.closing) throw new Error("Service shutting down");
     const token = await this.accessToken(purpose);
     await this.beforeRequest();
+    if (this.closing) throw new Error("Service shutting down");
     const key = randomBytes(32).toString("hex");
     const sentAt = Date.now();
     let finish;
@@ -345,6 +378,12 @@ export class SolarmanClient {
         purpose,
       );
       const callback = await promise;
+      if (
+        callback instanceof SolarmanDeviceCommandError &&
+        result.orderId !== undefined &&
+        String(result.orderId) !== String(callback.orderId)
+      )
+        throw new Error("Command order ID mismatch");
       if (callback instanceof Error) throw callback;
       if (
         result.orderId !== undefined &&

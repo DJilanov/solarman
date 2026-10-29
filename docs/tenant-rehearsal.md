@@ -10,7 +10,7 @@ The rehearsal is in the final test in [tenants.test.mjs](../test/integration/ten
 | --- | --- |
 | Private invitation | Actual administrator invitation; one-use activation; member cookie; no administrator access; empty new workspace. |
 | Provider setup | Member-owned credentials; App ID in the token URL; lowercase SHA-256 password in the body; plant/inverter discovery; selected device and timezone. |
-| Monitoring and settings | Real runtime receives fixture telemetry; nine native checks pass; no writes during verification; another tenant cannot read the command. |
+| Monitoring and settings | Real runtime receives fixture telemetry; a correlated 530 read failure recovers once and nine native checks pass; all seven native attempts are accounted for; no writes during verification; another tenant cannot read the command. |
 | Observation and commissioning | Fresh device-bound observation/run; current-password attendance; ordinary Resume rejected; independent power-limit approval stays blocked. |
 | Attended charging | Actual named commands, callbacks and journal records; temporary window/permission written and read back; Stop has a verified disable write. |
 | Reserve transition | Diagnostic Refresh performs no write. The actual scheduler callback observes 50%, clears scheduled permission, completes the manual request and remains paused. |

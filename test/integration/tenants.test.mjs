@@ -8378,10 +8378,30 @@ test("an invited tenant completes the connected home journey through attended co
       await json("/commands/" + job.id, { auth: admin }, 404);
       return completed;
     };
+    const commandsBeforeVerification = cloud.requests.filter(
+      (route) => route === "/device/v1.0/customControl",
+    ).length;
+    cloud.readFailuresRemaining = 1;
     const verification = await command("verify");
     const report = await json("/activity/" + verification.id, { auth: member });
     assert.equal(report.evidence.verification.checks.length, 9);
     assert.equal(report.evidence.verification.passed, true);
+    assert.equal(cloud.readFailuresRemaining, 0);
+    assert.equal(cloud.readFailuresSent, 1);
+    assert.equal(
+      cloud.requests.filter((route) => route === "/device/v1.0/customControl")
+        .length - commandsBeforeVerification,
+      7,
+    );
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT purpose,count(*)::integer AS count FROM api_requests WHERE tenant_id=$1 AND kind='command' GROUP BY purpose",
+          [tenantId],
+        )
+      ).rows,
+      [{ purpose: "routine", count: 7 }],
+    );
     assert.equal(cloud.writes.length, 0);
     const monitoring = await json("/overview", { auth: member });
     assert.equal(monitoring.latest.soc, 30);
