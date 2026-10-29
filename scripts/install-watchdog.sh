@@ -13,7 +13,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 node --input-type=module <<'VERIFY'
-import {readWatchdogConfig} from './src/watchdog-config.mjs';
+import {readWatchdogConfig,assertWatchdogInstallationTarget} from './src/watchdog-config.mjs';
 import {spawnSync} from 'node:child_process';
 import {lookup} from 'node:dns/promises';
 try {
@@ -23,7 +23,7 @@ try {
   const host=settings.stdout.split('\n').find(line=>line.startsWith('hostname '))?.slice(9).trim();
   if(!host)throw new Error();
   const addresses=await lookup(host,{all:true});
-  if(host===new URL(config.url).hostname || addresses.some(item=>item.address===config.originHost || item.address==='::1' || item.address.startsWith('127.')))throw new Error();
+  assertWatchdogInstallationTarget(config,host,addresses);
 }catch{console.error('The private configuration and a separate monitoring host must be verified before installation.');process.exitCode=1;}
 VERIFY
 release_sha=$(git rev-parse HEAD)

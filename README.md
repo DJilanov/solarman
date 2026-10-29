@@ -88,7 +88,7 @@ Retention preserves the latest reading and provider parameters for the selected 
 
 ## External notifications
 
-An [independent outage watchdog](docs/watchdog.md) can run on a separate Linux host, using fresh health challenges, durable attempts and its own verified recipient. It does not depend on the application database. The owner selected a separate host and verified the dashboard iPhone subscription. The monitor can use that same device, with its own test and bounded permission lease; live outside-host acceptance remains required.
+An [independent outage watchdog](docs/watchdog.md) can run on a separate Linux host, using fresh health challenges, durable attempts and its own verified recipient. It does not depend on the application database. The installed monitor uses the owner-selected separate host and the same verified iPhone, with its own confirmed test and bounded permission lease. Its stopped-app and isolated network-loss checks are recorded in [deployed acceptance](docs/deployment-acceptance.md#independent-monitor-acceptance).
 
 **Settings → Notifications → Notifications on this device** supports iPhone Home Screen web apps and compatible desktop browsers. On iPhone with iOS 16.4 or later, add the dashboard to the Home Screen, open it from its icon, sign in and select **Enable device notifications**. The permission prompt runs only from that tap. A displayed test is reported by the device before the requested alerts become enabled. Each account can manage its encrypted device subscriptions; the server's persistent Web Push keys stay in the private environment. Telegram remains optional. See [notification setup and operational limits](docs/notifications.md).
 

@@ -159,6 +159,26 @@ export async function readWatchdogConfig(file) {
   return watchdogConfig(await readPrivateJson(file, 16384));
 }
 
+/** @param {WatchdogConfig} config @param {string} host @param {{address:string}[]} addresses @returns {void} */
+export function assertWatchdogInstallationTarget(config, host, addresses) {
+  const url = new URL(config.url);
+  const loopback = (address) =>
+    ["localhost", "::1", "[::1]", "0.0.0.0", "::"].includes(address) ||
+    address.startsWith("127.") ||
+    address.endsWith(".localhost");
+  if (
+    url.protocol !== "https:" ||
+    loopback(url.hostname) ||
+    loopback(config.originHost) ||
+    host.toLowerCase() === url.hostname ||
+    addresses.length === 0 ||
+    addresses.some(
+      (item) => item.address === config.originHost || loopback(item.address),
+    )
+  )
+    throw new WatchdogError("installation_target_invalid");
+}
+
 /** @param {WatchdogConfig} config @returns {{target:string,destination:string|null}} */
 export function watchdogBindings(config) {
   const hash = (value) =>

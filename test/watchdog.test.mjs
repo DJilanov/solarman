@@ -23,6 +23,7 @@ import {
   watchdogConfig,
   watchdogBindings,
   readWatchdogConfig,
+  assertWatchdogInstallationTarget,
 } from "../src/watchdog-config.mjs";
 import { probeHealth, probeOrigin } from "../src/watchdog-probes.mjs";
 import {
@@ -48,6 +49,35 @@ const base = {
 const delivery = { botToken, chatId: "-1001234567890", enabled: false };
 const healthy = { healthy: true, code: "healthy", release: "a".repeat(40) };
 const failed = { healthy: false, code: "http_error", release: null };
+
+test("watchdog installation rejects development URLs and application or loopback monitoring hosts", () => {
+  const config = watchdogConfig({ ...base, originHost: "192.0.2.10" });
+  assert.doesNotThrow(() =>
+    assertWatchdogInstallationTarget(config, "monitor.example.test", [
+      { address: "203.0.113.10" },
+    ]),
+  );
+  for (const [target, host, addresses] of [
+    [
+      watchdogConfig({ ...config, url: "http://localhost:3000/healthz" }),
+      "monitor.example.test",
+      [{ address: "203.0.113.10" }],
+    ],
+    [
+      watchdogConfig({ ...config, url: "https://127.0.0.1/healthz" }),
+      "monitor.example.test",
+      [{ address: "203.0.113.10" }],
+    ],
+    [config, "solarman.example.test", [{ address: "203.0.113.10" }]],
+    [config, "monitor.example.test", [{ address: "192.0.2.10" }]],
+    [config, "monitor.example.test", [{ address: "::1" }]],
+    [config, "monitor.example.test", []],
+  ])
+    assert.throws(
+      () => assertWatchdogInstallationTarget(target, host, addresses),
+      { code: "installation_target_invalid" },
+    );
+});
 
 async function fixture(t, configured = true) {
   const directory = await mkdtemp(path.join(tmpdir(), "solarman-watchdog-"));

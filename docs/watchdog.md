@@ -2,7 +2,7 @@
 
 The watchdog checks the public dashboard from a separate Linux server. It needs Node 22+, systemd and util-linux `flock`. It has no database access, SOLARMAN credentials or inverter commands. A small, separately locked dependency set supplies the existing Web Push encryption library. The main application does not start it.
 
-The owner selected `root@89.167.46.193` as the independent host and confirmed the dashboard's iPhone test on October 29. Installation and the separate-host test must be verified before calling outside-host delivery operational. The watchdog supports the selected iPhone subscription as well as Telegram. The main app's subscription alone does not monitor an offline server.
+The owner selected `root@89.167.46.193` as the independent host and confirmed the dashboard's iPhone test on October 29. The service is installed and enabled there. The owner confirmed its separate iPhone test. Real stopped-application and isolated network-loss checks each produced an accepted outage/recovery pair; see [deployed acceptance](deployment-acceptance.md#independent-monitor-acceptance). The watchdog supports the selected iPhone subscription as well as Telegram. The main app's subscription alone does not monitor an offline server.
 
 ## Checks and durable evidence
 
@@ -30,7 +30,7 @@ Export `WATCHDOG_SSH_TARGET` as the selected separate root SSH target and `WATCH
 bash scripts/install-watchdog.sh
 ```
 
-Deploy the matching application health endpoint first. The watchdog installer requires a clean committed checkout, refuses the application origin and loopback destinations, stages a release, runs Linux tests and performs a live read-only health probe. Existing state is checked before stopping an earlier watchdog. Only its dedicated units change. Installation sends no delivery test. Failed prerequisites preserve the earlier running service; failures after switching require operator inspection. State is never rolled back, since doing so could resend an accepted message.
+Deploy the matching application health endpoint first. The watchdog installer requires a clean committed checkout, rejects development/loopback health URLs and the application origin or loopback monitoring destinations, stages a release, runs Linux tests and performs a live read-only health probe. Existing state is checked before stopping an earlier watchdog. Only its dedicated units change. Installation sends no delivery test. Failed prerequisites preserve the earlier running service; failures after switching require operator inspection. State is never rolled back, since doing so could resend an accepted message.
 
 The timer uses [systemd monotonic scheduling](https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html) with one-second accuracy. The dedicated service has private state and restricted filesystem access. Mutating CLI commands use an [OS file lock](https://kernel.googlesource.com/pub/scm/utils/util-linux/util-linux/+/master/sys-utils/flock.1.adoc); exit 75 means another invocation holds it. [Control-group shutdown](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html) stops the child process and releases the lock.
 
@@ -63,6 +63,6 @@ For removal, disable/stop the timer and stop the service, then remove only the d
 
 ## Remaining acceptance
 
-Tests use local fixtures or injected senders. They cover a stopped application behind an answering proxy, a closed origin, injected network deadlines, cached responses, permissions, unsaved results, retries, destination changes, restore quarantine, Linux overlap and shutdown. They do not prove real delivery or a live host-network outage.
+Tests use local fixtures or injected senders. They cover a stopped application behind an answering proxy, a closed origin, injected network deadlines, cached responses, permissions, unsaved results, retries, destination changes, restore quarantine, Linux overlap and shutdown. These software fixtures are separate from the later live checks recorded in deployed acceptance.
 
-Install on the selected independent host, confirm a real test, then prove a controlled app outage/recovery and controlled loss of reachability while the delivery provider remains accessible. Verify restart persistence and rejection of cached successes. The watchdog cannot report its own complete outage; that remains an operator monitoring responsibility.
+The selected independent host is installed and its exact test was confirmed by the owner. The live checks proved a stopped app and controlled loss of reachability from the monitor while the push provider remained accessible, followed by recovery. Apple accepted all four incident messages; device display is a separate operator confirmation because the offline dashboard cannot acknowledge it. Keep verifying restart persistence and rejection of cached successes. The watchdog cannot report its own complete outage; that remains an operator monitoring responsibility.
