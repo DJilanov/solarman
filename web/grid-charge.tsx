@@ -6,7 +6,9 @@ import { tr } from "./i18n";
 
 export function GridChargeControl(): ReactNode {
   const { overview } = useWorkspace();
-  const active = overview?.controller.outage?.active;
+  const active =
+    overview?.controller.outage?.active &&
+    overview.controller.outage.purpose !== "night";
   return (
     <div className="grid-charge-control">
       <Link

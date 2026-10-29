@@ -343,10 +343,23 @@ export function AdvancedControls(): ReactNode {
       {controller.outage?.active && (
         <Notice tone="info">
           {tr(
-            "Outage reserve is active. Return to normal when you no longer need it.",
+            controller.outage.purpose === "night"
+              ? "Night savings is holding energy until the cheap period ends."
+              : "Outage reserve is active. Return to normal when you no longer need it.",
           )}{" "}
-          <Link className="text-link" to="/controls/outage">
-            {tr("Manage outage reserve")}
+          <Link
+            className="text-link"
+            to={
+              controller.outage.purpose === "night"
+                ? "/controls/night-savings"
+                : "/controls/outage"
+            }
+          >
+            {tr(
+              controller.outage.purpose === "night"
+                ? "Review night savings"
+                : "Manage outage reserve",
+            )}
           </Link>
         </Notice>
       )}

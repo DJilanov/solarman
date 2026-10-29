@@ -26,6 +26,9 @@ test("every literal translation used by the interface exists in both catalogues"
   for (const file of [
     "App.tsx",
     "home.tsx",
+    "energy-settings.tsx",
+    "night-savings.tsx",
+    "energy-summary.tsx",
     "grid-charge.tsx",
     "outage-preparation.tsx",
     "automations.tsx",

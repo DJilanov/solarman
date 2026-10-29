@@ -1,3 +1,4 @@
+import { energyDashboardFixture } from "./energy.fixture";
 import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
@@ -5542,4 +5543,202 @@ test("archive integrity rejects tampering and recovers with verified UTF-8 data"
   ).toBeVisible();
   await expect(error).not.toBeVisible();
   expect(downloads).toBe(1);
+});
+
+test("night savings previews a target and requires an explicit mode and password before scheduling", async ({
+  page,
+}) => {
+  await homeConsoleFixture(page);
+  const data = energyDashboardFixture(),
+    requests: unknown[] = [];
+  await page.route("**/api/energy", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/energy/apply", async (route) => {
+    requests.push(route.request().postDataJSON());
+    expect(route.request().headers()["idempotency-key"]).toMatch(
+      /^[a-f0-9-]{36}$/,
+    );
+    if (data.plan) data.plan.state = "scheduled";
+    await route.fulfill({ status: 202, json: { accepted: true } });
+  });
+  await page.goto("/controls/night-savings");
+  await expect(
+    page.getByRole("heading", { name: "Night savings", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("82%", { exact: true })).toBeVisible();
+  expect(requests).toEqual([]);
+  await page.getByRole("button", { name: "Use tonight", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Use this plan tonight?" }),
+  ).toBeVisible();
+  expect(requests).toEqual([]);
+  await page
+    .getByLabel("Current dashboard password", { exact: true })
+    .fill("browser-fixture-password");
+  await page
+    .getByRole("button", { name: "Confirm night plan", exact: true })
+    .click();
+  await expect(
+    page.getByText("Scheduled for tonight", { exact: true }),
+  ).toBeVisible();
+  expect(requests).toEqual([
+    {
+      revision: "2",
+      planId: data.plan?.id,
+      choice: "tonight",
+      currentPassword: "browser-fixture-password",
+    },
+  ]);
+  await expect(
+    page.getByText("This is a one-time night plan.", { exact: true }),
+  ).toBeVisible();
+});
+
+test("night savings target adjustment recalculates without scheduling or inverter commands", async ({
+  page,
+}) => {
+  await homeConsoleFixture(page);
+  const data = energyDashboardFixture(),
+    adjusted: unknown[] = [];
+  await page.route("**/api/energy", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/energy/adjust", async (route) => {
+    adjusted.push(route.request().postDataJSON());
+    await route.fulfill({ status: 202, json: { accepted: true } });
+  });
+  await page.goto("/controls/night-savings");
+  await page
+    .getByRole("button", { name: "Adjust target", exact: true })
+    .click();
+  await page
+    .getByRole("slider", { name: /Choose the maximum grid target/ })
+    .focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("slider")).toHaveValue("83");
+  await page.getByRole("button", { name: "Recalculate this target" }).click();
+  expect(adjusted).toEqual([
+    { revision: "2", planId: data.plan?.id, targetSoc: 83 },
+  ]);
+  await expect(
+    page.getByRole("heading", { name: "Use this plan tonight?" }),
+  ).not.toBeVisible();
+});
+
+test("night savings preserves unsaved inputs, translates to Bulgarian and fits a 320px screen", async ({
+  page,
+}) => {
+  await homeConsoleFixture(page);
+  const data = energyDashboardFixture();
+  await page.route("**/api/energy", (route) => route.fulfill({ json: data }));
+  await page.goto("/controls/night-savings");
+  await page
+    .getByText("Edit installation and assumptions", { exact: true })
+    .click();
+  await page.getByLabel("Battery capacity · kWh", { exact: true }).fill("24");
+  await page.waitForTimeout(5200);
+  await expect(
+    page.getByLabel("Battery capacity · kWh", { exact: true }),
+  ).toHaveValue("24");
+  await page.getByLabel("Language", { exact: true }).selectOption("bg");
+  await page.setViewportSize({ width: 320, height: 1100 });
+  await expect(
+    page.getByRole("heading", { name: "Нощна икономия", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("Капацитет на батерията · kWh", { exact: true }),
+  ).toHaveValue("24");
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    )
+    .toBe(true);
+  await page.evaluate(()=>scrollTo(0,0));
+  await page.screenshot({path:"test-results/night-savings-mobile-top-bg.png"});
+  await page.screenshot({
+    path: "test-results/night-savings-mobile-bg.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await page.evaluate(()=>scrollTo(0,0));
+  await page.screenshot({path:"test-results/night-savings-desktop-top-bg.png"});
+  await page.screenshot({
+    path: "test-results/night-savings-desktop-bg.png",
+    fullPage: true,
+  });
+});
+
+test("night savings exposes incomplete, stale and outage-priority states without enabling actions", async ({
+  page,
+}) => {
+  await homeConsoleFixture(page);
+  const data = energyDashboardFixture();
+  data.plan!.forecast.expiresAt = new Date(Date.now() - 60000).toISOString();
+  data.control.canActivate = false;
+  data.control.active = true;
+  data.control.purpose = "outage";
+  await page.route("**/api/energy", (route) => route.fulfill({ json: data }));
+  await page.goto("/controls/night-savings");
+  await expect(
+    page.getByText(
+      "Outage reserve has priority. Night savings cannot change it.",
+      { exact: false },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Use tonight", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByText(
+      "This recommendation is out of date. Refresh it before choosing a plan.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  data.missing = ["location"];
+  data.plan = null;
+  await page.reload();
+  await expect(
+    page.getByRole("heading", {
+      name: "Start with your installation",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Use tonight", exact: true }),
+  ).not.toBeVisible();
+});
+
+test("night savings Automatic remains available when no extra charging is recommended", async ({
+  page,
+}) => {
+  await homeConsoleFixture(page);
+  const data = energyDashboardFixture(),
+    sent: unknown[] = [];
+  data.plan!.prediction.action = "normal";
+  data.plan!.prediction.targetSoc = 50;
+  data.plan!.prediction.reasons = ["no-economic-topup"];
+  data.plan!.prediction.estimatedSavings = 0;
+  await page.route("**/api/energy", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/energy/apply", async (route) => {
+    sent.push(route.request().postDataJSON());
+    data.automatic = true;
+    data.plan!.state = "scheduled";
+    await route.fulfill({ status: 202, json: { accepted: true } });
+  });
+  await page.goto("/controls/night-savings");
+  await expect(
+    page.getByRole("button", { name: "Use tonight", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "Automatic", exact: true }).click();
+  await page
+    .getByLabel("Current dashboard password", { exact: true })
+    .fill("browser-fixture-password");
+  await page
+    .getByRole("button", { name: "Confirm night plan", exact: true })
+    .click();
+  expect(sent).toEqual([
+    {
+      revision: "2",
+      planId: data.plan!.id,
+      choice: "automatic",
+      currentPassword: "browser-fixture-password",
+    },
+  ]);
 });

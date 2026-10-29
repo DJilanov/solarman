@@ -1,3 +1,4 @@
+import { energyRoute } from "./energy-http.mjs";
 import { readFile } from "node:fs/promises";
 import { outageRoute } from "./outage-http.mjs";
 import path from "node:path";
@@ -295,7 +296,9 @@ export function createApp({ pool, hub, config }) {
       if (request.method === "POST" && request.headers.origin !== config.origin)
         throw new HttpError(403, "Request origin is not allowed");
       const watchdogPermission =
-        /^\/api\/notifications\/push\/watchdog\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.exec(pathname);
+        /^\/api\/notifications\/push\/watchdog\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.exec(
+          pathname,
+        );
       if (watchdogPermission && request.method === "GET") {
         const probe = url.searchParams.get("probe");
         if (
@@ -313,10 +316,15 @@ export function createApp({ pool, hub, config }) {
         json(response, allowed ? 200 : 403, { allowed, probe });
         return;
       }
-      if (pathname === "/api/notifications/push/receipt" && request.method === "POST") {
+      if (
+        pathname === "/api/notifications/push/receipt" &&
+        request.method === "POST"
+      ) {
         // The encrypted push carries a one-use receipt token, including when the browser session has expired.
         const limitKey = limitPublic(request, response, "push-receipt");
-        const consumed = await hub.notifications.push.receipt(await bodyJson(request));
+        const consumed = await hub.notifications.push.receipt(
+          await bodyJson(request),
+        );
         if (consumed) limiter.clear(limitKey);
         json(response, 202, { accepted: true });
         return;
@@ -708,6 +716,21 @@ export function createApp({ pool, hub, config }) {
         return;
       }
       const runtime = await hub.forTenant(session.tenant_id);
+      if (
+        await energyRoute({
+          pathname,
+          request,
+          response,
+          session,
+          runtime,
+          hub,
+          bodyJson,
+          json,
+          HttpError,
+          limitSecurity,
+        })
+      )
+        return;
       if (
         await outageRoute({
           pathname,

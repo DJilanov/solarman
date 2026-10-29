@@ -1,3 +1,4 @@
+import { EnergyPlanning } from "./energy-planning.mjs";
 import { randomUUID, createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { encryptCredentials, decryptCredentials } from "./credentials.mjs";
@@ -36,6 +37,7 @@ export class AccountHub {
     this.policyObservations = new PolicyObservations(pool);
     this.commissioning = new Commissioning(pool, this);
     this.notifications = new Notifications(pool, this);
+    this.energy = new EnergyPlanning(pool, this);
     const requireErasureGuard =
       env.NODE_ENV === "production" ||
       env.PUBLIC_URL?.startsWith("https:") === true;
@@ -112,6 +114,7 @@ export class AccountHub {
     this.lock.on("error", () => {
       this.stopping = true;
       void this.notifications.stop();
+      void this.energy.stop();
       for (const runtime of this.runtimes.values()) void runtime.close();
     });
     await this.offboarding.initialize();
@@ -599,6 +602,7 @@ export class AccountHub {
 
   async close() {
     this.stopping = true;
+    const energyStopped = this.energy.stop();
     const monitorStopped = this.operations.stop();
     const maintenanceStopped = this.dataMaintenance.stop();
     const offboardingStopped = this.offboarding.stop();
@@ -608,6 +612,7 @@ export class AccountHub {
     await Promise.allSettled(
       [...this.runtimes.values()].map((runtime) => runtime.close()),
     );
+    await energyStopped;
     await monitorStopped;
     await maintenanceStopped;
     await offboardingStopped;

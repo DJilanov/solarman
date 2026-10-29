@@ -1,3 +1,4 @@
+import { quarantineEnergy } from "./energy-lifecycle.mjs";
 import { randomUUID } from "node:crypto";
 import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import { requireActiveTenant } from "./tenant-lifecycle.mjs";
@@ -329,6 +330,11 @@ export class Commissioning {
         until = new Date(Date.now() + ATTENDED_MINUTES * 60000);
         action = "attended";
       } else if (action === "end" || action === "invalidate") {
+        await quarantineEnergy(
+          client,
+          session.tenant_id,
+          "commissioning_changed",
+        );
         state = action === "end" ? "preparing" : "invalidated";
         until = null;
         await pause(client, session.tenant_id);

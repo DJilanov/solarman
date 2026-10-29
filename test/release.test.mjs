@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { verifyRelease, assertRollbackCompatibility } from "../scripts/release.mjs";
+import {
+  verifyRelease,
+  assertRollbackCompatibility,
+} from "../scripts/release.mjs";
 
 const expected = {
   directory: "/releases/new",
@@ -9,9 +12,26 @@ const expected = {
 };
 
 test("a rollback cannot run a release that cannot read Web Push storage", () => {
-  assert.throws(() => assertRollbackCompatibility(["021_notifications.sql", "022_web_push.sql"], ["021_notifications.sql"]), /supports Web Push/);
-  assert.doesNotThrow(() => assertRollbackCompatibility(["021_notifications.sql"], ["021_notifications.sql"]));
-  assert.doesNotThrow(() => assertRollbackCompatibility(["021_notifications.sql", "022_web_push.sql"], ["021_notifications.sql", "022_web_push.sql"]));
+  assert.throws(
+    () =>
+      assertRollbackCompatibility(
+        ["021_notifications.sql", "022_web_push.sql"],
+        ["021_notifications.sql"],
+      ),
+    /supports Web Push/,
+  );
+  assert.doesNotThrow(() =>
+    assertRollbackCompatibility(
+      ["021_notifications.sql"],
+      ["021_notifications.sql"],
+    ),
+  );
+  assert.doesNotThrow(() =>
+    assertRollbackCompatibility(
+      ["021_notifications.sql", "022_web_push.sql"],
+      ["021_notifications.sql", "022_web_push.sql"],
+    ),
+  );
 });
 const running = {
   cwd: "/releases/new",
@@ -20,6 +40,23 @@ const running = {
   health: { status: "ok", release: "b".repeat(40) },
   index: expected.index,
 };
+
+test("rollback cannot discard night planning or its native restoration deadlines", () => {
+  assert.throws(
+    () =>
+      assertRollbackCompatibility(
+        ["023_outage_preparation.sql", "024_energy_planning.sql"],
+        ["023_outage_preparation.sql"],
+      ),
+    /supports energy planning/,
+  );
+  assert.doesNotThrow(() =>
+    assertRollbackCompatibility(
+      ["024_energy_planning.sql"],
+      ["024_energy_planning.sql"],
+    ),
+  );
+});
 
 test("a healthy version number cannot hide PM2 running files from the old release", () => {
   assert.throws(
@@ -64,7 +101,15 @@ test("matching process files, health and frontend pass release verification", ()
   assert.doesNotThrow(() => verifyRelease(expected, running));
 });
 
-test('rollback cannot discard persistent outage preparation state', () => {
-  assert.throws(() => assertRollbackCompatibility(['023_outage_preparation.sql'], []), /supports outage preparation/);
-  assert.doesNotThrow(() => assertRollbackCompatibility(['023_outage_preparation.sql'], ['023_outage_preparation.sql']));
+test("rollback cannot discard persistent outage preparation state", () => {
+  assert.throws(
+    () => assertRollbackCompatibility(["023_outage_preparation.sql"], []),
+    /supports outage preparation/,
+  );
+  assert.doesNotThrow(() =>
+    assertRollbackCompatibility(
+      ["023_outage_preparation.sql"],
+      ["023_outage_preparation.sql"],
+    ),
+  );
 });

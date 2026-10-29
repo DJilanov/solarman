@@ -1,3 +1,5 @@
+export const NIGHT_ANNUAL_CALLS = 64 * 365;
+
 const YEAR_MS = 365 * 86400_000;
 const STEP_MS = 30_000;
 
@@ -24,6 +26,8 @@ export function allocateCapacity({ monitors, controls }, policy, cadence) {
   // A configured minimum need not be a multiple of 30 seconds.
   const scheduledFloor = Math.max(cadence.pollMs, maxScheduled);
   const auditFloor = (5 * YEAR_MS) / cadence.controlAuditMs;
+  // Reserve a complete daily native apply/restore cycle as well as continuous monitoring.
+  const nightOverhead = controls * NIGHT_ANNUAL_CALLS;
   const count = monitors + controls;
   if (count === 0)
     return {
@@ -47,7 +51,10 @@ export function allocateCapacity({ monitors, controls }, policy, cadence) {
       auditFloor + telemetry,
       (6 * YEAR_MS) / scheduledFloor,
     );
-    if (monitors * telemetry + controls * minimumControl > planningLimit)
+    if (
+      monitors * telemetry + controls * minimumControl + nightOverhead >
+      planningLimit
+    )
       continue;
     if (controls === 0)
       return {
@@ -58,7 +65,8 @@ export function allocateCapacity({ monitors, controls }, policy, cadence) {
         scheduledMs: cadence.pollMs,
         assessmentMs: cadence.pollMs,
       };
-    const controlBudget = (planningLimit - monitors * telemetry) / controls;
+    const controlBudget =
+      (planningLimit - monitors * telemetry - nightOverhead) / controls;
     const scheduledMs = Math.min(
       scheduledFloor,
       Math.max(cadence.pollMs, rounded((6 * YEAR_MS) / controlBudget)),
@@ -71,7 +79,8 @@ export function allocateCapacity({ monitors, controls }, policy, cadence) {
       ),
     );
     const reservedAnnual = Math.ceil(
-      monitors * telemetry +
+      nightOverhead +
+        monitors * telemetry +
         controls *
           Math.max(
             (6 * YEAR_MS) / scheduledMs,
@@ -93,7 +102,8 @@ export function allocateCapacity({ monitors, controls }, policy, cadence) {
     fits: false,
     planningLimit,
     reservedAnnual: Math.ceil(
-      (monitors * YEAR_MS) / 1800_000 +
+      nightOverhead +
+        (monitors * YEAR_MS) / 1800_000 +
         controls *
           Math.max(
             auditFloor + YEAR_MS / 1800_000,

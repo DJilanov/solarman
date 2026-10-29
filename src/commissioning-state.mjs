@@ -1,3 +1,4 @@
+import { quarantineEnergy } from "./energy-lifecycle.mjs";
 import { observationBinding } from "./policy-identity.mjs";
 
 /** @param {{id:string,device_sn:string,profile:string,timezone:string}|null} account @param {{firmware:object,passed:boolean}|null} verification @returns {string|null} */
@@ -34,6 +35,7 @@ export async function currentCommissioning(client, tenantId) {
 
 /** @param {import('pg').Pool|import('pg').PoolClient} client @param {string|null} tenantId @param {string} reason @returns {Promise<void>} */
 export async function invalidateCommissioning(client, tenantId, reason) {
+  await quarantineEnergy(client, tenantId, reason);
   await client.query(
     `WITH changed AS (
       UPDATE control_commissioning SET state='invalidated',attended_until=null,reason=$2,

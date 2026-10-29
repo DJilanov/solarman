@@ -3,6 +3,13 @@ import path from "node:path";
 /** @param {string[]} applied @param {string[]} supported @returns {void} */
 export function assertRollbackCompatibility(applied, supported) {
   if (
+    applied.includes("024_energy_planning.sql") &&
+    !supported.includes("024_energy_planning.sql")
+  )
+    throw new Error(
+      "Rollback requires a release that supports energy planning storage; restore a pre-upgrade backup otherwise",
+    );
+  if (
     applied.includes("023_outage_preparation.sql") &&
     !supported.includes("023_outage_preparation.sql")
   )

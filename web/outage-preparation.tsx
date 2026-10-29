@@ -71,7 +71,11 @@ export default function OutagePreparationPage(): ReactNode {
     3000,
   );
   const preparation = data?.preparation;
-  const active = Boolean(preparation && openStates.has(preparation.state));
+  const active = Boolean(
+    preparation &&
+    preparation.purpose !== "night" &&
+    openStates.has(preparation.state),
+  );
   const currentJob =
     completed.data &&
     "status" in completed.data &&
@@ -195,6 +199,17 @@ export default function OutagePreparationPage(): ReactNode {
           "Charge your battery now and keep its energy ready for a power cut.",
         )}
       />
+      {preparation?.purpose === "night" &&
+        openStates.has(preparation.state) && (
+          <Notice tone="info">
+            {tr(
+              "Night savings is active. Confirming an outage reserve will end the night plan and keep your battery reserved until you return to normal.",
+            )}{" "}
+            <Link to="/controls/night-savings">
+              {tr("Review night savings")}
+            </Link>
+          </Notice>
+        )}
       {loadError && <Notice tone="danger">{tr(loadError)}</Notice>}
       {error && <Notice tone="danger">{tr(error)}</Notice>}
       {uncertain && (

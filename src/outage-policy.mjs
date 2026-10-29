@@ -92,13 +92,19 @@ export function sameBatteryProtection(first, second) {
 }
 
 /** @param {object} snapshot @param {number[]} settings @param {object} baseline @param {number} target @returns {boolean} */
-export function outageSettingsMatch(snapshot, settings, baseline, target) {
+export function outageSettingsMatch(
+  snapshot,
+  settings,
+  baseline,
+  target,
+  windows = OUTAGE_WINDOWS,
+) {
   return (
     snapshot.mode === 3 &&
     snapshot.acTargetRaw === outageTarget(target) * 10 &&
     snapshot.acPowerRaw === baseline.acPowerRaw &&
     snapshot.flags === 25 &&
-    sameWords(snapshot.windows, OUTAGE_WINDOWS) &&
+    sameWords(snapshot.windows, windows) &&
     sameBatteryProtection(settings, baseline.batterySettings)
   );
 }
@@ -116,10 +122,18 @@ export function normalSettingsMatch(snapshot, settings, baseline) {
 }
 
 /** @param {object} baseline @param {number} target @param {'apply'|'restore'} phase @param {number} address @param {number[]} values @returns {boolean} */
-export function allowedOutageWrite(baseline, target, phase, address, values) {
+export function allowedOutageWrite(
+  baseline,
+  target,
+  phase,
+  address,
+  values,
+  windows = OUTAGE_WINDOWS,
+) {
   if (!["apply", "restore"].includes(phase)) return false;
   validateOutageBaseline(baseline);
   outageTarget(target);
+  validateChargeWindows(windows);
   if (
     !Array.isArray(values) ||
     !values.every((v) => Number.isInteger(v) && v >= 0 && v <= 65535)
@@ -130,7 +144,7 @@ export function allowedOutageWrite(baseline, target, phase, address, values) {
       ? new Map([
           [2500, [3]],
           [2505, [target * 10]],
-          [2509, OUTAGE_WINDOWS],
+          [2509, windows],
           [206, [0, 25]],
         ])
       : new Map([
@@ -219,4 +233,34 @@ export function outageTestPassed(proof) {
     proof?.restoreWritesVerified &&
     proof?.backupSettingsPreserved,
   );
+}
+
+/** @param {number[]} windows @returns {void} */
+export function validateChargeWindows(windows) {
+  if (!Array.isArray(windows) || windows.length !== 8)
+    throw new Error("Invalid native charging window");
+  const ranges = [];
+  for (let index = 0; index < 8; index += 2) {
+    const start = windows[index],
+      end = windows[index + 1];
+    if (
+      ![start, end].every(
+        (value) =>
+          Number.isInteger(value) &&
+          value >= 0 &&
+          value >>> 8 <= 23 &&
+          (value & 255) <= 59,
+      )
+    )
+      throw new Error("Invalid native charging window");
+    if (start === 0 && end === 0) continue;
+    if (
+      start === 0 ||
+      start >= end ||
+      ranges.some(([from, to]) => start < to && end > from)
+    )
+      throw new Error("Overlapping native charging windows");
+    ranges.push([start, end]);
+  }
+  if (!ranges.length) throw new Error("A native charging window is required");
 }

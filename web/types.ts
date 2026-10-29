@@ -216,6 +216,8 @@ export interface ControllerStatus {
   outage?: {
     active: boolean;
     state: OutagePreparation["state"];
+    purpose?: "outage" | "night";
+    endsAt?: string | null;
     targetSoc: number;
     test: boolean;
   } | null;
@@ -379,6 +381,8 @@ export interface Command {
   completed_at: string | null;
 }
 export interface OutagePreparation {
+  purpose?: "outage" | "night";
+  endsAt?: string | null;
   id: string;
   state:
     | "queued"

@@ -55,6 +55,7 @@ import AutomationsPage, { ControlSetupPage } from "./automations";
 import { HistoryNavigation } from "./history-navigation";
 
 const CommandDetailsPage = lazy(() => import("./command-details"));
+const NightSavingsPage = lazy(() => import("./night-savings"));
 const OutagePreparationPage = lazy(() => import("./outage-preparation"));
 const SystemHealthPage = lazy(() => import("./system-health"));
 const PolicyObservationsPage = lazy(() => import("./policy-observations"));
@@ -662,6 +663,14 @@ function Dashboard({
                 element={
                   <Suspense fallback={<Loading />}>
                     <OutagePreparationPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="/controls/night-savings"
+                element={
+                  <Suspense fallback={<Loading />}>
+                    <NightSavingsPage />
                   </Suspense>
                 }
               />

@@ -368,6 +368,7 @@ export function DailyChart({ data }: { data: Analytics }): ReactNode {
 export function commandLabel(action: string): string {
   const labels: Record<string, string> = {
     outage_prepare: "Outage preparation",
+    outage_preempt: "Switch to outage reserve",
     outage_restore: "Restore normal operation",
     evaluate: "Reserve evaluation",
     refresh: "Refresh diagnostics",

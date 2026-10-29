@@ -10,6 +10,7 @@ import {
 } from "./commissioning-state.mjs";
 import {
   OUTAGE_MAPPING,
+  OUTAGE_WINDOWS,
   OUTAGE_OPEN_STATES,
   allowedOutageWrite,
   observeOutageHold,
@@ -67,7 +68,7 @@ export class OutageControl {
         [this.runtime.tenantId],
       );
       await this.pool.query(
-        "UPDATE command_executions SET status='interrupted',completed_at=clock_timestamp(),message='Outage request was interrupted; review its current state' WHERE tenant_id=$1 AND action IN('outage_prepare','outage_restore') AND status IN('queued','running')",
+        "UPDATE command_executions SET status='interrupted',completed_at=clock_timestamp(),message='Outage request was interrupted; review its current state' WHERE tenant_id=$1 AND action IN('outage_prepare','outage_restore','outage_preempt') AND status IN('queued','running')",
         [this.runtime.tenantId],
       );
     }
@@ -105,6 +106,21 @@ export class OutageControl {
     const binding = commissioningBinding(r.account, r.verification);
     const sameDevice =
       this.row?.account_id === r.account?.id && this.row?.device === r.device;
+    const canPreemptNight = Boolean(
+      this.active &&
+      this.row.purpose === "night" &&
+      this.row.state === "active" &&
+      sameDevice &&
+      r.lifecycle === "active" &&
+      r.controlEnabled &&
+      r.hostWritesAllowed &&
+      r.ready &&
+      !r.stopping &&
+      !r.hub.stopping &&
+      r.commissioningPermitted("approved") &&
+      this.approval &&
+      outageTestPassed(this.approval.proof),
+    );
     return {
       supported: r.account?.profile === "bluesun-bse20kh3",
       minTarget: 50,
@@ -112,9 +128,10 @@ export class OutageControl {
       acChargeKw: 2,
       solarTargetSoc: 100,
       canPrepare:
-        !this.active &&
-        ready.canStart &&
-        Boolean(this.approval && outageTestPassed(this.approval.proof)),
+        canPreemptNight ||
+        (!this.active &&
+          ready.canStart &&
+          Boolean(this.approval && outageTestPassed(this.approval.proof))),
       canTest:
         !this.active &&
         ready.canCommission &&
@@ -136,6 +153,8 @@ export class OutageControl {
             revision: String(this.row.revision),
             targetSoc: this.row.target_soc,
             test: this.row.test,
+            purpose: this.row.purpose ?? "outage",
+            endsAt: this.row.ends_at,
             attendedUntil: this.row.attended_until,
             lastVerifiedAt: this.row.last_verified_at,
             createdAt: this.row.created_at,
@@ -161,7 +180,7 @@ export class OutageControl {
   }
 
   /** @param {object} session @param {object} body @param {string} key @returns {Promise<object>} */
-  async prepare(session, body, key) {
+  async prepare(session, body, key, night = null) {
     if (session.tenant_id !== this.runtime.tenantId)
       throw new OutageError(
         403,
@@ -191,6 +210,14 @@ export class OutageControl {
       test,
     );
     if (previous) return previous;
+    if (
+      !night &&
+      !test &&
+      this.active &&
+      this.row.purpose === "night" &&
+      this.status().canPrepare
+    )
+      return this.preemptNight(session, target, key);
     const status = this.status();
     if (test ? !status.canTest : !status.canPrepare) {
       const repeated = await this.existing(
@@ -265,7 +292,14 @@ export class OutageControl {
       ).rows[0].control_epoch;
       const id = randomUUID(),
         jobId = randomUUID();
-      const detail = { outage: { id, targetSoc: target, test } };
+      const detail = {
+        outage: {
+          id,
+          targetSoc: target,
+          test,
+          purpose: night ? "night" : "outage",
+        },
+      };
       job = (
         await client.query(
           "INSERT INTO command_executions(tenant_id,id,account_id,device,user_id,actor,action,idempotency_key,status,detail) VALUES($1,$2,$3,$4,$5,$6,'outage_prepare',$7,'queued',$8) RETURNING *",
@@ -282,7 +316,7 @@ export class OutageControl {
         )
       ).rows[0];
       await client.query(
-        "INSERT INTO outage_preparations(id,tenant_id,account_id,device,binding,mapping,target_soc,state,test,attended_until,command_id,command_epoch) VALUES($1,$2,$3,$4,$5,$6,$7,'queued',$8,$9,$10,$11)",
+        "INSERT INTO outage_preparations(id,tenant_id,account_id,device,binding,mapping,target_soc,state,test,attended_until,command_id,command_epoch,purpose,ends_at,planned_windows,energy_plan_id) VALUES($1,$2,$3,$4,$5,$6,$7,'queued',$8,$9,$10,$11,$12,$13,$14,$15)",
         [
           id,
           session.tenant_id,
@@ -295,6 +329,10 @@ export class OutageControl {
           test ? this.runtime.commissioning.attended_until : null,
           jobId,
           epoch,
+          night ? "night" : "outage",
+          night?.endsAt ?? null,
+          night ? JSON.stringify(night.windows) : null,
+          night?.planId ?? null,
         ],
       );
       await client.query(
@@ -314,6 +352,133 @@ export class OutageControl {
     this.runtime.manualTopup = false;
     await this.load();
     this.enqueue(job, "apply");
+    return job;
+  }
+
+  /** @param {object} session @param {number} target @param {string} key @returns {Promise<object>} */
+  async preemptNight(session, target, key) {
+    const client = await this.pool.connect();
+    let job;
+    try {
+      await client.query("BEGIN");
+      await requireActiveTenant(client, session.tenant_id);
+      await this.security.activeSession(client, session);
+      await client.query(
+        "SELECT tenant_id FROM controller_state WHERE tenant_id=$1 FOR UPDATE",
+        [session.tenant_id],
+      );
+      const previous = await this.existing(
+        session.id,
+        key,
+        "outage_prepare",
+        target,
+        false,
+      );
+      if (previous) {
+        await client.query("COMMIT");
+        return previous;
+      }
+      const current = (
+        await client.query(
+          "SELECT id FROM outage_preparations WHERE tenant_id=$1 AND id=$2 AND purpose='night' AND state='active' FOR UPDATE",
+          [session.tenant_id, this.row.id],
+        )
+      ).rows[0];
+      if (!current)
+        throw new OutageError(
+          409,
+          "The active night plan changed; review its current state",
+        );
+      const pending = await client.query(
+        "SELECT 1 FROM command_executions WHERE tenant_id=$1 AND action='outage_preempt' AND status IN('queued','running')",
+        [session.tenant_id],
+      );
+      if (pending.rowCount)
+        throw new OutageError(
+          409,
+          "An outage reserve transition is already in progress",
+        );
+      job = (
+        await client.query(
+          "INSERT INTO command_executions(id,tenant_id,account_id,device,user_id,actor,action,idempotency_key,status,detail) VALUES($1,$2,$3,$4,$5,$6,'outage_preempt',$7,'queued',$8) RETURNING *",
+          [
+            randomUUID(),
+            session.tenant_id,
+            this.runtime.account.id,
+            this.runtime.device,
+            session.id,
+            session.email,
+            key,
+            {
+              outage: {
+                targetSoc: target,
+                test: false,
+                previousNightId: current.id,
+              },
+            },
+          ],
+        )
+      ).rows[0];
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    this.runtime
+      .queue(async () => {
+        try {
+          await requireActiveTenant(this.pool, session.tenant_id);
+          await this.security.activeSession(this.pool, session);
+          await this.load();
+          if (
+            !this.row ||
+            this.row.purpose !== "night" ||
+            this.row.id !== job.detail.outage.previousNightId ||
+            (!this.active && this.row.state !== "restored")
+          )
+            throw new OutageError(
+              409,
+              "The active night plan changed; review its current state",
+            );
+          await this.pool.query(
+            "UPDATE command_executions SET status='running' WHERE tenant_id=$1 AND id=$2 AND status='queued'",
+            [session.tenant_id, job.id],
+          );
+          if (this.active) await this.stop();
+          await this.pool.query(
+            "UPDATE energy_plans SET state='cancelled',code='outage-priority',updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2",
+            [session.tenant_id, this.row.energy_plan_id],
+          );
+          await this.runtime.mapProvider(await this.runtime.readProvider());
+          const child = await this.prepare(
+            session,
+            { targetSoc: target },
+            job.id,
+          );
+          await this.pool.query(
+            "UPDATE command_executions SET detail=detail || jsonb_build_object('nextCommandId',$3::text) WHERE tenant_id=$1 AND id=$2",
+            [session.tenant_id, job.id, child.id],
+          );
+          await this.finishJob(
+            job.id,
+            "succeeded",
+            "Night savings restored; outage reserve request is queued",
+          );
+        } catch {
+          await this.finishJob(
+            job.id,
+            "failed",
+            "The switch to outage reserve is unconfirmed; review the saved inverter state",
+          );
+        }
+      }, 10)
+      .catch(() => {
+        console.error(
+          JSON.stringify({ event: "outage_transition_unconfirmed" }),
+        );
+      });
     return job;
   }
 
@@ -442,7 +607,8 @@ export class OutageControl {
     ).rows[0];
     if (
       row &&
-      (row.action !== action ||
+      ((row.action !== action &&
+        !(action === "outage_prepare" && row.action === "outage_preempt")) ||
         (target !== null &&
           (row.detail?.outage?.targetSoc !== target ||
             row.detail?.outage?.test !== test)))
@@ -549,6 +715,7 @@ export class OutageControl {
         inspector,
         (address, values, writePhase) =>
           this.write(address, values, writePhase, inspector),
+        this.row.planned_windows ?? OUTAGE_WINDOWS,
       );
       if (phase === "apply") {
         await this.authorizeApplication();
@@ -697,6 +864,8 @@ export class OutageControl {
       ) !== this.row.binding
     )
       throw new OutageError(409, "Outage control permission changed");
+    if (this.row.purpose === "night")
+      await r.hub.energy.authorizeNative(this.row);
     const run = await currentCommissioning(this.pool, r.tenantId);
     const clock = r.clockEvidence(Date.now());
     if (
@@ -743,6 +912,7 @@ export class OutageControl {
         phase,
         address,
         values,
+        this.row.planned_windows ?? OUTAGE_WINDOWS,
       )
     )
       throw new OutageError(409, "Outage write is no longer authorized");
@@ -818,7 +988,7 @@ export class OutageControl {
       throw new OutageError(409, "Outage write is no longer authorized");
     const write = (
       await this.pool.query(
-        "SELECT w.*,p.state,p.command_id,p.command_epoch,p.baseline,p.target_soc,p.account_id,p.device,p.revision AS current_revision FROM outage_write_intents w JOIN outage_preparations p ON p.tenant_id=w.tenant_id AND p.id=w.preparation_id JOIN controller_state c ON c.tenant_id=p.tenant_id JOIN solarman_accounts a ON a.tenant_id=p.tenant_id AND a.id=p.account_id WHERE w.tenant_id=$1 AND w.id=$2 AND w.status='prepared' AND c.control_epoch=p.command_epoch AND a.device_sn=p.device AND a.profile='bluesun-bse20kh3' AND a.validated_at IS NOT NULL AND p.mapping=$3",
+        "SELECT w.*,p.state,p.command_id,p.command_epoch,p.baseline,p.target_soc,p.planned_windows,p.account_id,p.device,p.revision AS current_revision FROM outage_write_intents w JOIN outage_preparations p ON p.tenant_id=w.tenant_id AND p.id=w.preparation_id JOIN controller_state c ON c.tenant_id=p.tenant_id JOIN solarman_accounts a ON a.tenant_id=p.tenant_id AND a.id=p.account_id WHERE w.tenant_id=$1 AND w.id=$2 AND w.status='prepared' AND c.control_epoch=p.command_epoch AND a.device_sn=p.device AND a.profile='bluesun-bse20kh3' AND a.validated_at IS NOT NULL AND p.mapping=$3",
         [this.runtime.tenantId, this.preparedWrite, OUTAGE_MAPPING],
       )
     ).rows[0];
@@ -841,6 +1011,7 @@ export class OutageControl {
         write.phase,
         write.address,
         values,
+        write.planned_windows ?? OUTAGE_WINDOWS,
       ) ||
       (write.phase === "apply"
         ? write.state !== "applying"
@@ -868,6 +1039,7 @@ export class OutageControl {
         settings,
         this.row.baseline,
         this.row.target_soc,
+        this.row.planned_windows ?? OUTAGE_WINDOWS,
       )
     ) {
       await this.change({ last_error: "settings-changed" });
@@ -894,9 +1066,11 @@ export class OutageControl {
     )
       return false;
     const expired =
-      this.row.test &&
-      (!this.runtime.commissioningPermitted("attended") ||
-        new Date(this.row.attended_until).getTime() <= Date.now());
+      (this.row.purpose === "night" &&
+        new Date(this.row.ends_at).getTime() <= Date.now()) ||
+      (this.row.test &&
+        (!this.runtime.commissioningPermitted("attended") ||
+          new Date(this.row.attended_until).getTime() <= Date.now()));
     const abandoned =
       ["queued", "applying", "restoring"].includes(this.row.state) &&
       !this.queued.has(this.row.command_id);

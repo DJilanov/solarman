@@ -12,7 +12,8 @@ import {
 
 export class OutageNativeController {
   /** @param {import('./controller.mjs').BatteryController} inspector @param {(address:number,values:number[],phase:'apply'|'restore')=>Promise<void>} write */
-  constructor(inspector, write) {
+  constructor(inspector, write, windows = OUTAGE_WINDOWS) {
+    this.windows = windows;
     this.inspector = inspector;
     this.write = write;
   }
@@ -58,10 +59,19 @@ export class OutageNativeController {
     for (const [address, values] of [
       [2500, [3]],
       [2505, [target * 10]],
-      [2509, [...OUTAGE_WINDOWS]],
+      [2509, [...this.windows]],
       [206, [0, 25]],
     ]) {
-      if (!allowedOutageWrite(baseline, target, "apply", address, values))
+      if (
+        !allowedOutageWrite(
+          baseline,
+          target,
+          "apply",
+          address,
+          values,
+          this.windows,
+        )
+      )
         throw new Error("Outage setting is not allowed");
       if (
         !sameWords(
@@ -73,7 +83,15 @@ export class OutageNativeController {
       await this.write(address, values, "apply");
     }
     const { snapshot, batterySettings } = await this.read();
-    if (!outageSettingsMatch(snapshot, batterySettings, baseline, target))
+    if (
+      !outageSettingsMatch(
+        snapshot,
+        batterySettings,
+        baseline,
+        target,
+        this.windows,
+      )
+    )
       throw new Error("Outage settings could not be verified");
     return snapshot;
   }
@@ -95,7 +113,7 @@ export class OutageNativeController {
       ![baseline.acTargetRaw, target * 10].includes(snapshot.acTargetRaw) ||
       ![9, 25].includes(snapshot.flags) ||
       (!sameWords(snapshot.windows, baseline.windows) &&
-        !sameWords(snapshot.windows, OUTAGE_WINDOWS))
+        !sameWords(snapshot.windows, this.windows))
     )
       throw new Error(
         "Inverter settings changed outside outage preparation; review them before restoring",
@@ -112,7 +130,16 @@ export class OutageNativeController {
       [2505, [baseline.acTargetRaw]],
       [2500, [baseline.mode]],
     ]) {
-      if (!allowedOutageWrite(baseline, target, "restore", address, values))
+      if (
+        !allowedOutageWrite(
+          baseline,
+          target,
+          "restore",
+          address,
+          values,
+          this.windows,
+        )
+      )
         throw new Error("Outage restoration is not allowed");
       if (
         !sameWords(

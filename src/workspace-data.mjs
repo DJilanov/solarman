@@ -3,8 +3,20 @@ import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import { historyEvidence } from "./command-history.mjs";
 
 const EXPORT_SECTIONS = {
-  outagePreparations: "SELECT id,account_id,device,binding,mapping,target_soc,state,revision::text,test,attended_until,baseline,proof,approved_at,command_id,command_epoch::text,last_verified_at,last_error,created_at,updated_at,ended_at FROM outage_preparations WHERE tenant_id=$1 ORDER BY created_at,id",
-  outageWrites: "SELECT id,preparation_id,execution_id,revision::text,phase,address,register_values,status,created_at,acknowledged_at,verified_at,reconciled_at FROM outage_write_intents WHERE tenant_id=$1 ORDER BY created_at,id",
+  energySettings:
+    "SELECT revision::text,profile,automatic,approval_binding,approved_by,updated_at,attempted_at,last_code FROM energy_settings WHERE tenant_id=$1",
+  energyForecasts:
+    "SELECT id,site_hash,fetched_at,expires_at,payload FROM energy_forecasts WHERE tenant_id=$1 ORDER BY fetched_at,id",
+  energyPlans:
+    "SELECT id,account_id,device,binding,forecast_id,settings_revision::text,profile_hash,profile,demand,reading,prediction,state,approved_by,approved_snapshot,starts_at,ends_at,code,created_at,updated_at FROM energy_plans WHERE tenant_id=$1 ORDER BY created_at,id",
+  energyOutcomes:
+    "SELECT forecast_id,day,site_hash,payload,assessed_at FROM energy_outcomes WHERE tenant_id=$1 ORDER BY day,forecast_id",
+  energyEvents:
+    "SELECT id,user_id,action,created_at FROM energy_events WHERE tenant_id=$1 ORDER BY created_at,id",
+  outagePreparations:
+    "SELECT id,account_id,device,binding,mapping,target_soc,state,revision::text,test,attended_until,baseline,proof,approved_at,command_id,command_epoch::text,last_verified_at,last_error,purpose,ends_at,planned_windows,energy_plan_id,created_at,updated_at,ended_at FROM outage_preparations WHERE tenant_id=$1 ORDER BY created_at,id",
+  outageWrites:
+    "SELECT id,preparation_id,execution_id,revision::text,phase,address,register_values,status,created_at,acknowledged_at,verified_at,reconciled_at FROM outage_write_intents WHERE tenant_id=$1 ORDER BY created_at,id",
   workspace:
     "SELECT id,name,created_at,lifecycle,lifecycle_revision::text,lifecycle_changed_at,lifecycle_message FROM tenants WHERE id=$1",
   members:

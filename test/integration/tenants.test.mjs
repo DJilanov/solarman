@@ -1,3 +1,4 @@
+import { registerEnergyIntegration } from "./energy-cases.mjs";
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -9825,3 +9826,5 @@ test('an abandoned outage operation is recovered after database access returns w
     assert.equal((await pool.query('SELECT status FROM command_executions WHERE id=$1', [original])).rows[0].status, 'interrupted');
   } finally { await f.dispose(); }
 });
+
+registerEnergyIntegration({getPool:()=>pool,getHub:()=>hub,outageFixture,fetchApi,password,getBeta:()=>beta});

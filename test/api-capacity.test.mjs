@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { allocateCapacity } from "../src/api-capacity.mjs";
+import { allocateCapacity, NIGHT_ANNUAL_CALLS } from "../src/api-capacity.mjs";
 import { pollingConfig } from "../src/config.mjs";
 
 const policy = { limit: 200000, reserve: 2000 };
@@ -11,9 +11,9 @@ test("one home preserves five-minute telemetry and fits every continuous assessm
   const plan = allocateCapacity({ monitors: 0, controls: 1 }, policy, cadence);
   assert.equal(plan.fits, true);
   assert.equal(plan.monitorMs, 300000);
-  assert.equal(plan.scheduledMs, 1020000);
-  assert.equal(plan.assessmentMs, 1920000);
-  assert.equal(plan.reservedAnnual, 187245);
+  assert.equal(plan.scheduledMs, 1170000);
+  assert.equal(plan.assessmentMs, 2670000);
+  assert.equal(plan.reservedAnnual, 187537);
   assert.ok(plan.scheduledMs + 180000 < cadence.chargeWindowMinutes * 60000);
 });
 
@@ -28,7 +28,7 @@ test("monitor and control admission refuses populations that cannot fit at their
   );
   assert.equal(
     allocateCapacity({ monitors: 2, controls: 1 }, policy, cadence).fits,
-    true,
+    false,
   );
   assert.equal(
     allocateCapacity({ monitors: 3, controls: 1 }, policy, cadence).fits,
@@ -61,7 +61,7 @@ test("every admitted mixture fits monitoring, native retry and scheduled bounds"
         const scheduled = (6 * year) / plan.scheduledMs;
         assert.ok(
           (monitors * year) / plan.monitorMs +
-            controls * Math.max(native, scheduled) <=
+            controls * (Math.max(native, scheduled) + NIGHT_ANNUAL_CALLS) <=
             plan.planningLimit,
         );
         assert.ok(

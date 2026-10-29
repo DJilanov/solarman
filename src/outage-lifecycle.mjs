@@ -35,7 +35,7 @@ export async function quarantineOutage(client, tenantId, reason) {
     [tenantId],
   );
   await client.query(
-    "UPDATE command_executions SET status='interrupted',completed_at=clock_timestamp(),message='Outage request quarantined; review original inverter settings' WHERE ($1::uuid IS NULL OR tenant_id=$1) AND action IN('outage_prepare','outage_restore') AND status IN('queued','running')",
+    "UPDATE command_executions SET status='interrupted',completed_at=clock_timestamp(),message='Outage request quarantined; review original inverter settings' WHERE ($1::uuid IS NULL OR tenant_id=$1) AND action IN('outage_prepare','outage_restore','outage_preempt') AND status IN('queued','running')",
     [tenantId],
   );
 }

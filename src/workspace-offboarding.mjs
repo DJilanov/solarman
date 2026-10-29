@@ -1,3 +1,4 @@
+import { hasEnergyStorage } from "./energy-lifecycle.mjs";
 import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import {
   quarantineWorkspace,
@@ -17,6 +18,11 @@ const LIMIT = 500;
 const ERASE = {
   outageWrites: `DELETE FROM outage_write_intents WHERE id IN(SELECT id FROM outage_write_intents WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   outagePreparations: `DELETE FROM outage_preparations WHERE id IN(SELECT p.id FROM outage_preparations p WHERE p.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM outage_write_intents w WHERE w.tenant_id=p.tenant_id AND w.preparation_id=p.id) LIMIT ${LIMIT})`,
+  energyEvents: `DELETE FROM energy_events WHERE id IN(SELECT id FROM energy_events WHERE tenant_id=$1 LIMIT ${LIMIT})`,
+  energyOutcomes: `DELETE FROM energy_outcomes WHERE (tenant_id,forecast_id,day) IN(SELECT tenant_id,forecast_id,day FROM energy_outcomes WHERE tenant_id=$1 LIMIT ${LIMIT})`,
+  energyPlans: `DELETE FROM energy_plans WHERE id IN(SELECT p.id FROM energy_plans p WHERE p.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM outage_preparations o WHERE o.tenant_id=p.tenant_id AND o.energy_plan_id=p.id) LIMIT ${LIMIT})`,
+  energyForecasts: `DELETE FROM energy_forecasts WHERE id IN(SELECT f.id FROM energy_forecasts f WHERE f.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM energy_plans p WHERE p.tenant_id=f.tenant_id AND p.forecast_id=f.id) AND NOT EXISTS(SELECT 1 FROM energy_outcomes o WHERE o.tenant_id=f.tenant_id AND o.forecast_id=f.id) LIMIT ${LIMIT})`,
+  energySettings: "DELETE FROM energy_settings WHERE tenant_id=$1",
   notificationAttempts: `DELETE FROM notification_attempts WHERE id IN(SELECT id FROM notification_attempts WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   notificationChanges: `DELETE FROM notification_events WHERE id IN(SELECT id FROM notification_events WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   notifications: `DELETE FROM notification_outbox WHERE id IN(SELECT j.id FROM notification_outbox j WHERE j.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM notification_attempts a WHERE a.job_id=j.id) LIMIT ${LIMIT})`,
@@ -734,7 +740,9 @@ export class WorkspaceOffboarding {
       let more = false;
       let finalized = false;
       const outageStorage = await hasOutageStorage(client);
+      const energyStorage = await hasEnergyStorage(client);
       for (const [section, sql] of Object.entries(ERASE)) {
+        if (!energyStorage && section.startsWith("energy")) continue;
         if (!outageStorage && section.startsWith("outage")) continue;
         if (
           outageStorage &&

@@ -1,3 +1,5 @@
+import { emptyEnergyProfile, energySiteHash } from "./energy-profile.mjs";
+import { quarantineEnergy } from "./energy-lifecycle.mjs";
 import { randomBytes, randomUUID, createHash, createECDH } from "node:crypto";
 import webpush from "web-push";
 import { encryptPushSubscription, pushEndpointHash } from "./web-push.mjs";
@@ -197,6 +199,45 @@ async function createAuthenticationFixture(
       user,
     ],
   );
+  const energyProfile = emptyEnergyProfile(),
+    energyForecast = randomUUID(),
+    energyPlan = randomUUID();
+  await pool.query(
+    "INSERT INTO energy_settings(tenant_id,profile,automatic,approval_binding,approved_by) VALUES($1,$2,true,$3,$4)",
+    [tenant, energyProfile, observationBinding(identity), user],
+  );
+  await pool.query(
+    "INSERT INTO energy_forecasts(id,tenant_id,site_hash,fetched_at,expires_at,payload) VALUES($1,$2,$3,clock_timestamp(),clock_timestamp()+interval '3 hours',$4)",
+    [
+      energyForecast,
+      tenant,
+      energySiteHash(energyProfile),
+      { provider: "isolated-recovery-canary", slots: [] },
+    ],
+  );
+  await pool.query(
+    "INSERT INTO energy_plans(id,tenant_id,account_id,device,binding,forecast_id,settings_revision,profile_hash,profile,demand,reading,prediction,state,approved_by,starts_at,ends_at) VALUES($1,$2,$3,$4,$5,$6,1,$5,$7,'{}','{}',$8,'running',$9,clock_timestamp()-interval '1 hour',clock_timestamp()+interval '1 hour')",
+    [
+      energyPlan,
+      tenant,
+      account,
+      device,
+      observationBinding(identity),
+      energyForecast,
+      energyProfile,
+      {
+        horizon: { start: 0, end: 1 },
+        baseline: { gridCost: 0 },
+        selected: { gridCost: 0 },
+      },
+      user,
+    ],
+  );
+  if (commissioningState === "attending")
+    await pool.query(
+      "UPDATE outage_preparations SET purpose='night',ends_at=clock_timestamp()+interval '1 hour',planned_windows='[1,1536,0,0,0,0,0,0]',energy_plan_id=$2 WHERE id=$1",
+      [preparation, energyPlan],
+    );
   await pool.query(
     "INSERT INTO policy_observation_runs(id,tenant_id,account_id,device,binding,identity,verification,created_by,cursor_id,progress) VALUES($1,$2,$3,$4,$5,$6,$7,$8,0,$9)",
     [
@@ -878,6 +919,30 @@ export async function restoreDrill(header, dump) {
         )
       ).rows[0].n >= 2,
     );
+    assert.ok(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM energy_settings WHERE automatic",
+        )
+      ).rows[0].n >= 2,
+    );
+    await quarantineEnergy(pool, null, "restore");
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM energy_settings WHERE automatic OR approval_binding IS NOT NULL",
+        )
+      ).rows[0].n,
+      0,
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM energy_plans WHERE state IN('scheduled','starting','running','restoring')",
+        )
+      ).rows[0].n,
+      0,
+    );
     await quarantineOutage(pool, null, "restore");
     assert.equal(
       (
@@ -1045,6 +1110,7 @@ export async function restoreDrill(header, dump) {
       commissioningQuarantined: true,
       notificationsQuarantined: true,
       outageQuarantined: true,
+      energyPlanningQuarantined: true,
       notificationAccessAttempts: 0,
       recoveryQuarantined: true,
       schemaUpgradeVerified: true,

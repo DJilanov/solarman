@@ -1,3 +1,4 @@
+import { EnergySummary } from "./energy-summary";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -25,6 +26,10 @@ import { IncidentSummary } from "./incident-summary";
 import type { Analytics, ControllerStatus } from "./types";
 
 export function appPolicyStatus(controller: ControllerStatus): string {
+  if (controller.outage?.active && controller.outage.purpose === "night")
+    return controller.outage.state === "active"
+      ? "Night savings is holding energy until the cheap period ends."
+      : "Night savings settings are being checked. Review the confirmed state.";
   if (controller.outage?.active)
     return "Outage reserve is active. Return to normal when you no longer need it.";
   if (controller.control.recovery.pending)
@@ -202,6 +207,7 @@ export default function HomePage(): ReactNode {
           timezone={session.tenant.timezone}
         />
       )}
+      <EnergySummary />
       <div className="home-console-grid">
         <section
           className={`panel console-battery ${stale ? "reading-stale" : ""}`}

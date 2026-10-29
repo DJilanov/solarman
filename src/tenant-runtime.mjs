@@ -487,6 +487,8 @@ export class TenantRuntime {
             state: this.outage.row.state,
             targetSoc: this.outage.row.target_soc,
             test: this.outage.row.test,
+            purpose: this.outage.row.purpose ?? "outage",
+            endsAt: this.outage.row.ends_at,
           }
         : null,
     };
@@ -772,7 +774,14 @@ export class TenantRuntime {
       );
     return this.health.run(
       () => this.verifyReadings(),
-      () => Boolean(this.profileError),
+      () =>
+        Boolean(
+          this.profileError ||
+          (this.outage.active &&
+            ["recovery-required", "quarantined"].includes(
+              this.outage.row.state,
+            )),
+        ),
     );
   }
 
@@ -975,7 +984,14 @@ export class TenantRuntime {
     }
     return this.health.run(
       () => this.collectReadings(inspectOnly, forceControl),
-      () => Boolean(this.profileError),
+      () =>
+        Boolean(
+          this.profileError ||
+          (this.outage.active &&
+            ["recovery-required", "quarantined"].includes(
+              this.outage.row.state,
+            )),
+        ),
     );
   }
 
