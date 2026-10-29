@@ -9394,3 +9394,434 @@ test("restore verification checks every actual erasure receipt and rejects missi
     await f.dispose();
   }
 });
+
+async function outageFixture() {
+  const f = await recoveryTestFixture();
+  const { BatteryController } = await import("../../src/controller.mjs");
+  await f.attend();
+  f.runtime.client.command = async (raw) => {
+    if (f.runtime.outage.ownsDispatch)
+      await f.runtime.outage.authorizeDispatch(raw);
+    else await f.runtime.journal.authorizeDispatch(raw);
+    return f.device.reply(raw);
+  };
+  f.runtime.inspector = new BatteryController(f.runtime.client, {
+    writesEnabled: false,
+  });
+  f.device.advance({
+    soc: 79,
+    pvW: 0,
+    loadW: 1200,
+    gridW: 3200,
+    batteryW: -2000,
+  });
+  const call = async (action, body, requestId = randomUUID()) =>
+    fetchApi(`/outage/${action}`, {
+      auth: f.member,
+      method: "POST",
+      idempotency: requestId,
+      body,
+    });
+  const prepare = async (targetSoc = 80) => {
+    const response = await call("prepare", { targetSoc, test: true });
+    assert.equal(
+      response.status,
+      202,
+      JSON.stringify(await response.clone().json()),
+    );
+    const job = await response.json();
+    await f.runtime.work.idle();
+    await f.runtime.outage.load();
+    return (
+      await pool.query("SELECT * FROM command_executions WHERE id=$1", [job.id])
+    ).rows[0];
+  };
+  const restore = async () => {
+    await f.runtime.outage.load();
+    const response = await call("restore", {
+      revision: String(f.runtime.outage.row.revision),
+    });
+    assert.equal(response.status, 202);
+    await f.runtime.work.idle();
+    await f.runtime.outage.load();
+    return response;
+  };
+  return { ...f, call, prepare, restore };
+}
+
+test("outage API enforces authentication, CSRF, strict targets, idempotency and tenant isolation", async () => {
+  const f = await outageFixture();
+  try {
+    assert.equal((await fetchApi("/outage")).status, 401);
+    assert.equal(
+      (
+        await fetchApi("/outage/prepare", {
+          auth: f.member,
+          method: "POST",
+          csrf: false,
+          idempotency: randomUUID(),
+          body: { targetSoc: 80, test: true },
+        })
+      ).status,
+      403,
+    );
+    for (const targetSoc of [49, 51, 101, 80.1, "80", null])
+      assert.equal(
+        (await f.call("prepare", { targetSoc, test: true })).status,
+        400,
+      );
+    assert.equal(
+      (await f.call("prepare", { targetSoc: 80, test: false })).status,
+      409,
+    );
+    assert.equal(
+      (
+        await fetchApi("/outage/prepare", {
+          auth: f.member,
+          method: "POST",
+          body: { targetSoc: 80, test: true },
+        })
+      ).status,
+      400,
+    );
+    const requestId = randomUUID();
+    const responses = await Promise.all([
+      f.call("prepare", { targetSoc: 80, test: true }, requestId),
+      f.call("prepare", { targetSoc: 80, test: true }, requestId),
+    ]);
+    for (const response of responses)
+      assert.equal(
+        response.status,
+        202,
+        JSON.stringify(await response.clone().json()),
+      );
+    assert.equal(
+      (await responses[0].json()).id,
+      (await responses[1].json()).id,
+    );
+    await f.runtime.work.idle();
+    assert.equal(f.runtime.outage.row.state, "active");
+    assert.equal(
+      f.device.writes.filter((write) => write.address === 2500).length,
+      1,
+    );
+    assert.equal(
+      (await f.call("prepare", { targetSoc: 90, test: true }, requestId))
+        .status,
+      409,
+    );
+    const other = await (await fetchApi("/outage", { auth: beta })).json();
+    assert.equal(other.preparation, null);
+    assert.equal(
+      (
+        await fetchApi("/outage/restore", {
+          auth: beta,
+          method: "POST",
+          idempotency: randomUUID(),
+          body: { revision: String(f.runtime.outage.row.revision) },
+        })
+      ).status,
+      409,
+    );
+    await f.restore();
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("outage hold uses native backup mode, preserves solar and protection settings, and audits complete restoration", async () => {
+  const f = await outageFixture();
+  try {
+    const before = new Map(f.device.holding);
+    assert.equal((await f.prepare()).status, "succeeded");
+    assert.equal(f.device.holding.get(2500), 3);
+    assert.equal(f.device.holding.get(2505), 800);
+    assert.equal(f.device.holding.get(3005), 1000);
+    assert.equal(f.device.holding.get(3036), 500);
+    assert.equal(f.runtime.status().outage.active, true);
+    assert.equal(f.runtime.status().control.canStart, false);
+    const writes = await fetchApi("/write-history", { auth: f.member });
+    assert.equal(writes.status, 200);
+    assert.equal(
+      (await writes.json()).writes.filter(
+        (write) => write.operation === "outage_apply",
+      ).length,
+      4,
+    );
+    assert.equal((await f.call("restore", { revision: "99999" })).status, 409);
+    await f.restore();
+    assert.equal(f.runtime.outage.row.state, "restored");
+    for (const [address, value] of before)
+      assert.equal(f.device.holding.get(address), value, `register ${address}`);
+    assert.equal(f.runtime.paused, true);
+    assert.equal(f.runtime.manualTopup, false);
+    assert.ok(
+      (
+        await pool.query(
+          "SELECT status FROM outage_write_intents WHERE preparation_id=$1",
+          [f.runtime.outage.row.id],
+        )
+      ).rows.every((row) => row.status === "verified"),
+    );
+    assert.equal(
+      f.runtime.outage.status().preparation.canApprove,
+      false,
+      "writes alone cannot prove actual charging and target hold",
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("ambiguous outage writes are never replayed and are restored from readback", async () => {
+  const f = await outageFixture();
+  try {
+    f.runtime.client.command = async (raw) => {
+      await f.runtime.outage.authorizeDispatch(raw);
+      const reply = f.device.reply(raw),
+        frame = parseFrame(raw);
+      if (
+        frame[1] === 16 &&
+        frame.readUInt16BE(2) === 2505 &&
+        frame.readUInt16BE(7) === 800
+      )
+        throw new Error("fixture lost acknowledgement");
+      return reply;
+    };
+    assert.equal((await f.prepare()).status, "failed");
+    assert.equal(f.runtime.outage.row.state, "restored");
+    assert.equal(f.device.holding.get(2500), 0);
+    assert.equal(f.device.holding.get(2505), 500);
+    assert.equal(
+      f.device.writes.filter(
+        (write) => write.address === 2505 && write.values[0] === 800,
+      ).length,
+      1,
+    );
+    const unknown = (
+      await pool.query(
+        "SELECT * FROM outage_write_intents WHERE preparation_id=$1 AND status='uncertain'",
+        [f.runtime.outage.row.id],
+      )
+    ).rows;
+    assert.equal(unknown.length, 1);
+    assert.ok(unknown[0].reconciled_at);
+    assert.equal(f.runtime.outage.status().preparation.canApprove, false);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("real outage holds survive process restart and background cleanup; supervised holds restore on expiry", async () => {
+  const f = await outageFixture();
+  try {
+    await f.prepare();
+    await pool.query(
+      "UPDATE outage_preparations SET test=false,attended_until=null WHERE id=$1",
+      [f.runtime.outage.row.id],
+    );
+    await f.runtime.outage.load(true);
+    assert.equal(f.runtime.outage.row.state, "active");
+    const writes = f.device.writes.length;
+    assert.equal(await f.runtime.clearScheduledPermission(), false);
+    assert.equal(f.device.writes.length, writes);
+    assert.equal(await f.runtime.outage.recover(), false);
+    await pool.query(
+      "UPDATE outage_preparations SET test=true,attended_until=clock_timestamp()-interval '1 second' WHERE id=$1",
+      [f.runtime.outage.row.id],
+    );
+    assert.equal(await f.runtime.outage.recover(), true);
+    assert.equal(f.runtime.outage.row.state, "restored");
+    assert.equal(f.device.holding.get(2500), 0);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("outage approval requires actual charge and stopped-target evidence plus the current password", async () => {
+  const f = await outageFixture();
+  try {
+    await f.prepare();
+    await pool.query(
+      "UPDATE outage_preparations SET proof=proof || jsonb_build_object('appliedAt',clock_timestamp()-interval '2 minutes','holdFirstAt',clock_timestamp()-interval '1 minute') WHERE id=$1",
+      [f.runtime.outage.row.id],
+    );
+    const { BatteryController } = await import("../../src/controller.mjs");
+    const inspector = new BatteryController(f.runtime.client, {
+      writesEnabled: false,
+    });
+    await f.runtime.outage.observe(
+      await inspector.snapshot(false),
+      await inspector.read(3, 3005, 32),
+    );
+    assert.ok(f.runtime.outage.row.proof.gridChargingObservedAt);
+    f.device.advance({ soc: 80, gridW: 1200, batteryW: 0 });
+    await pool.query(
+      "UPDATE outage_preparations SET proof=proof || jsonb_build_object('targetHoldFirstAt',clock_timestamp()-interval '1 minute') WHERE id=$1",
+      [f.runtime.outage.row.id],
+    );
+    await f.runtime.outage.observe(
+      await inspector.snapshot(false),
+      await inspector.read(3, 3005, 32),
+    );
+    assert.ok(f.runtime.outage.row.proof.targetHoldObservedAt);
+    await f.restore();
+    assert.equal(f.runtime.outage.status().preparation.canApprove, true);
+    const revision = String(f.runtime.outage.row.revision);
+    assert.equal(
+      (
+        await f.call("approve", {
+          revision,
+          currentPassword: "wrong-password",
+          confirmed: true,
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await f.call("approve", {
+          revision,
+          currentPassword: password,
+          confirmed: false,
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await f.call("approve", {
+          revision,
+          currentPassword: password,
+          confirmed: true,
+        })
+      ).status,
+      200,
+    );
+    assert.equal(f.runtime.outage.status().capabilityApproved, true);
+    assert.equal(f.runtime.outage.row.proof.backupUseObservedAt, undefined);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("quarantine prevents outage replay and account erasure waits for verified full restoration", async () => {
+  const f = await outageFixture();
+  try {
+    const { quarantineOutage } = await import("../../src/outage-lifecycle.mjs");
+    const { unresolvedCleanup } =
+      await import("../../src/workspace-offboarding.mjs");
+    await f.prepare();
+    await quarantineOutage(pool, f.target.tenant, "restore");
+    await f.runtime.outage.load();
+    assert.equal(f.runtime.outage.row.state, "quarantined");
+    assert.equal(await f.runtime.outage.recover(), false);
+    assert.equal(await unresolvedCleanup(pool, f.target.tenant), true);
+    await f.restore();
+    assert.equal(f.runtime.outage.row.state, "restored");
+    assert.equal(f.runtime.outage.status().preparation.canApprove, false);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("return to normal during an in-flight outage apply cancels later enabling writes", async () => {
+  const f = await outageFixture();
+  let release;
+  try {
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    let entered;
+    const applying = new Promise((resolve) => {
+      entered = resolve;
+    });
+    f.runtime.client.command = async (raw) => {
+      await f.runtime.outage.authorizeDispatch(raw);
+      const frame = parseFrame(raw),
+        reply = f.device.reply(raw);
+      if (
+        frame[1] === 16 &&
+        frame.readUInt16BE(2) === 2500 &&
+        frame.readUInt16BE(7) === 3
+      ) {
+        entered();
+        await gate;
+      }
+      return reply;
+    };
+    const response = await f.call("prepare", { targetSoc: 80, test: true });
+    assert.equal(response.status, 202);
+    await Promise.race([
+      applying,
+      f.runtime.work.idle().then(() => {
+        throw new Error("Apply ended before the test gate");
+      }),
+    ]);
+    await f.runtime.outage.load();
+    const restoring = await f.call("restore", {
+      revision: String(f.runtime.outage.row.revision),
+    });
+    assert.equal(restoring.status, 202);
+    release();
+    await f.runtime.work.idle();
+    assert.equal(f.runtime.outage.row.state, "restored");
+    assert.equal(f.device.holding.get(2500), 0);
+    assert.equal(
+      f.device.writes.filter(
+        (write) => write.address === 206 && write.values[1] === 25,
+      ).length,
+      0,
+    );
+  } finally {
+    release?.();
+    await f.dispose();
+  }
+});
+
+test("a queued outage request can be cancelled without inverter access before any write intent exists", async () => {
+  const f = await outageFixture();
+  let release;
+  try {
+    const blocker = f.runtime.queue(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    while (!release) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(
+      (await f.call("prepare", { targetSoc: 80, test: true })).status,
+      202,
+    );
+    f.runtime.hostWritesAllowed = false;
+    await f.runtime.outage.load();
+    assert.equal(f.runtime.outage.status().canRestore, true);
+    const response = await f.call("restore", {
+      revision: String(f.runtime.outage.row.revision),
+    });
+    assert.equal(response.status, 202);
+    release();
+    await blocker;
+    await f.runtime.work.idle();
+    assert.equal(f.runtime.outage.row.state, "restored");
+    assert.equal(f.device.writes.length, 0);
+  } finally {
+    release?.();
+    await f.dispose();
+  }
+});
+
+test('an abandoned outage operation is recovered after database access returns without replaying the apply', async () => {
+  const f = await outageFixture();
+  try {
+    await f.prepare(); const writes = f.device.writes.length;
+    await pool.query("UPDATE outage_preparations SET state='applying',test=false,attended_until=null WHERE id=$1", [f.runtime.outage.row.id]);
+    await pool.query("UPDATE command_executions SET status='running',completed_at=null WHERE id=$1", [f.runtime.outage.row.command_id]);
+    const original = f.runtime.outage.row.command_id;
+    assert.equal(await f.runtime.outage.recover(), true);
+    assert.equal(f.runtime.outage.row.state, 'restored');
+    assert.equal(f.device.writes.slice(writes).some(write => write.address === 2500 && write.values[0] === 3), false);
+    assert.equal((await pool.query('SELECT status FROM command_executions WHERE id=$1', [original])).rows[0].status, 'interrupted');
+  } finally { await f.dispose(); }
+});

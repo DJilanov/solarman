@@ -548,6 +548,11 @@ export class AccountHub {
       );
     }
     const old = await this.forTenant(tenantId);
+    await old.outage.load();
+    if (old.outage.active)
+      throw new Error(
+        "Return to normal before changing the inverter, profile or timezone",
+      );
     await this.prepareAccountUpdate(old);
     const unresolved = await this.pool.query(
       "SELECT 1 FROM device_control_state WHERE tenant_id=$1 AND state<>'clear' LIMIT 1",

@@ -57,7 +57,7 @@ export default function AutomationsPage(): ReactNode {
           {tr(controller.supervision.issue.message)}
         </Notice>
       )}
-      {!control.canStart && (
+      {!control.canStart && !controller.outage?.active && (
         <div className="setup-prompt">
           <ShieldCheck size={24} />
           <div>
@@ -73,7 +73,16 @@ export default function AutomationsPage(): ReactNode {
           </Link>
         </div>
       )}
-      {supported ? (
+      {controller.outage?.active ? (
+        <Notice tone="info">
+          {tr(
+            "Outage reserve is active. Return to normal when you no longer need it.",
+          )}{" "}
+          <Link className="text-link" to="/controls/outage">
+            {tr("Manage outage reserve")}
+          </Link>
+        </Notice>
+      ) : supported ? (
         <div className="home-rules-grid">
           <Panel
             title={tr("Solar comes first")}
@@ -126,54 +135,58 @@ export default function AutomationsPage(): ReactNode {
         </Notice>
       )}
       <div className="automation-actions-grid">
-        <Panel
-          title={tr("App automation")}
-          action={<StatusBadge status={controller.mode} />}
-        >
-          <p className="control-description">
-            {tr(appPolicyStatus(controller))}
-          </p>
-          <p className="fine-print">
-            {tr(
-              "Pausing the app does not disable solar charging or the inverter’s native reserve policy.",
-            )}
-          </p>
-          <button
-            className="button secondary full"
-            disabled={
-              submitting ||
-              (controller.paused ? busy || !control.canStart : !control.canStop)
-            }
-            onClick={() => {
-              void command(controller.paused ? "resume" : "pause");
-            }}
+        {!controller.outage?.active && (
+          <Panel
+            title={tr("App automation")}
+            action={<StatusBadge status={controller.mode} />}
           >
-            {controller.paused ? <Play size={17} /> : <Pause size={17} />}
-            {tr(controller.paused ? "Resume automation" : "Pause automation")}
-          </button>
-          {needsStop && (
-            <>
-              <button
-                className="button secondary full"
-                disabled={submitting || !control.canStop}
-                onClick={() => {
-                  void command("stop");
-                }}
-              >
-                <Pause size={17} />
-                {tr("Stop app top-ups")}
-              </button>
-              <p className="fine-print">
-                {tr(
-                  "Pauses app top-ups and clears scheduled permission. Solar and native reserve charging continue.",
-                )}
-              </p>
-            </>
-          )}
-        </Panel>
+            <p className="control-description">
+              {tr(appPolicyStatus(controller))}
+            </p>
+            <p className="fine-print">
+              {tr(
+                "Pausing the app does not disable solar charging or the inverter’s native reserve policy.",
+              )}
+            </p>
+            <button
+              className="button secondary full"
+              disabled={
+                submitting ||
+                (controller.paused
+                  ? busy || !control.canStart
+                  : !control.canStop)
+              }
+              onClick={() => {
+                void command(controller.paused ? "resume" : "pause");
+              }}
+            >
+              {controller.paused ? <Play size={17} /> : <Pause size={17} />}
+              {tr(controller.paused ? "Resume automation" : "Pause automation")}
+            </button>
+            {needsStop && (
+              <>
+                <button
+                  className="button secondary full"
+                  disabled={submitting || !control.canStop}
+                  onClick={() => {
+                    void command("stop");
+                  }}
+                >
+                  <Pause size={17} />
+                  {tr("Stop app top-ups")}
+                </button>
+                <p className="fine-print">
+                  {tr(
+                    "Pauses app top-ups and clears scheduled permission. Solar and native reserve charging continue.",
+                  )}
+                </p>
+              </>
+            )}
+          </Panel>
+        )}
         <Panel
-          title={tr("One-time grid top-up")}
-          subtitle={tr("Restore the reserve when solar is insufficient")}
+          title={tr("Prepare for an outage")}
+          subtitle={tr("Choose a level. Charge and keep it ready.")}
         >
           <p className="control-description">
             {tr(

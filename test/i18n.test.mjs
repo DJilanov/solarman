@@ -27,6 +27,7 @@ test("every literal translation used by the interface exists in both catalogues"
     "App.tsx",
     "home.tsx",
     "grid-charge.tsx",
+    "outage-preparation.tsx",
     "automations.tsx",
     "history-navigation.tsx",
     "components.tsx",

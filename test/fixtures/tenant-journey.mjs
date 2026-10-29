@@ -56,7 +56,7 @@ export class TenantJourneyCloud {
     assert.equal(request[0], 1);
     if (fn === 16) {
       assert.ok(
-        (address === 206 && count === 2) || (address === 2509 && count === 8),
+        (address === 206 && count === 2) || (address === 2509 && count === 8) || ([2500,2505].includes(address) && count === 1),
         "The rehearsal only permits the application's named schedule writes",
       );
       const values = Array.from({ length: count }, (_, index) =>

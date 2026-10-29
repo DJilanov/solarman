@@ -11,9 +11,12 @@ import {
 import { randomUUID } from "node:crypto";
 import { unsigned32 } from "./modbus.mjs";
 import { quarantineNotifications } from "./notification-lifecycle.mjs";
+import { hasOutageStorage, outageCleanupPending } from "./outage-lifecycle.mjs";
 
 const LIMIT = 500;
 const ERASE = {
+  outageWrites: `DELETE FROM outage_write_intents WHERE id IN(SELECT id FROM outage_write_intents WHERE tenant_id=$1 LIMIT ${LIMIT})`,
+  outagePreparations: `DELETE FROM outage_preparations WHERE id IN(SELECT p.id FROM outage_preparations p WHERE p.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM outage_write_intents w WHERE w.tenant_id=p.tenant_id AND w.preparation_id=p.id) LIMIT ${LIMIT})`,
   notificationAttempts: `DELETE FROM notification_attempts WHERE id IN(SELECT id FROM notification_attempts WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   notificationChanges: `DELETE FROM notification_events WHERE id IN(SELECT id FROM notification_events WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   notifications: `DELETE FROM notification_outbox WHERE id IN(SELECT j.id FROM notification_outbox j WHERE j.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM notification_attempts a WHERE a.job_id=j.id) LIMIT ${LIMIT})`,
@@ -39,6 +42,7 @@ const ERASE = {
 
 /** @param {import('pg').PoolClient|import('pg').Pool} client @param {string} tenantId @returns {Promise<boolean>} */
 export async function unresolvedCleanup(client, tenantId) {
+  if (await outageCleanupPending(client, tenantId)) return true;
   return (
     await client.query(
       `SELECT EXISTS(SELECT 1 FROM device_control_state WHERE tenant_id=$1 AND state<>'clear') OR EXISTS(SELECT 1 FROM inverter_write_intents WHERE tenant_id=$1 AND status<>'verified' AND reconciled_at IS NULL) OR EXISTS(SELECT 1 FROM command_executions WHERE tenant_id=$1 AND status IN('queued','running')) AS pending`,
@@ -239,7 +243,8 @@ export class WorkspaceOffboarding {
           );
           const clear =
             body.action === "stop"
-              ? await runtime.clearScheduledPermission()
+              ? (await runtime.outage.stop(),
+                await runtime.clearScheduledPermission())
               : await runtime.journal.confirmOff(
                   unsigned32(
                     await runtime.inspector.read(3, 206, 2, "recovery"),
@@ -728,7 +733,20 @@ export class WorkspaceOffboarding {
       let processed = 0;
       let more = false;
       let finalized = false;
-      for (const sql of Object.values(ERASE)) {
+      const outageStorage = await hasOutageStorage(client);
+      for (const [section, sql] of Object.entries(ERASE)) {
+        if (!outageStorage && section.startsWith("outage")) continue;
+        if (
+          outageStorage &&
+          section === "commands" &&
+          (
+            await client.query(
+              "SELECT 1 FROM outage_preparations WHERE tenant_id=$1 LIMIT 1",
+              [tenantId],
+            )
+          ).rowCount
+        )
+          continue;
         const n = (await client.query(sql, [tenantId])).rowCount;
         processed += n;
         more ||= n === LIMIT;

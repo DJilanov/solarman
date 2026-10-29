@@ -29,7 +29,8 @@ export async function writeHistory(
   const result = await pool.query(
     `SELECT w.id,w.execution_id,w.device,w.operation,w.address,w.register_values,w.status,
     w.created_at,w.acknowledged_at,w.verified_at,w.reconciled_at,c.status AS job_status
-    FROM inverter_write_intents w
+    FROM (SELECT id,tenant_id,execution_id,device,operation,address,register_values,status,created_at,acknowledged_at,verified_at,reconciled_at FROM inverter_write_intents
+      UNION ALL SELECT w.id,w.tenant_id,w.execution_id,p.device,CASE WHEN w.phase='apply' THEN 'outage_apply' ELSE 'outage_restore' END,w.address,w.register_values,w.status,w.created_at,w.acknowledged_at,w.verified_at,w.reconciled_at FROM outage_write_intents w JOIN outage_preparations p ON p.tenant_id=w.tenant_id AND p.id=w.preparation_id) w
     LEFT JOIN command_executions c ON c.tenant_id=w.tenant_id AND c.id=w.execution_id
     WHERE w.tenant_id=$1 ${executionId ? "AND w.execution_id=$3" : ""}
     ORDER BY w.created_at ${order},w.id ${order} LIMIT 26 OFFSET $2`,

@@ -12,8 +12,8 @@ SOLARMAN OpenAPI **App ID / App Secret** activation is required in addition to a
 
 ## Dashboard
 
-- **Home:** battery charge display, solar/home/grid/battery flow, the **Charge from grid** action, home policy and daily estimates. The charging dialog reviews the actual policy target and AC limit, explains unavailable actions, and keeps a charging request distinct from confirmed device behavior.
-- **Automations:** solar priority, reserve and AC charging policy, pause/resume, one-time top-ups and contextual **Stop app top-ups**. Stopping app top-ups clears scheduled permission; solar and the inverter's native reserve charging may continue.
+- **Home:** battery charge display, solar/home/grid/battery flow, **Prepare for an outage**, home policy and daily estimates. The reserve panel offers a 50–100% target slider, explicit review, saved state and **Return to normal**. A saved target remains distinct from current battery readings.
+- **Automations:** normal solar/reserve policy and a separate outage reserve. Ordinary automation pauses during an outage hold. Return to normal restores the saved native settings; regular app automation stays paused.
 - **History:** energy charts, date ranges, daily estimates, coverage and full-resolution CSV export under **Energy history**; searchable commands and device write evidence under **Actions and events**.
 - **Settings:** provider connection, device discovery, compatibility profile, timezone, notifications, account security and data/privacy. API usage, lifecycle actions and raw provider readings are behind explicit disclosures. Platform administrators manage users and homes separately from the four everyday navigation items.
 
@@ -35,7 +35,9 @@ Translations live in `web/locales/en.json` and `web/locales/bg.json`, with i18ne
 
 ## Battery policy
 
-The supported Bluesun policy retains the existing **100% overall solar SOC target**, **50% on-grid reserve**, and **2 kW AC charging setting with a 50% target**. Below 50%, grid top-up is eligible when solar surplus is insufficient. At or above 50%, timed AC permission is removed so native SelfUse can supply the home. The controller verifies configuration and changes only the AC flag and short charging windows.
+The supported Bluesun policy retains the existing **100% overall solar SOC target**, **50% on-grid reserve**, and **2 kW AC charging setting with a 50% target**. Below 50%, grid top-up is eligible when solar surplus is insufficient. At or above 50%, timed AC permission is removed so native SelfUse can supply the home. The normal-policy controller verifies configuration and changes only the AC flag and short charging windows.
+
+[Outage preparation](docs/outage-preparation.md) uses a separate, firmware-tested native backup mode: grid charging up to the chosen target at 2 kW, solar charging up to 100%, and all stored energy reserved while grid is present. It persists until Return to normal, including through midnight and app restarts. Its installed-firmware charge/stop/hold/restore test remains required before everyday use; deployment does not activate a hold.
 
 **Writes are disabled by default.** Solar charging uses the inverter and battery limits up to the 100% SOC target; the application imposes no solar power cap. Physical charging behavior still requires commissioning. Daily charge windows are not an expiring watchdog and can repeat after an outage until AC permission is cleared. See [controller details and recovery](docs/controller.md).
 

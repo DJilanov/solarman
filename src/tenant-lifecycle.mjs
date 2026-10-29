@@ -1,5 +1,6 @@
 import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import { invalidateCommissioning } from "./commissioning-state.mjs";
+import { quarantineOutage } from "./outage-lifecycle.mjs";
 
 export const SUSPENDED_MESSAGE =
   "This workspace is suspended. New automation and administration are unavailable.";
@@ -22,6 +23,7 @@ export async function quarantineWorkspace(
   enabled,
   reason = "workspace_changed",
 ) {
+  await quarantineOutage(client, tenantId, reason);
   await invalidateCommissioning(client, tenantId, reason);
   await client.query(
     "UPDATE policy_observation_runs SET state='invalidated',reason=$2,ended_at=clock_timestamp() WHERE tenant_id=$1 AND state='observing'",

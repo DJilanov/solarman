@@ -340,6 +340,16 @@ export function AdvancedControls(): ReactNode {
         }
       />
       <SetupNotice controller={controller} />
+      {controller.outage?.active && (
+        <Notice tone="info">
+          {tr(
+            "Outage reserve is active. Return to normal when you no longer need it.",
+          )}{" "}
+          <Link className="text-link" to="/controls/outage">
+            {tr("Manage outage reserve")}
+          </Link>
+        </Notice>
+      )}
       <CapacityNotice capacity={controller.capacity} />
       <ControlReadinessPanel
         controller={controller}

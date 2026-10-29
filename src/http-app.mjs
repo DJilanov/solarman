@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { outageRoute } from "./outage-http.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -707,6 +708,20 @@ export function createApp({ pool, hub, config }) {
         return;
       }
       const runtime = await hub.forTenant(session.tenant_id);
+      if (
+        await outageRoute({
+          pathname,
+          request,
+          response,
+          session,
+          runtime,
+          bodyJson,
+          json,
+          limitSecurity,
+          HttpError,
+        })
+      )
+        return;
       if (
         pathname === "/api/commissioning" &&
         ["GET", "POST"].includes(request.method)

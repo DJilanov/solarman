@@ -20,11 +20,13 @@ import {
   PowerFlow,
 } from "./components";
 import { GridChargeControl } from "./grid-charge";
-import { readingIsStale } from "./charge-state";
+import { readingIsStale } from "./reading-freshness";
 import { IncidentSummary } from "./incident-summary";
 import type { Analytics, ControllerStatus } from "./types";
 
 export function appPolicyStatus(controller: ControllerStatus): string {
+  if (controller.outage?.active)
+    return "Outage reserve is active. Return to normal when you no longer need it.";
   if (controller.control.recovery.pending)
     return "An earlier change needs recovery. Review app controls.";
   if (controller.mode === "error")
@@ -239,7 +241,11 @@ export default function HomePage(): ReactNode {
               <span>
                 {supported
                   ? tr("{{target}}% RESERVE", {
-                      target: formatNumber(controller.policy.reserveSoc),
+                      target: formatNumber(
+                        controller.outage?.active
+                          ? controller.outage.targetSoc
+                          : controller.policy.reserveSoc,
+                      ),
                     })
                   : tr("State of charge")}
               </span>
@@ -257,10 +263,12 @@ export default function HomePage(): ReactNode {
           </div>
           <div className="battery-meta">
             <span>
-              {tr("Reserve")}{" "}
+              {tr(
+                controller.outage?.active ? "Grid charging target" : "Reserve",
+              )}{" "}
               <b>
                 {supported
-                  ? `${formatNumber(controller.policy.reserveSoc)}%`
+                  ? `${formatNumber(controller.outage?.active ? controller.outage.targetSoc : controller.policy.reserveSoc)}%`
                   : "—"}
               </b>
             </span>
@@ -315,7 +323,11 @@ export default function HomePage(): ReactNode {
                   <strong>{tr("Grid restores the reserve")}</strong>
                   <small>
                     {tr("{{target}}% target · AC charge setting", {
-                      target: formatNumber(controller.policy.reserveSoc),
+                      target: formatNumber(
+                        controller.outage?.active
+                          ? controller.outage.targetSoc
+                          : controller.policy.reserveSoc,
+                      ),
                     })}
                   </small>
                 </span>
@@ -335,7 +347,7 @@ export default function HomePage(): ReactNode {
             />
             <p>
               {tr(appPolicyStatus(controller))}{" "}
-              {!controller.writesEnabled && (
+              {!controller.writesEnabled && !controller.outage?.active && (
                 <Link to="/controls/setup">{tr("Continue setup")}</Link>
               )}
             </p>

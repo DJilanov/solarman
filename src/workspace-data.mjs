@@ -3,6 +3,8 @@ import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import { historyEvidence } from "./command-history.mjs";
 
 const EXPORT_SECTIONS = {
+  outagePreparations: "SELECT id,account_id,device,binding,mapping,target_soc,state,revision::text,test,attended_until,baseline,proof,approved_at,command_id,command_epoch::text,last_verified_at,last_error,created_at,updated_at,ended_at FROM outage_preparations WHERE tenant_id=$1 ORDER BY created_at,id",
+  outageWrites: "SELECT id,preparation_id,execution_id,revision::text,phase,address,register_values,status,created_at,acknowledged_at,verified_at,reconciled_at FROM outage_write_intents WHERE tenant_id=$1 ORDER BY created_at,id",
   workspace:
     "SELECT id,name,created_at,lifecycle,lifecycle_revision::text,lifecycle_changed_at,lifecycle_message FROM tenants WHERE id=$1",
   members:

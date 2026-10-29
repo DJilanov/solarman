@@ -17,6 +17,8 @@ export function WriteHistory({
 }): ReactNode {
   const location = useLocation();
   const operations: Record<WriteSummary["operation"], string> = {
+    outage_apply: "Outage preparation",
+    outage_restore: "Restore normal operation",
     enable: "Enable scheduled charging",
     disable: "Disable scheduled charging",
     window: "Update charging window",

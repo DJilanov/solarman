@@ -97,3 +97,7 @@ Pause the workspace or stop its controller before changing the same flags manual
 Read flags with `010300CE0002A5F4`; the known disabled reply is `010304000000093A35`. The software normally performs a fresh read/modify/write so unrelated flag bits are preserved; the exact manual command above assumes the diagnosed flags.
 
 The legacy single-device CLI remains available through `npm run inspect`, `npm run start:worker` and `npm run disable`, using the provider environment variables. It is separate from tenant scheduling and must not run alongside this dashboard against the same device. `inspect` never writes, even when the environment enables writes.
+
+## Persistent outage preparation
+
+The homeowner reserve panel is separate from the ordinary 50% home policy and expiring app top-ups. **Prepare for an outage** selects a 50–100% grid target and uses native Maintain/backup mode to hold all stored energy until **Return to normal**. It does not expire at target, midnight or a process restart. Solar can still charge to 100%. A separate attended charge/stop/hold/restore test is required for this installed firmware. See [outage preparation](outage-preparation.md) for the settings, verification and recovery contract; its native persistent hold is intentionally excluded from the ordinary error/shutdown cleanup described above.

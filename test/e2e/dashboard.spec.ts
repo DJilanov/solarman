@@ -21,6 +21,7 @@ import type {
   CommissioningData,
   NotificationSettingsData,
   NotificationDelivery,
+  OutageData,
 } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
@@ -94,168 +95,234 @@ async function homeConsoleFixture(page: Page): Promise<OverviewData> {
   return data;
 }
 
-test("Home offers a reviewed grid charging request and keeps confirmation distinct from charging", async ({
+async function outageConsoleFixture(
+  page: Page,
+): Promise<{ overview: OverviewData; outage: OutageData }> {
+  const overview = await homeConsoleFixture(page);
+  const outage: OutageData = {
+    supported: true,
+    minTarget: 50,
+    maxTarget: 100,
+    acChargeKw: 2,
+    solarTargetSoc: 100,
+    canPrepare: true,
+    canTest: false,
+    canRestore: false,
+    capabilityApproved: true,
+    preparation: null,
+  };
+  await page.route("**/api/outage", (route) => route.fulfill({ json: outage }));
+  return { overview, outage };
+}
+
+test("outage target slider needs review and explicit confirmation before sending the selected percentage", async ({
   page,
 }) => {
-  await homeConsoleFixture(page);
-  const actions: string[] = [];
+  const { outage } = await outageConsoleFixture(page);
+  const submissions: unknown[] = [];
   const id = randomUUID();
-  await page.route("**/api/commands", async (route) => {
-    actions.push((route.request().postDataJSON() as { action: string }).action);
+  await page.route("**/api/outage/prepare", async (route) => {
+    submissions.push(route.request().postDataJSON());
+    expect(route.request().headers()["idempotency-key"]).toMatch(
+      /^[a-f0-9-]{36}$/,
+    );
+    outage.canPrepare = false;
+    outage.canRestore = true;
+    outage.preparation = {
+      id: randomUUID(),
+      state: "queued",
+      revision: "1",
+      targetSoc: 81,
+      normalTargetSoc: 50,
+      test: false,
+      attendedUntil: null,
+      lastVerifiedAt: null,
+      createdAt: new Date().toISOString(),
+      endedAt: null,
+      error: null,
+      proof: {},
+      approvedAt: null,
+      canApprove: false,
+    };
     await route.fulfill({
       status: 202,
-      json: { id, action: "topup", status: "queued" },
+      json: { id, action: "outage_prepare", status: "queued" },
     });
   });
   await page.route(`**/api/commands/${id}`, (route) =>
     route.fulfill({
       json: {
         id,
-        action: "topup",
+        action: "outage_prepare",
         status: "succeeded",
         message: "Device settings verified",
       },
     }),
   );
   await page
-    .getByRole("button", { name: "Charge from grid", exact: true })
+    .getByRole("link", { name: "Prepare for an outage", exact: true })
     .click();
-  const dialog = page.getByRole("dialog", {
-    name: "Charge from the grid",
-    exact: true,
-  });
-  await expect(dialog).toContainText("50%");
-  await expect(dialog).toContainText("Up to 2 kW");
-  await expect(dialog).toContainText("Solar can continue charging up to 100%");
   await expect(
-    dialog.getByRole("button", { name: "Start charging request", exact: true }),
-  ).toBeEnabled();
-  expect(actions).toEqual([]);
-  await page.keyboard.press("Escape");
-  await expect(dialog).not.toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Charge from grid", exact: true }),
-  ).toBeFocused();
+    page.getByRole("heading", { name: "Prepare for an outage", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "80%", exact: true }).click();
+  await page.getByRole("slider", { name: /Battery target/ }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("slider")).toHaveValue("81");
+  expect(submissions).toEqual([]);
   await page
-    .getByRole("button", { name: "Charge from grid", exact: true })
+    .getByRole("button", { name: "Review and save", exact: true })
     .click();
-  await dialog
-    .getByRole("button", { name: "Start charging request", exact: true })
+  await expect(
+    page.getByRole("region", { name: "Confirm battery control" }),
+  ).toContainText("Charge and reserve 81%?");
+  expect(submissions).toEqual([]);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Review and save", exact: true })
     .click();
-  await expect(dialog).not.toBeVisible();
-  await expect.poll(() => actions).toEqual(["topup"]);
-  await expect(page.locator(".toast")).toContainText("Request queued");
-  await expect(page.locator(".toast")).toContainText(
-    "Device settings verified",
-  );
+  await page
+    .getByRole("button", { name: "Confirm and apply", exact: true })
+    .click();
+  await expect
+    .poll(() => submissions)
+    .toEqual([{ targetSoc: 81, test: false }]);
+  await expect(
+    page.getByRole("heading", { name: "Preparation requested", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Device settings verified")).toBeVisible();
+  await expect(
+    page.getByText("Native backup mode supplies", { exact: false }),
+  ).toBeVisible();
 });
 
-test("Home charging explains completed reserve, stale readings, setup and recovery without sending commands", async ({
+test("saved outage reserve survives a reload and return to normal remains available with stale readings", async ({
   page,
 }) => {
-  const data = await homeConsoleFixture(page);
-  const baseline = structuredClone(data);
-  const actions: string[] = [];
-  page.on("request", (request) => {
-    if (
-      request.method() === "POST" &&
-      new URL(request.url()).pathname === "/api/commands"
-    )
-      actions.push("command");
-  });
-  for (const scenario of [
-    "satisfied",
-    "stale",
-    "offline",
-    "setup",
-    "recovery",
-    "unsupported",
-    "missing",
-  ] as const) {
-    Object.assign(data, structuredClone(baseline));
-    if (scenario === "satisfied" && data.latest) data.latest.soc = 80;
-    if (scenario === "stale" && data.latest)
-      data.latest.at = new Date(Date.now() - 86400000).toISOString();
-    if (scenario === "offline" && data.controller.telemetry)
-      data.controller.telemetry.deviceState = 0;
-    if (scenario === "setup") {
-      data.controller.writesEnabled = false;
-      data.controller.control.canStart = false;
-    }
-    if (scenario === "recovery")
-      data.controller.control.recovery.pending = true;
-    if (scenario === "unsupported") data.controller.profile = "monitoring-only";
-    if (scenario === "missing") data.latest = null;
-    await page.reload();
-    await page
-      .getByRole("button", { name: "Charge from grid", exact: true })
-      .click();
-    const dialog = page.getByRole("dialog");
-    const start = dialog.getByRole("button", { name: "Start charging request", exact: true });
-    if (scenario === "recovery") {
-      await expect(start).toHaveCount(0);
-      await expect(dialog.getByRole("button", { name: "Stop app top-ups", exact: true })).toBeEnabled();
-    } else await expect(start).toBeDisabled();
-    if (scenario === "satisfied")
-      await expect(dialog).toContainText(
-        "Solar can continue charging above this level",
-      );
-    if (scenario === "setup")
-      await expect(
-        dialog.getByRole("link", { name: "Continue setup", exact: true }),
-      ).toHaveAttribute("href", "/controls/setup");
-    if (scenario === "recovery")
-      await expect(
-        dialog.getByRole("link", { name: "Review recovery", exact: true }),
-      ).toHaveAttribute("href", "/controls/advanced");
-    if (
-      scenario === "stale" ||
-      scenario === "offline" ||
-      scenario === "missing"
-    )
-      await expect(
-        dialog.getByRole("button", {
-          name: "Refresh device readings",
-          exact: true,
-        }),
-      ).toBeVisible();
-    await page.keyboard.press("Escape");
-  }
-  expect(actions).toEqual([]);
-});
-
-test("active top-ups expose an honest stop action even when readings are stale", async ({
-  page,
-}) => {
-  const data = await homeConsoleFixture(page);
-  data.controller.manualTopup = true;
-  if (data.latest)
-    data.latest.at = new Date(Date.now() - 86400000).toISOString();
-  const actions: string[] = [];
-  await page.route("**/api/commands", async (route) => {
-    actions.push((route.request().postDataJSON() as { action: string }).action);
+  const { overview, outage } = await outageConsoleFixture(page);
+  if (overview.latest)
+    overview.latest.at = new Date(Date.now() - 86400000).toISOString();
+  outage.canPrepare = false;
+  outage.canRestore = true;
+  outage.preparation = {
+    id: randomUUID(),
+    state: "active",
+    revision: "7",
+    targetSoc: 90,
+    normalTargetSoc: 50,
+    test: false,
+    attendedUntil: null,
+    lastVerifiedAt: new Date(Date.now() - 86400000).toISOString(),
+    createdAt: new Date().toISOString(),
+    endedAt: null,
+    error: null,
+    proof: {},
+    approvedAt: null,
+    canApprove: false,
+  };
+  const submissions: unknown[] = [];
+  await page.route("**/api/outage/restore", async (route) => {
+    submissions.push(route.request().postDataJSON());
+    outage.preparation!.state = "restored";
+    outage.canRestore = false;
     await route.fulfill({
       status: 202,
       json: {
         id: randomUUID(),
-        action: "stop",
+        action: "outage_restore",
         status: "succeeded",
-        message: "Automation paused",
+        message: "Normal settings restored",
       },
     });
   });
+  await page.goto("/controls/outage");
   await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "Outage reserve is set" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Live readings are unavailable or old.", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Return to normal", exact: true }),
+  ).toBeEnabled();
   await page
-    .getByRole("button", { name: "Manage app top-up", exact: true })
+    .getByRole("button", { name: "Return to normal", exact: true })
     .click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog).toContainText(
-    "Solar and native reserve charging continue",
-  );
-  await dialog
-    .getByRole("button", { name: "Stop app top-ups", exact: true })
+  expect(submissions).toEqual([]);
+  await page
+    .getByRole("button", { name: "Restore normal settings", exact: true })
     .click();
-  await expect.poll(() => actions).toEqual(["stop"]);
+  await expect.poll(() => submissions).toEqual([{ revision: "7" }]);
+  await expect(
+    page.getByText("Normal settings are restored:", { exact: false }),
+  ).toBeVisible();
+});
+
+test("outage first-use gate explains supervised validation and never sends a command from navigation", async ({
+  page,
+}) => {
+  const { outage } = await outageConsoleFixture(page);
+  outage.canPrepare = false;
+  outage.capabilityApproved = false;
+  const submissions: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST") submissions.push(request.url());
+  });
+  await page.goto("/controls/outage");
+  await expect(
+    page.getByRole("button", { name: "Review and save", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("link", { name: "Open attended controls", exact: true }),
+  ).toHaveAttribute("href", "/controls/commissioning");
+  outage.canTest = true;
+  await page.reload();
+  await page.getByRole("slider").focus();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("button", { name: "Review supervised test", exact: true })).toBeDisabled();
+  await page.keyboard.press("ArrowRight");
+  await expect(
+    page.getByRole("button", { name: "Review supervised test", exact: true }),
+  ).toBeEnabled();
+  await page
+    .getByRole("button", { name: "Review supervised test", exact: true })
+    .click();
+  await expect(
+    page.getByRole("region", { name: "Confirm battery control" }),
+  ).toContainText("attended session");
+  expect(submissions).toEqual([]);
+});
+
+test("an uncertain outage response is not automatically retried or reported as applied", async ({
+  page,
+}) => {
+  await outageConsoleFixture(page);
+  let attempts = 0;
+  await page.route("**/api/outage/prepare", async (route) => {
+    attempts++;
+    await route.abort("failed");
+  });
+  await page.goto("/controls/outage");
+  await page
+    .getByRole("button", { name: "Review and save", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Confirm and apply", exact: true })
+    .click();
+  await expect(
+    page.getByText("The request may have reached the inverter.", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Review and save", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("heading", { name: "Outage reserve is set" }),
+  ).toHaveCount(0);
+  expect(attempts).toBe(1);
 });
 
 test("the homeowner console has four navigation items and usable Bulgarian phone layouts", async ({
@@ -277,6 +344,7 @@ test("the homeowner console has four navigation items and usable Bulgarian phone
         "/analytics",
         "/settings",
         "/controls/setup",
+        "/controls/outage",
       ]) {
         await page.goto(path);
         await expect(page.locator("h1")).toBeVisible();
@@ -293,11 +361,11 @@ test("the homeowner console has four navigation items and usable Bulgarian phone
   await page.goto("/");
   await page.getByLabel("Language").selectOption("bg");
   await page
-    .getByRole("button", { name: "Зареди от мрежата", exact: true })
+    .getByRole("link", { name: "Подготовка за спиране на тока", exact: true })
     .click();
-  await expect(page.getByRole("dialog")).toContainText("До 2 kW");
+  await expect(page.getByRole("slider")).toBeVisible();
   await page.screenshot({ path: "test-results/home-charge-mobile-bg.png" });
-  await page.keyboard.press("Escape");
+  await page.goto("/");
   await page.screenshot({
     path: "test-results/home-console-mobile-bg.png",
     fullPage: true,

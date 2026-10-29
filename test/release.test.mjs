@@ -63,3 +63,8 @@ test("release verification rejects a stale served page or incorrect health", () 
 test("matching process files, health and frontend pass release verification", () => {
   assert.doesNotThrow(() => verifyRelease(expected, running));
 });
+
+test('rollback cannot discard persistent outage preparation state', () => {
+  assert.throws(() => assertRollbackCompatibility(['023_outage_preparation.sql'], []), /supports outage preparation/);
+  assert.doesNotThrow(() => assertRollbackCompatibility(['023_outage_preparation.sql'], ['023_outage_preparation.sql']));
+});

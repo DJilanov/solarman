@@ -14,6 +14,8 @@ import {
   verifyStoredNotificationSecrets,
 } from "./notification-secrets.mjs";
 import { quarantineNotifications } from "./notification-lifecycle.mjs";
+import { quarantineOutage } from "./outage-lifecycle.mjs";
+import { OUTAGE_MAPPING } from "./outage-policy.mjs";
 import { hashPassword, validPasswordHash } from "./auth.mjs";
 import {
   verifyStoredCredentials,
@@ -161,6 +163,40 @@ async function createAuthenticationFixture(
     timezone: "Europe/Sofia",
     firmware: { protocol: "2.02", dsp: "1.57", hmi: "1.45" },
   });
+  const preparation = randomUUID(),
+    outageJob = randomUUID();
+  await pool.query(
+    "INSERT INTO command_executions(id,tenant_id,account_id,device,actor,action,status) VALUES($1,$2,$3,$4,'Isolated outage quarantine canary','outage_prepare','running')",
+    [outageJob, tenant, account, device],
+  );
+  await pool.query(
+    "INSERT INTO outage_preparations(id,tenant_id,account_id,device,binding,mapping,target_soc,state,command_id,command_epoch,baseline) VALUES($1,$2,$3,$4,$5,$6,90,'active',$7,1,'{}')",
+    [
+      preparation,
+      tenant,
+      account,
+      device,
+      observationBinding(identity),
+      OUTAGE_MAPPING,
+      outageJob,
+    ],
+  );
+  await pool.query(
+    "INSERT INTO outage_write_intents(id,tenant_id,preparation_id,execution_id,revision,phase,address,register_values) VALUES($1,$2,$3,$4,1,'apply',2500,'[3]')",
+    [randomUUID(), tenant, preparation, outageJob],
+  );
+  await pool.query(
+    "INSERT INTO outage_preparations(id,tenant_id,account_id,device,binding,mapping,target_soc,state,test,attended_until,command_epoch,baseline,approved_at,approved_by) VALUES($1,$2,$3,$4,$5,$6,90,'restored',true,clock_timestamp(),1,'{}',clock_timestamp(),$7)",
+    [
+      randomUUID(),
+      tenant,
+      account,
+      device,
+      observationBinding(identity),
+      OUTAGE_MAPPING,
+      user,
+    ],
+  );
   await pool.query(
     "INSERT INTO policy_observation_runs(id,tenant_id,account_id,device,binding,identity,verification,created_by,cursor_id,progress) VALUES($1,$2,$3,$4,$5,$6,$7,$8,0,$9)",
     [
@@ -828,6 +864,37 @@ export async function restoreDrill(header, dump) {
       encryptionKey(header.credentialKey),
       "approved",
     );
+    assert.ok(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM outage_preparations WHERE state='active'",
+        )
+      ).rows[0].n >= 2,
+    );
+    assert.ok(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM outage_preparations WHERE approved_at IS NOT NULL",
+        )
+      ).rows[0].n >= 2,
+    );
+    await quarantineOutage(pool, null, "restore");
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM outage_preparations WHERE approved_at IS NOT NULL OR state IN('queued','applying','active','restoring','recovery-required')",
+        )
+      ).rows[0].n,
+      0,
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM outage_write_intents WHERE status IN('prepared','acknowledged')",
+        )
+      ).rows[0].n,
+      0,
+    );
     for (const state of ["attending", "approved"])
       assert.ok(
         (
@@ -977,6 +1044,7 @@ export async function restoreDrill(header, dump) {
       observationsQuarantined: true,
       commissioningQuarantined: true,
       notificationsQuarantined: true,
+      outageQuarantined: true,
       notificationAccessAttempts: 0,
       recoveryQuarantined: true,
       schemaUpgradeVerified: true,

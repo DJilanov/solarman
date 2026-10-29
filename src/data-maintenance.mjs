@@ -1,6 +1,8 @@
 const BATCH = 500;
 
 const PRUNE = {
+  outageWrites: `DELETE FROM outage_write_intents WHERE id IN(SELECT w.id FROM outage_write_intents w JOIN outage_preparations p ON p.tenant_id=w.tenant_id AND p.id=w.preparation_id WHERE w.tenant_id=$1 AND p.state IN('restored','failed') AND p.approved_at IS NULL AND p.ended_at<clock_timestamp()-$2*interval '1 day' AND (w.status='verified' OR w.reconciled_at IS NOT NULL) ORDER BY w.created_at,w.id LIMIT ${BATCH})`,
+  outagePreparations: `DELETE FROM outage_preparations WHERE id IN(SELECT p.id FROM outage_preparations p WHERE p.tenant_id=$1 AND p.state IN('restored','failed') AND p.approved_at IS NULL AND p.ended_at<clock_timestamp()-$2*interval '1 day' AND NOT EXISTS(SELECT 1 FROM outage_write_intents w WHERE w.tenant_id=p.tenant_id AND w.preparation_id=p.id) ORDER BY p.ended_at,p.id LIMIT ${BATCH})`,
   notificationAttempts: `DELETE FROM notification_attempts WHERE id IN(SELECT a.id FROM notification_attempts a JOIN notification_outbox j ON j.id=a.job_id WHERE a.tenant_id=$1 AND j.state IN('delivered','failed','unconfirmed','cancelled') AND j.completed_at<clock_timestamp()-$2*interval '1 day' ORDER BY a.started_at,a.id LIMIT ${BATCH})`,
   notifications: `DELETE FROM notification_outbox WHERE id IN(SELECT j.id FROM notification_outbox j WHERE j.tenant_id=$1 AND j.state IN('delivered','failed','unconfirmed','cancelled') AND j.completed_at<clock_timestamp()-$2*interval '1 day' AND NOT EXISTS(SELECT 1 FROM notification_attempts a WHERE a.job_id=j.id) ORDER BY j.completed_at,j.id LIMIT ${BATCH})`,
   notificationChanges: `DELETE FROM notification_events WHERE id IN(SELECT id FROM notification_events WHERE tenant_id=$1 AND created_at<clock_timestamp()-$2*interval '1 day' ORDER BY created_at,id LIMIT ${BATCH})`,
@@ -16,6 +18,8 @@ const PRUNE = {
     AND c.completed_at<clock_timestamp()-$2*interval '1 day'
     AND NOT EXISTS (SELECT 1 FROM device_control_state d WHERE d.tenant_id=$1 AND d.state<>'clear')
     AND NOT EXISTS (SELECT 1 FROM inverter_write_intents w WHERE w.tenant_id=$1 AND w.execution_id=c.id)
+    AND NOT EXISTS (SELECT 1 FROM outage_write_intents w WHERE w.tenant_id=$1 AND w.execution_id=c.id)
+    AND NOT EXISTS (SELECT 1 FROM outage_preparations p WHERE p.tenant_id=$1 AND p.command_id=c.id)
     ORDER BY c.completed_at,c.id LIMIT ${BATCH} FOR UPDATE OF c SKIP LOCKED),
     receipts AS (INSERT INTO command_receipts(tenant_id,user_id,idempotency_key,action,completed_at)
       SELECT tenant_id,user_id,idempotency_key,action,completed_at FROM candidates WHERE user_id IS NOT NULL AND idempotency_key IS NOT NULL

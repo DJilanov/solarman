@@ -193,7 +193,8 @@ export interface BackupStatus {
 export interface WriteSummary {
   id: string;
   executionId: string | null;
-  operation: "enable" | "disable" | "window";
+  operation:
+    "enable" | "disable" | "window" | "outage_apply" | "outage_restore";
   status: "prepared" | "acknowledged" | "verified" | "uncertain";
   inFlight: boolean;
   createdAt: string;
@@ -212,6 +213,12 @@ export interface FirmwareIdentity {
   hmi: string | null;
 }
 export interface ControllerStatus {
+  outage?: {
+    active: boolean;
+    state: OutagePreparation["state"];
+    targetSoc: number;
+    test: boolean;
+  } | null;
   capacity?: ApiCapacity | null;
   nextPollAt?: string | null;
   apiConfigured: boolean;
@@ -370,6 +377,48 @@ export interface Command {
   message: string | null;
   created_at: string;
   completed_at: string | null;
+}
+export interface OutagePreparation {
+  id: string;
+  state:
+    | "queued"
+    | "applying"
+    | "active"
+    | "restoring"
+    | "recovery-required"
+    | "restored"
+    | "failed"
+    | "quarantined";
+  revision: string;
+  targetSoc: number;
+  normalTargetSoc: number;
+  test: boolean;
+  attendedUntil: string | null;
+  lastVerifiedAt: string | null;
+  createdAt: string;
+  endedAt: string | null;
+  error: string | null;
+  proof: {
+    gridChargingObservedAt?: string;
+    targetHoldObservedAt?: string;
+    holdObservedAt?: string;
+    backupUseObservedAt?: string;
+    restoredAt?: string;
+  };
+  approvedAt: string | null;
+  canApprove: boolean;
+}
+export interface OutageData {
+  supported: boolean;
+  minTarget: number;
+  maxTarget: number;
+  acChargeKw: number;
+  solarTargetSoc: number;
+  canPrepare: boolean;
+  canTest: boolean;
+  canRestore: boolean;
+  capabilityApproved: boolean;
+  preparation: OutagePreparation | null;
 }
 export interface WriteHistoryData {
   writes: WriteRecord[];

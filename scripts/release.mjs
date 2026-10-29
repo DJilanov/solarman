@@ -3,6 +3,13 @@ import path from "node:path";
 /** @param {string[]} applied @param {string[]} supported @returns {void} */
 export function assertRollbackCompatibility(applied, supported) {
   if (
+    applied.includes("023_outage_preparation.sql") &&
+    !supported.includes("023_outage_preparation.sql")
+  )
+    throw new Error(
+      "Rollback requires a release that supports outage preparation storage; restore a pre-upgrade backup otherwise",
+    );
+  if (
     applied.includes("022_web_push.sql") &&
     !supported.includes("022_web_push.sql")
   )

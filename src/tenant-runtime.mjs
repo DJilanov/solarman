@@ -5,6 +5,7 @@ import { BatteryController, decide } from "./controller.mjs";
 import { decryptCredentials } from "./credentials.mjs";
 import { saveMeasurement } from "./database.mjs";
 import { WorkQueue } from "./work-queue.mjs";
+import { OutageControl } from "./outage-control.mjs";
 import {
   controlReadiness,
   supportedControlFirmware,
@@ -90,6 +91,7 @@ export class TenantRuntime {
     this.ratedPowerChecked = false;
     this.profileVerified = false;
     this.profileError = null;
+    this.outage = new OutageControl(this);
     try {
       if (!account)
         throw new Error("Link your SOLARMAN account to get started");
@@ -133,7 +135,18 @@ export class TenantRuntime {
         account.profile === "bluesun-bse20kh3";
       this.appKey = apiAppKey(config.appId);
       this.client = new SolarmanClient(config, {
-        authorizeCommand: (command) => this.journal.authorizeDispatch(command),
+        authorizeCommand: async (command) => {
+          if (this.outage.ownsDispatch)
+            return this.outage.authorizeDispatch(command);
+          if (
+            this.outage.active &&
+            ![3, 4].includes(Buffer.from(command, "hex")[1])
+          )
+            throw new Error(
+              "Return to normal before changing other inverter controls",
+            );
+          return this.journal.authorizeDispatch(command);
+        },
         callbackPrefix: `/solarman/callback/${account.id}/`,
         beforeRequest: () => hub.reserveRequest(),
         onRequest: async (kind, purpose) => {
@@ -212,6 +225,7 @@ export class TenantRuntime {
     this.topupExpiresAt = result.rows[0].topup_expires_at;
     this.lifecycle = result.rows[0].lifecycle;
     this.commissioning = await currentCommissioning(this.pool, this.tenantId);
+    await this.outage.load(!this.initialized);
     if (
       this.controlEnabled &&
       !this.commissioningPermitted("approved") &&
@@ -356,7 +370,7 @@ export class TenantRuntime {
   /** @param {number} [now] @returns {ReturnType<typeof controlReadiness>} */
   readiness(now = Date.now()) {
     const clock = this.clockEvidence(now);
-    return controlReadiness({
+    const result = controlReadiness({
       tenantActive: this.lifecycle === "active",
       tenantClosing: this.lifecycle === "offboarding",
       connected: Boolean(this.client && this.ready),
@@ -376,6 +390,23 @@ export class TenantRuntime {
       clockFresh: Boolean(clock?.fresh),
       stopping: this.stopping || this.hub.stopping,
     });
+    if (this.outage.active)
+      return {
+        ...result,
+        canStart: false,
+        canEnable: false,
+        canVerify: false,
+        canCommission: false,
+        reasons: [
+          {
+            code: "outage",
+            message:
+              "Outage protection is active; return to normal before using other controls",
+          },
+          ...result.reasons,
+        ],
+      };
+    return result;
   }
 
   status() {
@@ -450,6 +481,14 @@ export class TenantRuntime {
         acChargeKw: 2,
         solarPowerLimit: "native",
       },
+      outage: this.outage.row
+        ? {
+            active: this.outage.active,
+            state: this.outage.row.state,
+            targetSoc: this.outage.row.target_soc,
+            test: this.outage.row.test,
+          }
+        : null,
     };
   }
 
@@ -460,7 +499,7 @@ export class TenantRuntime {
       this.monitoringAdmitted &&
       this.controlEnabled &&
       this.verifiedDevice() &&
-      (!this.paused || this.manualTopup),
+      (!this.paused || this.manualTopup || this.outage.active),
     );
   }
 
@@ -497,6 +536,12 @@ export class TenantRuntime {
 
   /** @returns {Promise<boolean>} */
   async clearScheduledPermission() {
+    await this.outage.load();
+    if (this.outage.active) {
+      if (this.outage.row.test && !this.commissioningPermitted("attended"))
+        return this.outage.stop();
+      return false;
+    }
     await this.journal.requestCleanup({
       pause: this.paused && !this.manualTopup,
     });
@@ -567,14 +612,16 @@ export class TenantRuntime {
   }
 
   /** @returns {Promise<import('./telemetry.mjs').ProviderReading>} */
-  async readProvider() {
+  async readProvider(
+    purpose = this.lifecycle === "offboarding" ? "recovery" : "routine",
+  ) {
     this.clock = null;
     const data = await this.client.api(
       "/device/v1.0/currentData",
       {
         deviceSn: this.device,
       },
-      { purpose: this.lifecycle === "offboarding" ? "recovery" : "routine" },
+      { purpose },
     );
     const reading = parseProviderReading(data, this.device);
     await this.health.upload(reading);
@@ -673,7 +720,8 @@ export class TenantRuntime {
       return { decision: { charge: false, reason: "monitor_only" } };
     }
     const mapped = await this.mapProvider(reading);
-    this.supervision.observe(mapped.snapshot, reading.collectedAt);
+    if (!this.outage.active)
+      this.supervision.observe(mapped.snapshot, reading.collectedAt);
     const inserted = await saveMeasurement(
       this.pool,
       this.tenantId,
@@ -931,8 +979,65 @@ export class TenantRuntime {
     );
   }
 
+  async collectOutage(inspectOnly = false) {
+    const reading = await this.readProvider();
+    await this.mapProvider(reading);
+    const due =
+      inspectOnly ||
+      this.outage.row.test ||
+      !this.outage.row.last_verified_at ||
+      Date.now() - new Date(this.outage.row.last_verified_at).getTime() >=
+        this.supervision.options.auditMs;
+    if (
+      !due ||
+      !this.controlEnabled ||
+      reading.deviceState !== 1 ||
+      !matchingControlFirmware(
+        this.outage.row.baseline?.firmware,
+        this.firmware,
+      )
+    )
+      return this.collectProvider(reading, {
+        charge: false,
+        reason: "outage_protected",
+      });
+    const snapshot = await this.inspector.snapshot(false);
+    const settings = await this.inspector.read(3, 3005, 32);
+    const verified = await this.outage.observe(snapshot, settings);
+    this.profileVerified = verified;
+    this.profileError = verified
+      ? null
+      : "Outage settings need review; the app will not overwrite outside changes";
+    await saveMeasurement(
+      this.pool,
+      this.tenantId,
+      this.account.id,
+      this.device,
+      snapshot,
+      { samplingSeconds: this.pollMs / 1000, controlBinding: null },
+    );
+    this.telemetry = {
+      source: "register",
+      collectedAt: new Date().toISOString(),
+      receivedAt: new Date().toISOString(),
+      deviceState: 1,
+      clock: this.clock,
+    };
+    this.lastSuccessAt = new Date().toISOString();
+    this.supervision.checked("outage_protected");
+    return {
+      snapshot,
+      decision: {
+        charge: false,
+        reason: verified ? "outage_protected" : "outage_unconfirmed",
+      },
+    };
+  }
+
   async collectReadings(inspectOnly = false, forceControl = false) {
     if (!this.executionId) this.events = [];
+    await this.outage.load();
+    if (this.outage.active) return this.collectOutage(inspectOnly);
     if (!inspectOnly && (this.cleanupRequired || this.journal.pending))
       await this.clearScheduledPermission();
     if (
@@ -1066,6 +1171,7 @@ export class TenantRuntime {
         [id, this.account.id, this.device],
       );
       await this.initialize();
+      await this.outage.recover();
       if (this.appKey && this.client)
         await this.hub.budget.refreshBalance(this.appKey, this.client);
       if (
@@ -1200,6 +1306,18 @@ export class TenantRuntime {
   }
 
   async submit(action, user, key) {
+    await this.outage.load();
+    if (
+      this.outage.active &&
+      ![
+        "stop",
+        "pause",
+        "disable_controls",
+        "refresh",
+        "retry_capacity",
+      ].includes(action)
+    )
+      throw new Error("Return to normal before using other inverter controls");
     if (user.tenant_id !== this.tenantId)
       throw new Error("Workspace does not match the signed-in account");
     if (this.stopping || this.hub.stopping)
@@ -1377,6 +1495,19 @@ export class TenantRuntime {
           }
           this.events = [];
           if (
+            this.outage.active &&
+            ![
+              "stop",
+              "pause",
+              "disable_controls",
+              "refresh",
+              "retry_capacity",
+            ].includes(action)
+          ) {
+            await this.cancelStart(job.id);
+            return;
+          }
+          if (
             [
               "topup",
               "resume",
@@ -1460,6 +1591,7 @@ export class TenantRuntime {
             message =
               "Scheduled permission recovery verified; automation remains paused";
           } else if (["stop", "pause", "disable_controls"].includes(action)) {
+            if (this.outage.active) await this.outage.stop();
             await this.q(
               "UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
             );
@@ -1558,6 +1690,7 @@ export class TenantRuntime {
 
   /** @returns {string|null} */
   controlBinding() {
+    if (this.outage.active) return null;
     return observationBinding({
       accountId: this.account?.id,
       device: this.device,
@@ -1595,6 +1728,10 @@ export function reasonLabel(reason) {
     {
       reserve_reached:
         "Battery is at or above the 50% reserve; no scheduled grid top-up is requested",
+      outage_protected:
+        "Outage preparation is active; native backup mode keeps the battery reserved",
+      outage_unconfirmed:
+        "Outage settings could not be confirmed; review outage preparation",
       below_reserve:
         "Battery is below 50%; grid top-up is eligible when hardware writes are enabled",
       solar_can_charge:
