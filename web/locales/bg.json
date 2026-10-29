@@ -983,7 +983,6 @@
   "Includes stored readings, provider parameters, command and write history, cleanup state and workspace settings. Browser security and recovery metadata include only your own account. Passwords, tokens and encrypted credentials are excluded.": "Включва съхранените показания, параметрите от доставчика, историята на командите и промените, състоянието на възстановяване и настройките. Данните за сигурност и възстановяване включват само вашия акаунт. Пароли, токени и криптирани данни за достъп не се включват.",
   "The archive uses NDJSON with section counts and a completion checksum. Large archives are streamed from a consistent database snapshot. No export file is stored on the server.": "Архивът е във формат NDJSON с брой записи по раздели и контролна сума за завършеност. Големите архиви се предават поточно от съгласувано състояние на базата. Файлът не се съхранява на сървъра.",
   "Dashboard password for the archive": "Парола за таблото за изтегляне на архив",
-  "Workspace archive downloaded.": "Архивът на пространството е изтеглен.",
   "Preparing archive…": "Подготовка на архив…",
   "Download workspace archive": "Изтегли архив на пространството",
   "The retention change is unconfirmed. Reload the saved policy before trying again.": "Промяната на съхранението не е потвърдена. Заредете запазените правила, преди да опитате отново.",
@@ -1426,5 +1425,7 @@
   "Clipboard access is unavailable. Download the support request instead.": "Няма достъп до клипборда. Изтеглете запитването като файл.",
   "Identify the supported setting for a 5 kW solar-to-battery charging cap. Explain whether it limits solar only or total battery charging, and whether it is enforced in SelfUse mode with a lithium BMS.": "Посочете поддържаната настройка за ограничение от 5 кВт на соларното зареждане на батерията. Обяснете дали тя ограничава само соларното или общото зареждане и дали се прилага в режим SelfUse с литиева BMS.",
   "Saved holding-register words": "Запазени стойности на регистрите",
-  "These are individual 16-bit words from the saved diagnostic run. Their source-power units, scaling and enforcement still need confirmation; missing words are not inferred from interpreted settings.": "Това са отделни 16-битови стойности от запазената диагностична проверка. Мерните единици за мощността по източник, мащабът и прилагането на ограниченията още изискват потвърждение; липсващите стойности не се извеждат от интерпретираните настройки."
+  "These are individual 16-bit words from the saved diagnostic run. Their source-power units, scaling and enforcement still need confirmation; missing words are not inferred from interpreted settings.": "Това са отделни 16-битови стойности от запазената диагностична проверка. Мерните единици за мощността по източник, мащабът и прилагането на ограниченията още изискват потвърждение; липсващите стойности не се извеждат от интерпретираните настройки.",
+  "Archive verification failed. Download it again.": "Проверката на архива е неуспешна. Изтеглете го отново.",
+  "Archive verified. Check your browser's downloads.": "Архивът е проверен. Проверете изтеглянията в браузъра."
 }

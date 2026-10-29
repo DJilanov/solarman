@@ -32,6 +32,53 @@ import {
   UUID,
 } from "./backup-io.mjs";
 
+/** @param {import('pg').Pool} pool @param {import('./erasure-guard.mjs').ErasureReceipt[]} records @returns {Promise<{receipts:number,restoredTargets:number}>} */
+export async function verifyRestoredErasureFences(pool, records) {
+  if (!records.length) return { receipts: 0, restoredTargets: 0 };
+  /** @type {import('pg').QueryResult<{present:boolean,fenced:boolean|null,sessions_revoked:boolean,recovery_revoked:boolean}>} */
+  const result = await pool.query(
+    `SELECT t.id IS NOT NULL AS present,
+      CASE
+        WHEN t.id IS NULL THEN true
+        WHEN t.lifecycle='removed' THEN
+          NOT EXISTS(SELECT 1 FROM users WHERE tenant_id=t.id)
+          AND NOT EXISTS(SELECT 1 FROM solarman_accounts WHERE tenant_id=t.id)
+          AND c.tenant_id IS NULL
+        ELSE t.lifecycle='offboarding' AND o.id=r.id
+          AND o.erasure_authorized_at=r."authorizedAt"
+          AND c.tenant_id IS NOT NULL AND c.paused AND NOT c.control_enabled
+          AND NOT c.manual_topup AND c.topup_expires_at IS NULL AND c.verification IS NULL
+      END AS fenced,
+      NOT EXISTS(
+        SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id
+        WHERE u.tenant_id=r."tenantId"
+      ) AS sessions_revoked,
+      NOT EXISTS(
+        SELECT 1 FROM account_recovery_tokens k JOIN users u ON u.id=k.user_id
+        WHERE u.tenant_id=r."tenantId" AND k.used_at IS NULL AND k.revoked_at IS NULL
+      ) AS recovery_revoked
+    FROM jsonb_to_recordset($1::jsonb) AS r(id uuid,"tenantId" uuid,"authorizedAt" timestamptz)
+    LEFT JOIN tenants t ON t.id=r."tenantId"
+    LEFT JOIN workspace_offboarding o ON o.tenant_id=t.id
+    LEFT JOIN controller_state c ON c.tenant_id=t.id`,
+    [JSON.stringify(records)],
+  );
+  if (
+    result.rows.length !== records.length ||
+    result.rows.some(
+      (row) =>
+        row.fenced !== true ||
+        row.sessions_revoked !== true ||
+        row.recovery_revoked !== true,
+    )
+  )
+    throw new BackupError("restore_erasure_fence_unverified");
+  return {
+    receipts: records.length,
+    restoredTargets: result.rows.filter((row) => row.present).length,
+  };
+}
+
 /** @param {object} header @param {Buffer} dump @returns {void} */
 export function validateDrill(header, dump) {
   if (
@@ -600,9 +647,16 @@ export async function restoreDrill(header, dump) {
     ).rows
       .map((row) => row.version)
       .filter((version) => !header.contents.migrations.includes(version));
-    stage = "quarantine";
+    stage = "erasure_fences";
     const closure = new WorkspaceOffboarding(pool, {}, { guardFile: null });
     await closure.replay(header.erasureReceipts ?? []);
+    const erasureProof = await verifyRestoredErasureFences(
+      pool,
+      header.erasureReceipts ?? [],
+    );
+    report.erasureReceiptsVerified = erasureProof.receipts;
+    report.restoredErasureTargets = erasureProof.restoredTargets;
+    stage = "quarantine";
     const erasureTenant = randomUUID(),
       erasureUser = randomUUID();
     const erased = {

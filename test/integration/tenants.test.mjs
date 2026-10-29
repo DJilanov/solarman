@@ -20,6 +20,7 @@ import { TenantRuntime } from "../../src/tenant-runtime.mjs";
 import { decide } from "../../src/controller.mjs";
 import { providerPayload } from "../fixtures/provider.mjs";
 import { TenantJourneyCloud } from "../fixtures/tenant-journey.mjs";
+import { verifyRestoredErasureFences } from "../../src/restore-drill.mjs";
 import { ApiBudget, ApiBudgetError, apiAppKey } from "../../src/api-budget.mjs";
 import { ApiCapacityError } from "../../src/api-capacity.mjs";
 import { quarantineControlsForRollback } from "../../src/control-quarantine.mjs";
@@ -8737,5 +8738,61 @@ test("an invited tenant completes the connected home journey through attended co
     hub.offboarding.requireRoot = previousRoot;
     hub.notifications.platformAt = previousPlatformAt;
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("restore verification checks every actual erasure receipt and rejects missing or mismatched fences", async () => {
+  const f = await erasureFixture();
+  try {
+    await new AccountRecovery(pool).createKey(
+      {
+        id: f.target.user,
+        token_hash: tokenHash(f.member.cookie.split("=")[1]),
+      },
+      password,
+    );
+    const receipt = {
+      version: 1,
+      id: randomUUID(),
+      tenantId: f.target.tenant,
+      authorizedAt: new Date().toISOString(),
+    };
+    await assert.rejects(
+      verifyRestoredErasureFences(pool, [receipt]),
+      /restore_erasure_fence_unverified/,
+    );
+    await f.closure.replay([receipt]);
+    assert.deepEqual(await verifyRestoredErasureFences(pool, [receipt]), {
+      receipts: 1,
+      restoredTargets: 1,
+    });
+    assert.equal(
+      (await fetchApi("/auth/session", { auth: f.member })).status,
+      401,
+    );
+    await assert.rejects(
+      verifyRestoredErasureFences(pool, [{ ...receipt, id: randomUUID() }]),
+      /restore_erasure_fence_unverified/,
+    );
+    await assert.rejects(
+      verifyRestoredErasureFences(pool, [
+        { ...receipt, authorizedAt: new Date(Date.now() + 1000).toISOString() },
+      ]),
+      /restore_erasure_fence_unverified/,
+    );
+    const absent = { ...receipt, id: randomUUID(), tenantId: randomUUID() };
+    assert.deepEqual(
+      await verifyRestoredErasureFences(pool, [receipt, absent]),
+      {
+        receipts: 2,
+        restoredTargets: 1,
+      },
+    );
+    assert.deepEqual(await verifyRestoredErasureFences(pool, []), {
+      receipts: 0,
+      restoredTargets: 0,
+    });
+  } finally {
+    await f.dispose();
   }
 });

@@ -49,3 +49,5 @@ The transport forwards only the application's loopback origin, rejects redirects
 This is a connected software acceptance test. It does not prove the firmware's independent 2 kW grid / 5 kW solar enforcement, physical solar priority, native battery/BMS behavior, complete day/night operation, a live outside-host outage, actual Telegram delivery, licensed hosted-user allowance or a deployed browser journey for a new customer.
 
 The exact firmware contract, attended hardware acceptance, chosen real destination, separate monitor host and operator handover remain required in [finish-plan.md](finish-plan.md). The existing browser suite covers EN/BG and phone states for the individual screens; this test adds the continuous backend journey without weakening those remaining requirements.
+
+The separate [deployed customer audit](deployment-acceptance.md) records native Chrome onboarding, actual provider discovery, duplicate-device protection, translated pages and live closure/removal. A different customer's bound inverter and approved physical operation still require their own acceptance.

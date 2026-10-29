@@ -25,6 +25,42 @@ function draftOf(policy: RetentionPolicy): RetentionDraft {
   };
 }
 
+async function archiveIsVerified(blob: Blob): Promise<boolean> {
+  if (!globalThis.crypto?.subtle) return false;
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let end = bytes.length;
+  while (end > 0 && [9, 10, 13, 32].includes(bytes[end - 1])) end--;
+  const start = bytes.lastIndexOf(10, end - 1) + 1;
+  if (start === 0 || end - start > 4096) return false;
+  let footer: unknown;
+  try {
+    footer = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        bytes.subarray(start, end),
+      ),
+    );
+  } catch {
+    return false;
+  }
+  if (
+    !footer ||
+    typeof footer !== "object" ||
+    !("type" in footer) ||
+    footer.type !== "complete" ||
+    !("sha256" in footer) ||
+    typeof footer.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(footer.sha256)
+  )
+    return false;
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", bytes.subarray(0, start)),
+  );
+  const checksum = [...digest]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+  return checksum === footer.sha256;
+}
+
 function ArchivePanel(): ReactNode {
   const { session } = useWorkspace();
   const [password, setPassword] = useState("");
@@ -61,21 +97,10 @@ function ArchivePanel(): ReactNode {
         );
       }
       const blob = await response.blob();
-      const tail = (await blob.slice(-4096).text())
-        .trimEnd()
-        .split("\n")
-        .at(-1);
-      const footer: unknown = JSON.parse(tail ?? "");
-      if (
-        typeof footer !== "object" ||
-        footer === null ||
-        !("type" in footer) ||
-        footer.type !== "complete" ||
-        !("sha256" in footer) ||
-        typeof footer.sha256 !== "string" ||
-        !/^[a-f0-9]{64}$/.test(footer.sha256)
-      )
-        throw new Error("The archive is incomplete. Download it again.");
+      if (!(await archiveIsVerified(blob))) {
+        setFailure("Archive verification failed. Download it again.");
+        return;
+      }
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -130,7 +155,9 @@ function ArchivePanel(): ReactNode {
         </label>
         {failure && <Notice tone="danger">{failure}</Notice>}
         {complete && (
-          <Notice tone="success">{tr("Workspace archive downloaded.")}</Notice>
+          <Notice tone="success">
+            {tr("Archive verified. Check your browser's downloads.")}
+          </Notice>
         )}
         <button className="button secondary" disabled={pending || !password}>
           {pending ? (

@@ -983,7 +983,6 @@
   "Includes stored readings, provider parameters, command and write history, cleanup state and workspace settings. Browser security and recovery metadata include only your own account. Passwords, tokens and encrypted credentials are excluded.": "Includes stored readings, provider parameters, command and write history, cleanup state and workspace settings. Browser security and recovery metadata include only your own account. Passwords, tokens and encrypted credentials are excluded.",
   "The archive uses NDJSON with section counts and a completion checksum. Large archives are streamed from a consistent database snapshot. No export file is stored on the server.": "The archive uses NDJSON with section counts and a completion checksum. Large archives are streamed from a consistent database snapshot. No export file is stored on the server.",
   "Dashboard password for the archive": "Dashboard password for the archive",
-  "Workspace archive downloaded.": "Workspace archive downloaded.",
   "Preparing archive…": "Preparing archive…",
   "Download workspace archive": "Download workspace archive",
   "The retention change is unconfirmed. Reload the saved policy before trying again.": "The retention change is unconfirmed. Reload the saved policy before trying again.",
@@ -1426,5 +1425,7 @@
   "Clipboard access is unavailable. Download the support request instead.": "Clipboard access is unavailable. Download the support request instead.",
   "Identify the supported setting for a 5 kW solar-to-battery charging cap. Explain whether it limits solar only or total battery charging, and whether it is enforced in SelfUse mode with a lithium BMS.": "Identify the supported setting for a 5 kW solar-to-battery charging cap. Explain whether it limits solar only or total battery charging, and whether it is enforced in SelfUse mode with a lithium BMS.",
   "Saved holding-register words": "Saved holding-register words",
-  "These are individual 16-bit words from the saved diagnostic run. Their source-power units, scaling and enforcement still need confirmation; missing words are not inferred from interpreted settings.": "These are individual 16-bit words from the saved diagnostic run. Their source-power units, scaling and enforcement still need confirmation; missing words are not inferred from interpreted settings."
+  "These are individual 16-bit words from the saved diagnostic run. Their source-power units, scaling and enforcement still need confirmation; missing words are not inferred from interpreted settings.": "These are individual 16-bit words from the saved diagnostic run. Their source-power units, scaling and enforcement still need confirmation; missing words are not inferred from interpreted settings.",
+  "Archive verification failed. Download it again.": "Archive verification failed. Download it again.",
+  "Archive verified. Check your browser's downloads.": "Archive verified. Check your browser's downloads."
 }

@@ -2,7 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 import pg from "pg";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import type {
   OverviewData,
   SettingsData,
@@ -2944,7 +2944,7 @@ test("workspace archives download complete data and retention changes remain exp
     expect(archive).not.toContain("password_hash");
     expect(urls.some((url) => url.includes(secret))).toBe(false);
     await expect(
-      member.getByText("Архивът на пространството е изтеглен.", {
+      member.getByText("Архивът е проверен. Проверете изтеглянията в браузъра.", {
         exact: true,
       }),
     ).toBeVisible();
@@ -3069,7 +3069,7 @@ test("an incomplete archive never triggers a successful file download", async ({
     .getByRole("button", { name: "Download workspace archive", exact: true })
     .click();
   await expect(
-    page.getByText("The archive download was interrupted. Try again.", {
+    page.getByText("Archive verification failed. Download it again.", {
       exact: true,
     }),
   ).toBeVisible();
@@ -4740,4 +4740,89 @@ test("firmware support does not attach Bluesun register questions to another sel
   await expect(
     page.getByRole("button", { name: "Download support request", exact: true }),
   ).not.toBeVisible();
+});
+
+test("archive integrity rejects tampering and recovers with verified UTF-8 data", async ({
+  page,
+}) => {
+  await signIn(page);
+  await page.goto("/settings/data");
+  const payload =
+    JSON.stringify({ type: "manifest", version: 1 }) +
+    "\n" +
+    JSON.stringify({
+      type: "record",
+      section: "workspace",
+      data: { name: "Дом ☀️" },
+    }) +
+    "\n";
+  const checksum = createHash("sha256").update(payload).digest("hex");
+  const footer = (sha256: string): string =>
+    JSON.stringify({ type: "complete", counts: { workspace: 1 }, sha256 }) +
+    "\n";
+  let response = payload + footer("0".repeat(64));
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  await page.route("**/api/workspace/archive", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/x-ndjson",
+      body: response,
+    }),
+  );
+  await page
+    .getByLabel("Dashboard password for the archive", { exact: true })
+    .fill("archive-fixture-password");
+  await page
+    .getByRole("button", { name: "Download workspace archive", exact: true })
+    .click();
+  await expect(
+    page.getByText("Archive verification failed. Download it again.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(downloads).toBe(0);
+  await page.locator(".language-switch select").selectOption("bg");
+  const error = page.getByText(
+    "Проверката на архива е неуспешна. Изтеглете го отново.",
+    { exact: true },
+  );
+  await expect(error).toBeVisible();
+  response = payload.replace("Дом", "Променен дом") + footer(checksum);
+  await page
+    .getByLabel("Парола за таблото за изтегляне на архив", { exact: true })
+    .fill("archive-fixture-password");
+  await page
+    .getByRole("button", {
+      name: "Изтегли архив на пространството",
+      exact: true,
+    })
+    .click();
+  await expect(error).toBeVisible();
+  await expect(
+    page.getByLabel("Парола за таблото за изтегляне на архив", { exact: true }),
+  ).toHaveValue("");
+  expect(downloads).toBe(0);
+  response = payload + footer(checksum);
+  await page
+    .getByLabel("Парола за таблото за изтегляне на архив", { exact: true })
+    .fill("archive-fixture-password");
+  const pending = page.waitForEvent("download");
+  await page
+    .getByRole("button", {
+      name: "Изтегли архив на пространството",
+      exact: true,
+    })
+    .click();
+  const downloaded = await pending;
+  const file = await downloaded.path();
+  expect(file).not.toBeNull();
+  expect(readFileSync(file!, "utf8")).toBe(response);
+  await expect(
+    page.getByText("Архивът е проверен. Проверете изтеглянията в браузъра.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(error).not.toBeVisible();
+  expect(downloads).toBe(1);
 });

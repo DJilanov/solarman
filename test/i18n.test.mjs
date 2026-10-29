@@ -123,6 +123,7 @@ test("account security errors and event labels have English and Bulgarian transl
     "The observation change is unconfirmed. Reload its status before trying again.",
     "Unable to update observations",
     "Support request copied",
+    "Archive verification failed. Download it again.",
     "Clipboard access is unavailable. Download the support request instead.",
     "Observed in readings",
     "Waiting for conditions",

@@ -152,6 +152,12 @@ async function main() {
       report.retentionQuarantined !== true ||
       report.workspaceExportVerified !== true ||
       report.erasureFencesVerified !== true ||
+      !Number.isSafeInteger(report.erasureReceiptsVerified) ||
+      report.erasureReceiptsVerified < 0 ||
+      report.erasureReceiptsVerified > 50000 ||
+      !Number.isSafeInteger(report.restoredErasureTargets) ||
+      report.restoredErasureTargets < 0 ||
+      report.restoredErasureTargets > report.erasureReceiptsVerified ||
       report.observationsQuarantined !== true ||
       report.commissioningQuarantined !== true ||
       report.notificationsQuarantined !== true ||
@@ -169,6 +175,7 @@ async function main() {
           "database_restore",
           "inventory_validation",
           "schema_upgrade",
+          "erasure_fences",
           "quarantine",
           "authentication",
           "database_cleanup_failed",
