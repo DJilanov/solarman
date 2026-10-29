@@ -1477,5 +1477,15 @@
   "Enable device notifications": "Enable device notifications",
   "Return here, tap Enable device notifications and allow the iPhone permission prompt.": "Return here, tap Enable device notifications and allow the iPhone permission prompt.",
   "Too many new browser subscriptions. Try again after 24 hours.": "Too many new browser subscriptions. Try again after 24 hours.",
-  "Choose Add to Home Screen. If Open as Web App appears, leave it on, then tap Add.": "Choose Add to Home Screen. If Open as Web App appears, leave it on, then tap Add."
+  "Choose Add to Home Screen. If Open as Web App appears, leave it on, then tap Add.": "Choose Add to Home Screen. If Open as Web App appears, leave it on, then tap Add.",
+  "Test scheduled-permission recovery": "Test scheduled-permission recovery",
+  "At 52% battery or above, this briefly enables scheduled AC charging permission, then verifies it off. SOC targets, power settings and charging windows are preserved.": "At 52% battery or above, this briefly enables scheduled AC charging permission, then verifies it off. SOC targets, power settings and charging windows are preserved.",
+  "I understand that scheduled charging permission will be enabled briefly during this attended test.": "I understand that scheduled charging permission will be enabled briefly during this attended test.",
+  "Charging flags changed before the recovery test": "Charging flags changed before the recovery test",
+  "Recovery testing requires at least 52% SOC and scheduled charging permission off": "Recovery testing requires at least 52% SOC and scheduled charging permission off",
+  "Recovery testing requires an available grid and a ready battery": "Recovery testing requires an available grid and a ready battery",
+  "Original charging flags were not restored after the recovery test": "Original charging flags were not restored after the recovery test",
+  "Pause automation and stop the current top-up before testing recovery": "Pause automation and stop the current top-up before testing recovery",
+  "Scheduled permission recovery verified; automation remains paused": "Scheduled permission recovery verified; automation remains paused",
+  "The attended permission-recovery test is running. Stop scheduled top-ups remains available; unattended automation stays paused.": "The attended permission-recovery test is running. Stop scheduled top-ups remains available; unattended automation stays paused."
 }

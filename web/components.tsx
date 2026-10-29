@@ -455,6 +455,7 @@ export function commandLabel(action: string): string {
     enable_controls: "Enable workspace control",
     commission_controls: "Enable attended controls",
     commission_topup: "Test grid top-up to 50%",
+    commission_recovery: "Test scheduled-permission recovery",
     disable_controls: "Disable workspace control",
     retry_capacity: "Retry monitoring capacity",
     topup: "Top up to 50%",

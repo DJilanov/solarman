@@ -873,7 +873,14 @@ export function Controls(): ReactNode {
         recovery={controller.control.recovery}
         timezone={controller.timezone}
       />
-      {controller.manualTopup && (
+      {controller.recoveryTesting && (
+        <Notice>
+          {tr(
+            "The attended permission-recovery test is running. Stop scheduled top-ups remains available; unattended automation stays paused.",
+          )}
+        </Notice>
+      )}
+      {controller.manualTopup && !controller.recoveryTesting && (
         <Notice>
           {tr(
             "One-time top-up is active until 50%, cancellation or expiry. Temporary solar surplus or grid loss pauses the request.",

@@ -3966,6 +3966,28 @@ test("commissioning separates preparation from attended controls, keeps Stop ava
   await page
     .getByRole("button", { name: "Enable attended controls", exact: true })
     .click();
+  const recoveryLabel="I understand that scheduled charging permission will be enabled briefly during this attended test.";
+  const recoveryButton=page.getByRole('button',{name:'Test scheduled-permission recovery',exact:true});
+  await expect(recoveryButton).toBeDisabled();
+  await page.getByRole('checkbox',{name:recoveryLabel,exact:true}).check();
+  const checkboxSize=await page.getByRole('checkbox',{name:recoveryLabel,exact:true}).boundingBox();
+  expect(checkboxSize).not.toBeNull();expect(checkboxSize?.width).toBeLessThanOrEqual(20);expect(checkboxSize?.height).toBeLessThanOrEqual(20);
+  await expect(recoveryButton).toBeDisabled();
+  if(!overview.latest)throw new Error('Missing browser fixture reading');
+  overview.latest.soc=55;
+  await page.reload();
+  await expect(recoveryButton).toBeDisabled();
+  await page.getByRole('checkbox',{name:recoveryLabel,exact:true}).check();
+  await expect(recoveryButton).toBeEnabled();
+  await page.locator('.language-switch select').selectOption('bg');
+  await expect(page.getByRole('checkbox',{name:'Разбирам, че по време на тази проверка с присъстващ оператор разрешението за планирано зареждане ще бъде включено за кратко.',exact:true})).toBeChecked();
+  await expect(page.getByRole('button',{name:'Провери изключването на планираното зареждане',exact:true})).toBeEnabled();
+  await page.locator('.language-switch select').selectOption('en');
+  await recoveryButton.click();
+  await expect(page.getByRole('checkbox',{name:recoveryLabel,exact:true})).not.toBeChecked();
+  await expect(recoveryButton).toBeDisabled();
+  overview.latest.soc=30;
+  await page.reload();
   await expect(
     page.getByRole("button", { name: "Test grid top-up to 50%", exact: true }),
   ).toBeEnabled();
@@ -3997,6 +4019,7 @@ test("commissioning separates preparation from attended controls, keeps Stop ava
     }),
   ).toBeDisabled();
   await page.setViewportSize({ width: 320, height: 1100 });
+  await page.getByRole('button',{name:'Затваряне на известието',exact:true}).click();
   await expect(page.getByRole("link", { name: "Назад към управлението", exact: true }).locator("svg")).toBeVisible();
   expect(
     await page.evaluate(
@@ -4007,9 +4030,10 @@ test("commissioning separates preparation from attended controls, keeps Stop ava
     path: "test-results/commissioning-mobile-bg.png",
     fullPage: true,
   });
+  await page.locator('.panel').filter({has:page.getByRole('button',{name:'Провери изключването на планираното зареждане',exact:true})}).screenshot({path:'test-results/attended-recovery-mobile-bg.png'});
   expect(pageErrors).toEqual([]);
   expect(mutations).toEqual(["create", "attend"]);
-  expect(commands).toEqual(["commission_controls", "commission_topup", "stop"]);
+  expect(commands).toEqual(["commission_controls", "commission_recovery", "commission_topup", "stop"]);
 });
 
 test("commissioning previews unsaved evidence and selects verified recovery without copying command IDs", async ({ page }) => {

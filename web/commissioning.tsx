@@ -1,10 +1,17 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft, CheckCircle2, Clock, ShieldCheck } from "lucide-react";
 import { useWorkspace } from "./context";
 import { useData, request, isUnconfirmedResponse } from "./api";
 import { tr } from "./i18n";
-import { Heading, Loading, Notice, Panel, commandLabel, when } from "./components";
+import {
+  Heading,
+  Loading,
+  Notice,
+  Panel,
+  commandLabel,
+  when,
+} from "./components";
 import { FirmwareEvidence } from "./firmware-evidence";
 import type { CommissioningData } from "./types";
 
@@ -51,6 +58,7 @@ export default function CommissioningPage(): ReactNode {
   const [password, setPassword] = useState("");
   const [attending, setAttending] = useState(false);
   const [recoveryCommandId, setRecoveryCommandId] = useState("");
+  const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [unconfirmed, setUnconfirmed] = useState(false);
@@ -61,6 +69,9 @@ export default function CommissioningPage(): ReactNode {
   const selectedRecovery = data?.recoveryCommands.find(
     (command) => command.id === recoveryCommandId,
   );
+  useEffect(() => {
+    setRecoveryConfirmed(false);
+  }, [run?.id, run?.state]);
   const change = async (action: string): Promise<void> => {
     setPending(true);
     setMessage(null);
@@ -331,7 +342,10 @@ export default function CommissioningPage(): ReactNode {
               </p>
             )}
             {selectedRecovery && (
-              <Link className="text-link" to={`/activity/${selectedRecovery.id}`}>
+              <Link
+                className="text-link"
+                to={`/activity/${selectedRecovery.id}`}
+              >
                 {tr("Review selected recovery result")}
               </Link>
             )}
@@ -401,6 +415,13 @@ export default function CommissioningPage(): ReactNode {
               "Explicit tests while normal automation remains paused",
             )}
           >
+            {overview?.controller.recoveryTesting && (
+              <Notice>
+                {tr(
+                  "The attended permission-recovery test is running. Stop scheduled top-ups remains available; unattended automation stays paused.",
+                )}
+              </Notice>
+            )}
             <p>
               {tr(
                 "A session lasts {{count}} minutes. Application expiry cannot guarantee physical cleanup while the provider or inverter is unreachable; stored charging windows repeat daily.",
@@ -503,6 +524,44 @@ export default function CommissioningPage(): ReactNode {
                     {tr("End attended session")}
                   </button>
                 </div>
+                <p className="fine-print">
+                  {tr(
+                    "At 52% battery or above, this briefly enables scheduled AC charging permission, then verifies it off. SOC targets, power settings and charging windows are preserved.",
+                  )}
+                </p>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={recoveryConfirmed}
+                    disabled={pending || busy || submitting || unconfirmed}
+                    onChange={(event) =>
+                      setRecoveryConfirmed(event.target.checked)
+                    }
+                  />
+                  {tr(
+                    "I understand that scheduled charging permission will be enabled briefly during this attended test.",
+                  )}
+                </label>
+                <button
+                  className="button secondary"
+                  disabled={
+                    pending ||
+                    busy ||
+                    submitting ||
+                    unconfirmed ||
+                    !recoveryConfirmed ||
+                    !control?.canCommission ||
+                    !control.commissioning.attended ||
+                    !control.workspaceEnabled ||
+                    (overview?.latest?.soc ?? 0) < 52
+                  }
+                  onClick={() => {
+                    setRecoveryConfirmed(false);
+                    void command("commission_recovery");
+                  }}
+                >
+                  {tr("Test scheduled-permission recovery")}
+                </button>
               </>
             )}
             <Link className="text-link" to="/activity">

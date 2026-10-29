@@ -36,11 +36,15 @@ async function verifiedRecoveryCommands(client, run, commandId = null) {
     await client.query(
       `SELECT c.id,c.action,c.completed_at FROM command_executions c
       WHERE c.tenant_id=$1 AND c.account_id=$2 AND c.device=$3 AND c.created_at>=$4
-      AND ($5::uuid IS NULL OR c.id=$5) AND c.action IN('stop','pause','disable_controls')
+      AND ($5::uuid IS NULL OR c.id=$5) AND c.action IN('stop','pause','disable_controls','commission_recovery')
       AND c.status='succeeded' AND c.completed_at IS NOT NULL
       AND EXISTS(SELECT 1 FROM inverter_write_intents w WHERE w.tenant_id=c.tenant_id
         AND w.execution_id=c.id AND w.account_id=c.account_id AND w.device=c.device
-        AND w.operation='disable' AND w.status='verified')
+        AND w.operation='disable' AND w.status='verified'
+        AND (c.action<>'commission_recovery' OR EXISTS(
+          SELECT 1 FROM inverter_write_intents e WHERE e.tenant_id=w.tenant_id AND e.execution_id=c.id
+          AND e.account_id=w.account_id AND e.device=w.device AND e.operation='enable' AND e.status='verified'
+          AND e.verified_at IS NOT NULL AND e.verified_at<=w.created_at)))
       ORDER BY c.completed_at DESC,c.id DESC LIMIT 20`,
       [run.tenant_id, run.account_id, run.device, run.created_at, commandId],
     )
@@ -133,9 +137,11 @@ export class Commissioning {
       identity,
       canPrepare: this.canPrepare(runtime),
       attendedMinutes: ATTENDED_MINUTES,
-      availableObservation: observation &&
+      availableObservation:
+        observation &&
         observation.binding === run.binding &&
-        observation.state !== "invalidated" && !observation.failed_at
+        observation.state !== "invalidated" &&
+        !observation.failed_at
           ? {
               id: observation.id,
               checkedAt: observation.checked_at,
@@ -368,7 +374,11 @@ export class Commissioning {
             !UUID.test(body.recoveryCommandId)
           )
             throw new SecurityError(400, "Choose a verified recovery command");
-          const [recovery] = await verifiedRecoveryCommands(client, run, body.recoveryCommandId);
+          const [recovery] = await verifiedRecoveryCommands(
+            client,
+            run,
+            body.recoveryCommandId,
+          );
           if (!recovery)
             throw new SecurityError(409, "Choose a verified recovery command");
           evidence.recovery = {

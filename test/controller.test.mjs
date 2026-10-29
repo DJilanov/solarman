@@ -84,6 +84,110 @@ const options = {
   now: () => new Date("2026-10-27T10:00:00Z"),
 };
 
+test("attended recovery preflight enables only permission and preserves charging limits and windows", async () => {
+  const inverter = new Inverter(55);
+  const before = new Map(inverter.holding);
+  const controller = new BatteryController(inverter, options);
+  const snapshot = await controller.enableRecoveryTest();
+  assert.equal(snapshot.soc, 55);
+  assert.equal(snapshot.flags, 9);
+  assert.deepEqual(inverter.writes, [{ address: 206, values: [0, 25] }]);
+  await controller.disable();
+  assert.deepEqual(inverter.writes, [
+    { address: 206, values: [0, 25] },
+    { address: 206, values: [0, 9] },
+  ]);
+  assert.deepEqual(inverter.holding, before);
+});
+
+test("recovery testing rejects insufficient SOC, existing permission, battery faults, grid loss and incorrect policy without enabling", async () => {
+  const cases = [
+    { soc: 51 },
+    { flags: 25 },
+    { input: [2000, 1] },
+    { input: [508, 0] },
+    { holding: [2504, 250] },
+    { holding: [2505, 1000] },
+    { holding: [3005, 500] },
+    { holding: [3036, 300] },
+  ];
+  for (const item of cases) {
+    const inverter = new Inverter(item.soc ?? 55, item.flags ?? 9);
+    if (item.input) inverter.input.set(...item.input);
+    if (item.holding) inverter.holding.set(...item.holding);
+    await assert.rejects(
+      new BatteryController(inverter, options).enableRecoveryTest(),
+    );
+    assert.deepEqual(inverter.writes, []);
+  }
+});
+
+test("recovery testing rechecks flags and cancellation immediately before enabling", async () => {
+  for (const change of ["flags", "stop"]) {
+    const inverter = new Inverter(55);
+    let reads = 0,
+      stopping = false;
+    const controller = new BatteryController(
+      {
+        command: async (raw) => {
+          const frame = parseFrame(raw);
+          if (
+            frame[1] === 3 &&
+            frame.readUInt16BE(2) === 206 &&
+            ++reads === 2
+          ) {
+            if (change === "flags") inverter.holding.set(207, 25);
+            else stopping = true;
+          }
+          return inverter.command(raw);
+        },
+      },
+      { ...options, isStopping: () => stopping },
+    );
+    await assert.rejects(
+      controller.enableRecoveryTest(),
+      /Charging (flags changed|enable interrupted)/,
+    );
+    assert.deepEqual(inverter.writes, []);
+  }
+});
+
+test("recovery permission writes require readback and are never replayed on an ambiguous result", async () => {
+  const inverter = new Inverter(55);
+  inverter.ignoreWrites = true;
+  await assert.rejects(
+    new BatteryController(inverter, options).enableRecoveryTest(),
+    /readback mismatch/,
+  );
+  assert.equal(inverter.writes.length, 1);
+});
+
+test("recovery testing rejects stale preflight and disabled host writes before enabling", async (t) => {
+  const inverter = new Inverter(55);
+  let at = 1000000;
+  t.mock.method(Date, "now", () => at);
+  const controller = new BatteryController(
+    {
+      command: async (raw) => {
+        const frame = parseFrame(raw);
+        if (frame[1] === 3 && frame.readUInt16BE(2) === 3005) at += 120001;
+        return inverter.command(raw);
+      },
+    },
+    options,
+  );
+  await assert.rejects(controller.enableRecoveryTest(), /too old/);
+  assert.deepEqual(inverter.writes, []);
+  await assert.rejects(
+    new BatteryController(inverter, {
+      ...options,
+      writesEnabled: false,
+    }).enableRecoveryTest(),
+    /Writes are disabled/,
+  );
+  assert.deepEqual(inverter.writes, []);
+});
+
 test("clearing scheduled permission uses recovery capacity for the read, write and confirmation", async () => {
   const inverter = new Inverter(30, 25);
   const purposes = [];

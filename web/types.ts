@@ -284,6 +284,7 @@ export interface ControllerStatus {
     | "capacity";
   paused: boolean;
   manualTopup: boolean;
+  recoveryTesting?: boolean;
   topupExpiresAt: string | null;
   lastSuccessAt: string | null;
   telemetry: {
@@ -486,6 +487,7 @@ export type Action =
   | "enable_controls"
   | "commission_controls"
   | "commission_topup"
+  | "commission_recovery"
   | "topup"
   | "stop"
   | "pause"

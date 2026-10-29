@@ -112,6 +112,16 @@ No production browser permission or device receipt is fabricated, and deployment
 
 Verification passed type/syntax checks, the production build, 184 local unit tests with three Linux-only skips, all 172 PostgreSQL integration tests and all 47 browser tests. New cases cover endpoint/curve validation, encrypted context binding, provider acceptance versus display, early/replayed/stale receipts, slot/churn limits, expiry renewal, lost browser responses, user gestures, cross-account isolation, per-target cancellation, archive secrecy and restore quarantine. The complete database run found an inconsistent decryption error contract; the corrected full rerun passed. The Bulgarian 320 px installation view was inspected. Source/build scanning found no configured secret values, including the new private push key.
 
+## Attended recovery test
+
+The normal top-up path deliberately avoids enabling a schedule at or above 50%, and leaves sufficient native charging alone below the reserve. It therefore cannot always exercise the actual enable/disable recovery path. The commissioning page now offers a separate explicit recovery test at SOC 52% or above, using fresh native preflight, the current password-confirmed attended session and existing host/workspace/dispatch guards.
+
+The test changes only the scheduled-permission flag and verifies both transitions. Its `finally` path persists pause/cancellation and uses the normal recovery budget, journal and off readback. Existing windows, SOC targets and charging power settings remain unchanged. Stop, session expiry, suspension, old revisions, uncertain writes and a changed device binding retain the existing protections. A recovery test can be selected as evidence only after a verified enable precedes its verified disable within the same successful command; the other physical policy and day/night requirements remain separate.
+
+The EN/BG page includes explicit per-test consent and a running-test notice. It does not label this temporary check as a normal top-up. The server continues to require fresh attendance before a physical test. No production inverter write has been performed while implementing this path.
+
+Verification passed type/syntax checks, production build, 199 local unit tests with three Linux-only skips, all 178 PostgreSQL integration tests and all 47 browser tests. Focused cases exercise unchanged limits/windows, paired readbacks, ambiguous enable, Stop priority, suspended queued work, expired dispatch, native SOC preflight and unconfirmed cleanup. The browser case verifies the 52% boundary, separate consent, EN/BG draft retention and a visually reviewed 320 px layout. Its discovered checkbox sizing issue was corrected and verified with a focused rerun. Source/build scanning found no configured secret values.
+
 ## 1. Complete commissioning and activation
 
 The commissioning lifecycle, attended-control path, dispatch gates, translated states, persistence/export and restore quarantine are implemented in the increment above. Physical acceptance remains separate.

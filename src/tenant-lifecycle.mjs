@@ -42,7 +42,7 @@ export async function quarantineWorkspace(
       [tenantId],
     );
   await client.query(
-    "UPDATE command_executions SET status='interrupted',message='Control request cancelled; workspace state changed',completed_at=now() WHERE tenant_id=$1 AND action IN ('resume','topup','enable_controls','commission_controls','commission_topup') AND status='queued'",
+    "UPDATE command_executions SET status='interrupted',message='Control request cancelled; workspace state changed',completed_at=now() WHERE tenant_id=$1 AND action IN ('resume','topup','enable_controls','commission_controls','commission_topup','commission_recovery') AND status='queued'",
     [tenantId],
   );
 }

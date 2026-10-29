@@ -985,6 +985,7 @@ export function createApp({ pool, hub, config }) {
             "enable_controls",
             "commission_controls",
             "commission_topup",
+            "commission_recovery",
             "disable_controls",
             "retry_capacity",
             "topup",

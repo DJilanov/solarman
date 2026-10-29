@@ -7006,6 +7006,138 @@ async function commissioningFixture(writes = false, nativeController = false) {
   };
 }
 
+async function recoveryTestFixture() {
+  const f = await commissioningFixture(true, true);
+  const device = new TenantJourneyCloud({
+    origin,device:f.target.device,providerEmail:"recovery-provider@example.test",
+    providerPassword:"recovery-provider-password",appId:"fixture-app",appSecret:"fixture-secret",
+    botToken:"unused-recovery-fixture-token",chatId:"-1001234567890",
+  },globalThis.fetch);
+  device.telemetry.soc=55;
+  Object.assign(f.snapshot,{soc:55,pvW:1800,loadW:500,gridW:0,batteryW:-1200});
+  f.runtime.client.command=async raw=>{
+    await f.runtime.journal.authorizeDispatch(raw);
+    f.calls.push(raw);
+    return device.reply(raw);
+  };
+  const attend = async () => {
+    assert.equal((await f.change("create")).status,200);
+    assert.equal((await f.change("attend",{attending:true})).status,200);
+    assert.equal((await completeCommand(f.runtime,"commission_controls",f.user)).status,"succeeded");
+  };
+  return {...f,device,attend};
+}
+
+test("attended recovery tests verify paired flag writes above reserve without changing windows or approving unattended control", async () => {
+  const f=await recoveryTestFixture();
+  try{
+    await assert.rejects(f.runtime.submit("commission_recovery",f.user,randomUUID()),/attended commissioning/);
+    await f.attend();
+    const before=new Map(f.device.holding);
+    assert.equal((await fetchApi('/commands',{auth:f.member,method:'POST',csrf:false,idempotency:randomUUID(),body:{action:'commission_recovery'}})).status,403);
+    await assert.rejects(f.runtime.submit("commission_recovery",{...f.user,tenant_id:ids.beta.tenant},randomUUID()),/Workspace does not match/);
+    const key=randomUUID();
+    const response=await fetchApi('/commands',{auth:f.member,method:'POST',idempotency:key,body:{action:'commission_recovery'}});
+    assert.equal(response.status,202);const accepted=await response.json();await f.runtime.work.idle();
+    const job=(await pool.query('SELECT * FROM command_executions WHERE id=$1',[accepted.id])).rows[0];
+    assert.equal(job.status,'succeeded');
+    assert.deepEqual(f.device.writes,[{address:206,values:[0,25]},{address:206,values:[0,9]}]);
+    assert.deepEqual(f.device.holding,before);
+    assert.equal(f.runtime.paused,true);assert.equal(f.runtime.manualTopup,false);assert.equal(f.runtime.journal.owned,false);
+    const writes=(await pool.query('SELECT operation,status FROM inverter_write_intents WHERE execution_id=$1 ORDER BY created_at',[job.id])).rows;
+    assert.deepEqual(writes,[{operation:'enable',status:'verified'},{operation:'disable',status:'verified'}]);
+    const replay=await fetchApi('/commands',{auth:f.member,method:'POST',idempotency:key,body:{action:'commission_recovery'}});
+    assert.equal((await replay.json()).id,job.id);assert.equal(f.device.writes.length,2);
+    assert.equal((await f.state()).recoveryCommands[0].id,job.id);
+    assert.equal((await f.state()).run.requirements.find(item=>item.code==='recovery').passed,false);
+    await pool.query("UPDATE inverter_write_intents SET status='uncertain' WHERE execution_id=$1 AND operation='enable'",[job.id]);
+    assert.deepEqual((await f.state()).recoveryCommands,[]);
+    assert.equal((await f.change('approve')).status,409);
+    await f.change('end');assert.equal(f.runtime.controlEnabled,false);
+  }finally{await f.dispose();}
+});
+
+test("an ambiguous recovery-test enable is reconciled off without replay and never qualifies as completed evidence", async () => {
+  const f=await recoveryTestFixture();
+  try{
+    await f.attend();
+    f.runtime.client.command=async raw=>{
+      await f.runtime.journal.authorizeDispatch(raw);
+      const reply=f.device.reply(raw),frame=parseFrame(raw);
+      if(frame[1]===16&&frame.readUInt16BE(2)===206&&frame.readUInt16BE(9)===25)throw new Error('fixture lost enable acknowledgment');
+      return reply;
+    };
+    const job=await completeCommand(f.runtime,'commission_recovery',f.user);
+    assert.equal(job.status,'failed');assert.equal(f.device.holding.get(207),9);
+    assert.deepEqual(f.device.writes,[{address:206,values:[0,25]},{address:206,values:[0,9]}]);
+    assert.equal(f.runtime.manualTopup,false);assert.equal(f.runtime.paused,true);assert.equal(f.runtime.journal.owned,false);
+    const writes=(await pool.query('SELECT operation,status,reconciled_at FROM inverter_write_intents WHERE execution_id=$1 ORDER BY created_at',[job.id])).rows;
+    assert.equal(writes[0].status,'uncertain');assert.ok(writes[0].reconciled_at);assert.equal(writes[1].status,'verified');
+    assert.deepEqual((await f.state()).recoveryCommands,[]);
+  }finally{await f.dispose();}
+});
+
+test("Stop during a recovery test keeps cleanup priority and cannot turn an interrupted test into approval evidence", async () => {
+  const f=await recoveryTestFixture();
+  let release;
+  try{
+    await f.attend();
+    const gate=new Promise(resolve=>{release=resolve});let entered;
+    const enabled=new Promise(resolve=>{entered=resolve});
+    f.runtime.client.command=async raw=>{
+      await f.runtime.journal.authorizeDispatch(raw);
+      const reply=f.device.reply(raw),frame=parseFrame(raw);
+      if(frame[1]===16&&frame.readUInt16BE(2)===206&&frame.readUInt16BE(9)===25){entered();await gate;}
+      return reply;
+    };
+    const probe=await f.runtime.submit('commission_recovery',f.user,randomUUID());
+    await Promise.race([enabled,f.runtime.work.idle().then(()=>{throw new Error('Recovery test completed before reaching its enable write')})]);
+    assert.equal(f.runtime.status().recoveryTesting,true);
+    const stop=await f.runtime.submit('stop',f.user,randomUUID());release();await f.runtime.work.idle();
+    const rows=(await pool.query('SELECT id,status FROM command_executions WHERE id=ANY($1::uuid[])',[[probe.id,stop.id]])).rows;
+    assert.equal(rows.find(row=>row.id===probe.id).status,'interrupted');assert.equal(rows.find(row=>row.id===stop.id).status,'succeeded');
+    assert.equal(f.device.holding.get(207),9);assert.equal(f.runtime.journal.owned,false);assert.equal(f.runtime.manualTopup,false);assert.equal(f.runtime.paused,true);
+    assert.equal(f.runtime.status().recoveryTesting,false);
+    assert.deepEqual((await f.state()).recoveryCommands,[]);
+  }finally{release?.();await f.dispose();}
+});
+
+test("suspension cancels a queued recovery test before inverter writes", async () => {
+  const f=await recoveryTestFixture();let release;
+  try{
+    await f.attend();
+    const blocker=f.runtime.queue(()=>new Promise(resolve=>{release=resolve}));
+    while(!release)await new Promise(resolve=>setImmediate(resolve));
+    const job=await f.runtime.submit('commission_recovery',f.user,randomUUID());
+    await f.lifecycle.change(f.session,f.target.tenant,lifecycleBody());
+    await AccountHub.prototype.lifecycleChanged.call({runtimes:new Map([[f.target.tenant,f.runtime]]),budget:f.runtime.hub.budget},f.target.tenant,f.runtime.appKey);
+    release();await blocker;await f.runtime.work.idle();
+    assert.equal((await pool.query('SELECT status FROM command_executions WHERE id=$1',[job.id])).rows[0].status,'interrupted');
+    assert.deepEqual(f.device.writes,[]);assert.equal(f.runtime.paused,true);assert.equal(f.runtime.controlEnabled,false);assert.equal(f.runtime.manualTopup,false);
+  }finally{release?.();await f.dispose();}
+});
+
+test("recovery tests recheck attendance at dispatch and reject a stale above-reserve reading", async () => {
+  for(const variant of ['expiry','soc']){
+    const f=await recoveryTestFixture();
+    try{
+      await f.attend();
+      if(variant==='soc')f.device.telemetry.soc=51;
+      else f.runtime.client.command=async raw=>{
+        const frame=parseFrame(raw);
+        if(frame[1]===16&&frame.readUInt16BE(2)===206&&frame.readUInt16BE(9)===25)
+          await pool.query("UPDATE control_commissioning SET attended_until=clock_timestamp()-interval '1 second' WHERE tenant_id=$1",[f.target.tenant]);
+        await f.runtime.journal.authorizeDispatch(raw);
+        return f.device.reply(raw);
+      };
+      const job=await completeCommand(f.runtime,'commission_recovery',f.user);
+      assert.equal(job.status,'failed');assert.deepEqual(f.device.writes,[]);
+      assert.equal(f.runtime.manualTopup,false);assert.equal(f.runtime.paused,true);assert.equal(f.runtime.journal.owned,false);
+      assert.deepEqual((await f.state()).recoveryCommands,[]);
+    }finally{await f.dispose();}
+  }
+});
+
 test("commissioning preparation requires reauthentication, CSRF, a fresh binding and tenant ownership without writes", async () => {
   const f = await commissioningFixture();
   try {

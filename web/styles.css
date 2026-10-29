@@ -2888,6 +2888,21 @@ html[lang="bg"] .segmented button {
   flex-wrap: wrap;
   gap: 12px;
 }
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  line-height: 1.5;
+}
+.checkbox-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  flex: 0 0 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
 .readiness-reasons {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

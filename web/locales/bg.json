@@ -1477,5 +1477,15 @@
   "Enable device notifications": "Включи известията на устройството",
   "Return here, tap Enable device notifications and allow the iPhone permission prompt.": "Върнете се тук, натиснете „Включи известията на устройството“ и разрешете известията в прозореца на iPhone.",
   "Too many new browser subscriptions. Try again after 24 hours.": "Добавени са твърде много нови абонаменти на браузъри. Опитайте отново след 24 часа.",
-  "Choose Add to Home Screen. If Open as Web App appears, leave it on, then tap Add.": "Изберете „Добавяне към началния екран“. Ако има „Отваряне като уеб приложение“, оставете го включено, след това натиснете „Добавяне“."
+  "Choose Add to Home Screen. If Open as Web App appears, leave it on, then tap Add.": "Изберете „Добавяне към началния екран“. Ако има „Отваряне като уеб приложение“, оставете го включено, след това натиснете „Добавяне“.",
+  "Test scheduled-permission recovery": "Провери изключването на планираното зареждане",
+  "At 52% battery or above, this briefly enables scheduled AC charging permission, then verifies it off. SOC targets, power settings and charging windows are preserved.": "При заряд на батерията 52% или повече проверката включва за кратко разрешението за планирано зареждане от мрежата и след това потвърждава изключването му. Целевият заряд, ограниченията на мощността и часовите интервали се запазват.",
+  "I understand that scheduled charging permission will be enabled briefly during this attended test.": "Разбирам, че по време на тази проверка с присъстващ оператор разрешението за планирано зареждане ще бъде включено за кратко.",
+  "Charging flags changed before the recovery test": "Флаговете за зареждане са променени преди проверката на изключването",
+  "Recovery testing requires at least 52% SOC and scheduled charging permission off": "Проверката на изключването изисква поне 52% заряд и изключено разрешение за планирано зареждане",
+  "Recovery testing requires an available grid and a ready battery": "Проверката на изключването изисква налична мрежа и готова батерия",
+  "Original charging flags were not restored after the recovery test": "Първоначалните флагове за зареждане не са възстановени след проверката",
+  "Pause automation and stop the current top-up before testing recovery": "Постави автоматизацията на пауза и спри текущото дозареждане преди проверката на изключването",
+  "Scheduled permission recovery verified; automation remains paused": "Изключването на разрешението за планирано зареждане е потвърдено; автоматизацията остава на пауза",
+  "The attended permission-recovery test is running. Stop scheduled top-ups remains available; unattended automation stays paused.": "Изпълнява се проверка на разрешението за зареждане с присъстващ оператор. Можеш да спреш планираните дозареждания; автоматизацията остава на пауза."
 }

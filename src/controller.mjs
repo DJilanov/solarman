@@ -243,10 +243,12 @@ export class BatteryController {
     return snapshot;
   }
 
-  /** @param {boolean} enabled @returns {Promise<number>} */
-  async setAc(enabled) {
+  /** @param {boolean} enabled @param {number} [expectedFlags] @returns {Promise<number>} */
+  async setAc(enabled, expectedFlags) {
     const purpose = enabled ? "routine" : "recovery";
     const flags = unsigned32(await this.read(3, 206, 2, purpose));
+    if (expectedFlags !== undefined && flags !== expectedFlags)
+      throw new Error("Charging flags changed before the recovery test");
     if (
       enabled &&
       ((flags & ~AC_BIT) !== EXPECTED_BASE_FLAGS || this.options.isStopping?.())
@@ -260,6 +262,29 @@ export class BatteryController {
     await this.writeVerified(206, flagRegisters(next), purpose);
     this.log({ event: "ac_charge_changed", enabled });
     return next;
+  }
+
+  /** @returns {Promise<Snapshot>} */
+  async enableRecoveryTest() {
+    if (!this.options.writesEnabled) throw new Error("Writes are disabled");
+    const startedAt = Date.now();
+    const snapshot = await this.snapshot();
+    await this.verifyProfile();
+    if (Date.now() - startedAt > 120_000)
+      throw new Error("Live readings are too old for a control decision");
+    if (snapshot.soc < 52 || snapshot.flags !== EXPECTED_BASE_FLAGS)
+      throw new Error(
+        "Recovery testing requires at least 52% SOC and scheduled charging permission off",
+      );
+    if (
+      ![4, 5, 6].includes(snapshot.batteryState) ||
+      snapshot.gridVoltages.some((value) => value < 100 || value > 300)
+    )
+      throw new Error(
+        "Recovery testing requires an available grid and a ready battery",
+      );
+    await this.setAc(true, snapshot.flags);
+    return snapshot;
   }
 
   /** @returns {Promise<{ snapshot: Snapshot, decision: ReturnType<typeof decide> }>} */

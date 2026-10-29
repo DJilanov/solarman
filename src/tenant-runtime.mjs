@@ -59,6 +59,7 @@ export class TenantRuntime {
     this.paused = true;
     this.lifecycle = "active";
     this.manualTopup = false;
+    this.recoveryTesting = false;
     this.topupExpiresAt = null;
     this.controlEnabled = false;
     this.verification = null;
@@ -121,10 +122,10 @@ export class TenantRuntime {
       this.hostWritesAllowed = config.writesEnabled;
       this.ready = Boolean(
         account.validated_at &&
-          account.device_sn &&
-          account.discovered_devices.some(
-            (device) => device.deviceSn === account.device_sn,
-          ),
+        account.device_sn &&
+        account.discovered_devices.some(
+          (device) => device.deviceSn === account.device_sn,
+        ),
       );
       this.writesEnabled =
         config.writesEnabled &&
@@ -279,10 +280,10 @@ export class TenantRuntime {
   verifiedDevice() {
     return Boolean(
       this.verification?.passed &&
-        this.verification.mapping === BLUESUN_MAPPING &&
-        supportedControlFirmware(this.verification.firmware) &&
-        this.verification.device === this.device &&
-        this.verification.profile === this.account?.profile,
+      this.verification.mapping === BLUESUN_MAPPING &&
+      supportedControlFirmware(this.verification.firmware) &&
+      this.verification.device === this.device &&
+      this.verification.profile === this.account?.profile,
     );
   }
 
@@ -424,6 +425,7 @@ export class TenantRuntime {
                       : "read-only",
       paused: this.paused,
       manualTopup: this.manualTopup,
+      recoveryTesting: this.recoveryTesting,
       topupExpiresAt: this.topupExpiresAt,
       lastSuccessAt: this.lastSuccessAt,
       telemetry: this.telemetry,
@@ -455,10 +457,10 @@ export class TenantRuntime {
   usesControlCycle() {
     return Boolean(
       this.writesEnabled &&
-        this.monitoringAdmitted &&
-        this.controlEnabled &&
-        this.verifiedDevice() &&
-        (!this.paused || this.manualTopup),
+      this.monitoringAdmitted &&
+      this.controlEnabled &&
+      this.verifiedDevice() &&
+      (!this.paused || this.manualTopup),
     );
   }
 
@@ -511,6 +513,43 @@ export class TenantRuntime {
       throw new Error("Scheduled charging off could not be confirmed");
     this.cleanupRequired = false;
     return true;
+  }
+
+  /** @param {number} epoch @returns {Promise<{snapshot:import('./controller.mjs').Snapshot,cancelled:boolean}>} */
+  async testScheduledRecovery(epoch) {
+    let snapshot;
+    let cancelled = false;
+    let cleanupEpoch;
+    try {
+      snapshot = await this.controller.enableRecoveryTest();
+    } finally {
+      cancelled = epoch !== this.enableEpoch;
+      this.inhibitStarts = true;
+      cleanupEpoch = ++this.enableEpoch;
+      await this.journal.requestCleanup({ pause: true, cancelStarts: true });
+      this.paused = true;
+      this.manualTopup = false;
+      this.topupExpiresAt = null;
+      this.cleanupRequired = this.journal.pending;
+      const cleared = await this.clearScheduledPermission();
+      if (!cleared && this.journal.owned)
+        throw new Error("Scheduled charging off could not be confirmed");
+    }
+    const flags = await this.controller.read(3, 206, 2, "recovery");
+    if (flags[0] !== 0 || flags[1] !== snapshot.flags)
+      throw new Error(
+        "Original charging flags were not restored after the recovery test",
+      );
+    this.events.push({
+      event: "scheduled_recovery_test",
+      soc: snapshot.soc,
+      flagsBefore: snapshot.flags,
+      flagsAfter: flags[1],
+    });
+    return {
+      snapshot,
+      cancelled: cancelled || cleanupEpoch !== this.enableEpoch,
+    };
   }
 
   /** @param {number} soc @returns {Promise<void>} */
@@ -581,9 +620,9 @@ export class TenantRuntime {
       );
     const verificationInvalidated = Boolean(
       currentUpload &&
-        (verification?.passed || this.controlEnabled) &&
-        (!modelMatches ||
-          !matchingControlFirmware(verification?.firmware, this.firmware)),
+      (verification?.passed || this.controlEnabled) &&
+      (!modelMatches ||
+        !matchingControlFirmware(verification?.firmware, this.firmware)),
     );
     if (verificationInvalidated) {
       await invalidateCommissioning(
@@ -1114,7 +1153,7 @@ export class TenantRuntime {
     }
   }
 
-  /** @param {'enable_controls' | 'resume' | 'topup' | 'commission_controls' | 'commission_topup'} action @param {string} epoch @returns {Promise<boolean>} */
+  /** @param {'enable_controls' | 'resume' | 'topup' | 'commission_controls' | 'commission_topup' | 'commission_recovery'} action @param {string} epoch @returns {Promise<boolean>} */
   async applyStartIntent(action, epoch) {
     if (["enable_controls", "commission_controls"].includes(action)) {
       const updated = await this.hub.budget.enableControl({
@@ -1137,12 +1176,13 @@ export class TenantRuntime {
     const result = await this.q(
       `UPDATE controller_state SET
       paused=CASE WHEN $2='resume' THEN false ELSE paused END,
-      manual_topup=($2 IN('topup','commission_topup')),
-      topup_expires_at=CASE WHEN $2='commission_topup' THEN (SELECT attended_until FROM control_commissioning WHERE tenant_id=$1 AND state='attending') WHEN $2='topup' THEN now()+interval '6 hours' ELSE null END,
+      manual_topup=($2 IN('topup','commission_topup','commission_recovery')),
+      topup_expires_at=CASE WHEN $2 IN('commission_topup','commission_recovery') THEN (SELECT attended_until FROM control_commissioning WHERE tenant_id=$1 AND state='attending') WHEN $2='topup' THEN now()+interval '6 hours' ELSE null END,
       updated_at=now()
       WHERE tenant_id=$1 AND control_epoch=$3 AND control_enabled AND EXISTS (SELECT 1 FROM tenants t WHERE t.id=$1 AND t.lifecycle='active')
+      AND ($2<>'commission_recovery' OR (paused AND NOT manual_topup))
       AND EXISTS(SELECT 1 FROM control_commissioning r WHERE r.tenant_id=$1 AND r.binding=$4 AND
-        (($2='commission_topup' AND r.state='attending' AND r.attended_until>clock_timestamp()) OR ($2<>'commission_topup' AND r.state='approved')))
+        (($2 IN('commission_topup','commission_recovery') AND r.state='attending' AND r.attended_until>clock_timestamp()) OR ($2 NOT IN('commission_topup','commission_recovery') AND r.state='approved')))
       RETURNING tenant_id`,
       [action, epoch, commissioningBinding(this.account, this.verification)],
     );
@@ -1174,6 +1214,7 @@ export class TenantRuntime {
         "topup",
         "commission_controls",
         "commission_topup",
+        "commission_recovery",
       ].includes(action) &&
       this.lifecycle !== "active"
     )
@@ -1187,6 +1228,7 @@ export class TenantRuntime {
         "enable_controls",
         "commission_controls",
         "commission_topup",
+        "commission_recovery",
         "disable_controls",
         "retry_capacity",
         "topup",
@@ -1230,12 +1272,21 @@ export class TenantRuntime {
         "Hardware writes require an enabled, verified Bluesun profile",
       );
     if (
-      ["commission_controls", "commission_topup"].includes(action) &&
+      [
+        "commission_controls",
+        "commission_topup",
+        "commission_recovery",
+      ].includes(action) &&
       (!this.readiness().canCommission ||
         !this.commissioningPermitted("attended") ||
-        (action === "commission_topup" && !this.controlEnabled))
+        (["commission_topup", "commission_recovery"].includes(action) &&
+          !this.controlEnabled))
     )
       throw new Error("An active attended commissioning session is required");
+    if (action === "commission_recovery" && (!this.paused || this.manualTopup))
+      throw new Error(
+        "Pause automation and stop the current top-up before testing recovery",
+      );
     if (
       this.scheduled.size >= 5 &&
       !["stop", "pause", "disable_controls"].includes(action)
@@ -1247,6 +1298,7 @@ export class TenantRuntime {
       "topup",
       "commission_controls",
       "commission_topup",
+      "commission_recovery",
     ].includes(action)
       ? (
           await this.q(
@@ -1331,6 +1383,7 @@ export class TenantRuntime {
               "enable_controls",
               "commission_controls",
               "commission_topup",
+              "commission_recovery",
             ].includes(action) &&
             enableEpoch !== this.enableEpoch
           ) {
@@ -1382,6 +1435,30 @@ export class TenantRuntime {
               action === "commission_controls"
                 ? "Attended controls enabled; unattended automation remains blocked"
                 : "Control enabled for this workspace; automation remains paused";
+          } else if (action === "commission_recovery") {
+            if (
+              !this.readiness().canCommission ||
+              !this.commissioningPermitted("attended")
+            )
+              throw new Error(
+                "An active attended commissioning session is required",
+              );
+            if (
+              !(await this.applyStartIntent(action, controlEpoch)) ||
+              enableEpoch !== this.enableEpoch
+            ) {
+              await this.cancelStart(job.id);
+              return;
+            }
+            this.inhibitStarts = false;
+            this.recoveryTesting = true;
+            const result = await this.testScheduledRecovery(enableEpoch);
+            if (result.cancelled) {
+              await this.cancelStart(job.id);
+              return;
+            }
+            message =
+              "Scheduled permission recovery verified; automation remains paused";
           } else if (["stop", "pause", "disable_controls"].includes(action)) {
             await this.q(
               "UPDATE controller_state SET paused=true,manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
@@ -1439,7 +1516,11 @@ export class TenantRuntime {
             [job.id, message, { events: this.events }],
           );
         } catch (error) {
-          if (["topup", "commission_topup"].includes(action)) {
+          if (
+            ["topup", "commission_topup", "commission_recovery"].includes(
+              action,
+            )
+          ) {
             this.cleanupRequired = true;
             await this.q(
               "UPDATE controller_state SET manual_topup=false,topup_expires_at=null,updated_at=now() WHERE tenant_id=$1",
@@ -1457,6 +1538,7 @@ export class TenantRuntime {
             ].includes(action),
           );
         } finally {
+          if (action === "commission_recovery") this.recoveryTesting = false;
           this.executionId = null;
           this.scheduled.delete(job.id);
           this.reschedulePolling();
