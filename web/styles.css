@@ -74,6 +74,28 @@ button:disabled {
   flex-shrink: 0;
   margin-top: 2px;
 }
+.commissioning-checklist .commissioning-hint {
+  line-height: 1.6;
+  margin-top: 8px;
+}
+.commissioning-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+.commissioning-counts dt {
+  min-height: 3em;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.commissioning-counts dd {
+  margin: 6px 0 0;
+  font-size: 24px;
+  font-weight: 600;
+}
 .commissioning-events li {
   display: flex;
   flex-wrap: wrap;

@@ -194,3 +194,23 @@ test("notification delivery states, reasons and audit actions are translated", (
     }
   }
 });
+
+test("commissioning steps, pending guidance and event states are translated", () => {
+  const source = readFileSync(
+    new URL("../web/commissioning.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const name of ["requirements", "requirementHints", "states", "events"]) {
+    const section = source.match(
+      new RegExp(`const ${name}[^=]*= \\{([\\s\\S]*?)\\n\\};`),
+    )?.[1];
+    assert.ok(section, name);
+    const values = [...section.matchAll(/:\s*("(?:[^"\\]|\\.)*")/g)];
+    assert.ok(values.length > 0, name);
+    for (const match of values) {
+      const key = JSON.parse(match[1]);
+      assert.ok(Object.hasOwn(english, key), key);
+      assert.ok(Object.hasOwn(bulgarian, key), key);
+    }
+  }
+});

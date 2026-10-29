@@ -165,8 +165,15 @@ function RunEvidence({ run }: { run: PolicyObservationRun }): ReactNode {
       >
         <div className="observation-progress">
           <strong>{tr("{{count}} of 5 observation signals", { count })}</strong>
-          <div className="coverage-track">
-            <span style={{ width: `${count * 20}%` }} />
+          <div
+            className="coverage-track"
+            role="progressbar"
+            aria-label={tr("Observed battery behavior")}
+            aria-valuemin={0}
+            aria-valuemax={5}
+            aria-valuenow={count}
+          >
+            <i style={{ width: `${count * 20}%` }} />
           </div>
           <span>
             {tr("{{count}} accepted readings", { count: progress.accepted })}

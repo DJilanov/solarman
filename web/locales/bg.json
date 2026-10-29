@@ -1235,7 +1235,6 @@
   "Complete day and night observation": "Пълно наблюдение през деня и нощта",
   "Verified scheduled-charge recovery": "Потвърдено изключване на зареждането по график",
   "Recorded evidence": "Записани доказателства",
-  "Recovery evidence requires a successful Stop command with a verified disable write from this commissioning run.": "Доказателството изисква успешна команда за спиране с потвърден запис за изключване в рамките на това изпитване.",
   "Save current observation evidence": "Запиши текущите доказателства от наблюдението",
   "Approve unattended control": "Одобри автоматичното управление",
   "Evidence last checked {{time}}": "Последна проверка на доказателствата: {{time}}",
@@ -1489,5 +1488,12 @@
   "Scheduled permission recovery verified; automation remains paused": "Изключването на разрешението за планирано зареждане е потвърдено; автоматизацията остава на пауза",
   "The attended permission-recovery test is running. Stop scheduled top-ups remains available; unattended automation stays paused.": "Изпълнява се проверка на разрешението за зареждане с присъстващ оператор. Можеш да спреш планираните дозареждания; автоматизацията остава на пауза.",
   "Unable to check your session": "Сесията не може да бъде проверена",
-  "Retry when the dashboard is available to open your workspace.": "Опитай отново, когато таблото е достъпно, за да отвориш работното си пространство."
+  "Retry when the dashboard is available to open your workspace.": "Опитай отново, когато таблото е достъпно, за да отвориш работното си пространство.",
+  "{{count}} of {{total}} checks recorded": "{{count}} от {{total}} проверки са записани",
+  "Recorded commissioning checks": "Записани проверки при въвеждане в експлоатация",
+  "Awaiting evidence": "Чакащи",
+  "Needs a completed attended recovery test or Stop with a verified disable write.": "Нужна е завършена проверка на изключването с присъстващ оператор или команда „Спри“ с потвърден запис за изключване.",
+  "Recovery evidence must belong to this commissioning run and include a verified disable write.": "Доказателството трябва да е от това изпитване и да включва потвърден запис за изключване.",
+  "Available for review": "Готово за преглед",
+  "Recorded": "Записани"
 }

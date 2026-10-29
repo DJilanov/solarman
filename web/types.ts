@@ -581,7 +581,7 @@ export interface CommissioningData {
   } | null;
   recoveryCommands: {
     id: string;
-    action: "stop" | "pause" | "disable_controls";
+    action: "stop" | "pause" | "disable_controls" | "commission_recovery";
     completedAt: string;
   }[];
   run: {

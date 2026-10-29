@@ -3864,6 +3864,21 @@ test("policy observations preserve an unknown start, distinguish physical signal
   await expect(
     page.getByText("1 от 5 признака в наблюдението", { exact: true }),
   ).toBeVisible();
+  const barDimensions = await page
+    .locator(".observation-progress .coverage-track")
+    .evaluate((track) => {
+      const fill = track.firstElementChild?.getBoundingClientRect();
+      return {
+        trackWidth: track.getBoundingClientRect().width,
+        fillWidth: fill?.width ?? 0,
+        fillHeight: fill?.height ?? 0,
+      };
+    });
+  expect(barDimensions.fillWidth).toBeCloseTo(barDimensions.trackWidth * 0.2, 0);
+  expect(barDimensions.fillHeight).toBeGreaterThan(0);
+  await expect(
+    page.getByRole("progressbar", { name: "Наблюдавано поведение на батерията" }),
+  ).toHaveAttribute("aria-valuenow", "1");
   await expect(
     page.getByText("2 приети отчета", { exact: true }),
   ).toBeVisible();
@@ -4249,7 +4264,7 @@ test("commissioning previews unsaved evidence and selects verified recovery with
       id: observationId, checkedAt: now,
       requirements: codes.map((code) => ({ code, passed: code === "gridCharge" })),
     },
-    recoveryCommands: [{ id: recoveryId, action: "stop", completedAt: now }],
+    recoveryCommands: [{ id: recoveryId, action: "commission_recovery", completedAt: now }],
   };
   const saved: string[] = [];
   const commands: string[] = [];
@@ -4281,11 +4296,21 @@ test("commissioning previews unsaved evidence and selects verified recovery with
   });
   await page.goto("/controls/commissioning");
   const checklist = page.locator(".commissioning-checklist");
+  const counts = page.locator(".commissioning-counts");
+  await expect(page.getByText("0 of 6 checks recorded", { exact: true })).toBeVisible();
+  await expect(counts.getByText("Recorded", { exact: true }).locator("..").locator("dd")).toHaveText("0");
+  await expect(counts.getByText("Available to save", { exact: true }).locator("..").locator("dd")).toHaveText("1");
+  await expect(counts.getByText("Awaiting evidence", { exact: true }).locator("..").locator("dd")).toHaveText("5");
+  await expect(checklist.getByText("Needs a completed attended recovery test or Stop with a verified disable write.", { exact: true })).toBeVisible();
   await expect(checklist.getByText("Available to save", { exact: true })).toHaveCount(1);
   await expect(checklist.getByText("Recorded evidence", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Approve unattended control", exact: true })).toBeDisabled();
   const recovery = page.getByLabel("Verified recovery result (optional)", { exact: true });
   await recovery.selectOption(recoveryId);
+  await expect(counts.getByText("Available to save", { exact: true }).locator("..").locator("dd")).toHaveText("2");
+  await expect(counts.getByText("Awaiting evidence", { exact: true }).locator("..").locator("dd")).toHaveText("4");
+  await expect(page.getByRole("progressbar", { name: "Recorded commissioning checks" })).toHaveAttribute("aria-valuenow", "0");
+  await expect(checklist.getByText("Needs a completed attended recovery test or Stop with a verified disable write.", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Review selected recovery result", exact: true })).toHaveAttribute("href", `/activity/${recoveryId}`);
   await expect(checklist.getByText("Available to save", { exact: true })).toHaveCount(2);
   await page.getByLabel("Current dashboard password", { exact: true }).fill("evidence-browser-fixture");
@@ -4293,10 +4318,23 @@ test("commissioning previews unsaved evidence and selects verified recovery with
   const translatedRecovery = page.getByLabel("Потвърден резултат от изключване (незадължително)", { exact: true });
   await expect(translatedRecovery).toHaveValue(recoveryId);
   await expect(page.getByLabel("Текуща парола за таблото", { exact: true })).toHaveValue("evidence-browser-fixture");
+  const availableObservation = data.availableObservation;
+  data.availableObservation = null;
+  await expect(counts.getByText("Готово за преглед", { exact: true }).locator("..").locator("dd")).toHaveText("1");
+  await expect(page.getByRole("button", { name: "Запиши текущите доказателства от наблюдението", exact: true })).toBeDisabled();
+  data.availableObservation = availableObservation;
   await expect(checklist.getByText("Готово за записване", { exact: true })).toHaveCount(2);
+  await expect(counts.getByText("Готово за записване", { exact: true }).locator("..").locator("dd")).toHaveText("2");
+  await page.setViewportSize({ width: 320, height: 1100 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: "test-results/commissioning-progress-unsaved-mobile-bg.png", fullPage: true });
+  await page.locator(".panel").filter({ has: page.getByRole("heading", { name: "Проверки на реалното поведение", exact: true }) }).screenshot({ path: "test-results/commissioning-progress-panel-mobile-bg.png" });
   const save = page.getByRole("button", { name: "Запиши текущите доказателства от наблюдението", exact: true });
   await save.click();
   await expect(checklist.getByText("Записани доказателства", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("2 от 6 проверки са записани", { exact: true })).toBeVisible();
+  await expect(counts.getByText("Готово за записване", { exact: true }).locator("..").locator("dd")).toHaveText("0");
+  await expect(counts.getByText("Чакащи", { exact: true }).locator("..").locator("dd")).toHaveText("4");
   await expect(page.getByLabel("Текуща парола за таблото", { exact: true })).toHaveValue("");
   await expect(page.getByRole("link", { name: "Преглед на запазения резултат от изключване", exact: true })).toHaveAttribute("href", `/activity/${recoveryId}`);
   await expect(page.getByRole("button", { name: "Одобри автоматичното управление", exact: true })).toBeDisabled();
@@ -4313,6 +4351,13 @@ test("commissioning previews unsaved evidence and selects verified recovery with
   data.availableObservation = null;
   await expect(page.getByText("Няма валидно наблюдение за това устройство. Отворете наблюденията, за да записвате измервания.", { exact: true })).toBeVisible();
   await expect(save).toBeDisabled();
+  await expect(counts.getByText("Записани", { exact: true }).locator("..").locator("dd")).toHaveText("2");
+  run.requirements = codes.map((code) => ({ code, passed: true }));
+  run.state = "approved";
+  await expect(page.getByText("6 от 6 проверки са записани", { exact: true })).toBeVisible();
+  await expect(counts.getByText("Готово за преглед", { exact: true }).locator("..").locator("dd")).toHaveText("0");
+  await expect(counts.getByText("Чакащи", { exact: true }).locator("..").locator("dd")).toHaveText("0");
+  await expect(page.getByRole("progressbar", { name: "Записани проверки при въвеждане в експлоатация" })).toHaveAttribute("aria-valuenow", "6");
   expect(saved).toEqual(["evidence"]);
   expect(commands).toEqual([]);
   expect(separateObservationRequests).toBe(0);

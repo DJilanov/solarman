@@ -13,7 +13,7 @@ import {
   when,
 } from "./components";
 import { FirmwareEvidence } from "./firmware-evidence";
-import type { CommissioningData } from "./types";
+import type { CommissioningData, CommissioningRequirement } from "./types";
 
 const requirements: Record<
   NonNullable<CommissioningData["run"]>["requirements"][number]["code"],
@@ -25,6 +25,20 @@ const requirements: Record<
   gridStop: "Grid charging stops at 50%",
   dayNight: "Complete day and night observation",
   recovery: "Verified scheduled-charge recovery",
+};
+const requirementHints: Record<CommissioningRequirement["code"], string> = {
+  solar:
+    "Needs solar surplus, little grid import and rising SOC above the grid target.",
+  discharge:
+    "Needs battery discharge with falling SOC above the reserve. Grid support for additional house demand is allowed.",
+  gridCharge:
+    "Needs two distinct readings with little solar, battery charging near 2 kW and grid import above house demand.",
+  gridStop:
+    "Needs charging below the reserve followed promptly by two 50% readings with little solar and no meaningful battery charging. The cause still needs review.",
+  dayNight:
+    "Needs at least 24 hours, 90% sample coverage, solar production and low-solar readings during local night hours.",
+  recovery:
+    "Needs a completed attended recovery test or Stop with a verified disable write.",
 };
 const states: Record<string, string> = {
   preparing: "Preparing commissioning",
@@ -69,6 +83,20 @@ export default function CommissioningPage(): ReactNode {
   const selectedRecovery = data?.recoveryCommands.find(
     (command) => command.id === recoveryCommandId,
   );
+  const availableCodes = new Set(
+    data?.availableObservation?.requirements
+      .filter((item) => item.passed && item.code !== "recovery")
+      .map((item) => item.code),
+  );
+  if (selectedRecovery) availableCodes.add("recovery");
+  const totalChecks = run?.requirements.length ?? 0;
+  const recordedChecks =
+    run?.requirements.filter((item) => item.passed).length ?? 0;
+  const availableChecks =
+    run?.requirements.filter(
+      (item) => !item.passed && availableCodes.has(item.code),
+    ).length ?? 0;
+  const waitingChecks = totalChecks - recordedChecks - availableChecks;
   useEffect(() => {
     setRecoveryConfirmed(false);
   }, [run?.id, run?.state]);
@@ -243,15 +271,51 @@ export default function CommissioningPage(): ReactNode {
             title={tr("Physical acceptance checklist")}
             subtitle={tr("Saved evidence remains distinct from approval")}
           >
+            <div className="observation-progress">
+              <strong>
+                {tr("{{count}} of {{total}} checks recorded", {
+                  count: recordedChecks,
+                  total: totalChecks,
+                })}
+              </strong>
+              <div
+                className="coverage-track"
+                role="progressbar"
+                aria-label={tr("Recorded commissioning checks")}
+                aria-valuemin={0}
+                aria-valuemax={totalChecks}
+                aria-valuenow={recordedChecks}
+              >
+                <i
+                  style={{
+                    width: `${totalChecks ? (recordedChecks / totalChecks) * 100 : 0}%`,
+                  }}
+                />
+              </div>
+            </div>
+            <dl className="commissioning-counts">
+              <div>
+                <dt>{tr("Recorded")}</dt>
+                <dd>{recordedChecks}</dd>
+              </div>
+              <div>
+                <dt>
+                  {tr(
+                    data.availableObservation
+                      ? "Available to save"
+                      : "Available for review",
+                  )}
+                </dt>
+                <dd>{availableChecks}</dd>
+              </div>
+              <div>
+                <dt>{tr("Awaiting evidence")}</dt>
+                <dd>{waitingChecks}</dd>
+              </div>
+            </dl>
             <ul className="commissioning-checklist">
               {run.requirements.map((item): ReactNode => {
-                const available =
-                  item.code === "recovery"
-                    ? Boolean(selectedRecovery)
-                    : data.availableObservation?.requirements.some(
-                        (candidate) =>
-                          candidate.code === item.code && candidate.passed,
-                      );
+                const available = availableCodes.has(item.code);
                 return (
                   <li key={item.code}>
                     {item.passed ? (
@@ -266,10 +330,17 @@ export default function CommissioningPage(): ReactNode {
                           item.passed
                             ? "Recorded evidence"
                             : available
-                              ? "Available to save"
+                              ? data.availableObservation
+                                ? "Available to save"
+                                : "Available for review"
                               : "Still requires commissioning",
                         )}
                       </small>
+                      {!item.passed && !available && (
+                        <small className="commissioning-hint">
+                          {tr(requirementHints[item.code])}
+                        </small>
+                      )}
                     </span>
                   </li>
                 );
@@ -362,7 +433,7 @@ export default function CommissioningPage(): ReactNode {
             )}
             <p className="fine-print">
               {tr(
-                "Recovery evidence requires a successful Stop command with a verified disable write from this commissioning run.",
+                "Recovery evidence must belong to this commissioning run and include a verified disable write.",
               )}
             </p>
             <div className="readiness-actions">
