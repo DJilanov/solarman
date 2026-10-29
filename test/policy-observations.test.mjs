@@ -144,6 +144,57 @@ test("near-target grid charging and its 50 percent transition require their own 
   assert.equal(unchanged.gridStop.observedAt, null);
 });
 
+test("a grid-stop candidate survives normal upload drift across consecutive readings", () => {
+  let state = emptyObservationProgress();
+  const readings = [
+    { seconds: 0, soc: 49, battery_w: -1937, grid_w: 2271 },
+    { seconds: 304, soc: 49, battery_w: -1931, grid_w: 2853 },
+    { seconds: 606, soc: 50, battery_w: 0, grid_w: 1420 },
+    { seconds: 909, soc: 50, battery_w: 0, grid_w: 1220 },
+  ];
+  for (const [index, { seconds, ...values }] of readings.entries()) {
+    const at = new Date(
+      Date.parse(started) + seconds * 1000,
+    ).toISOString();
+    state = advance(state, index * 5, {
+      ...values,
+      observed_at: at,
+      received_at: new Date(Date.parse(at) + 1000).toISOString(),
+    });
+    if (index < 3) assert.equal(state.gridStop.observedAt, null);
+  }
+  assert.ok(state.gridCharge.observedAt);
+  assert.equal(state.gridStop.observedAt, state.last.at);
+  assert.equal(state.gridStop.count, 2);
+  assert.equal(
+    state.gridStop.first.at,
+    new Date(Date.parse(started) + 606000).toISOString(),
+  );
+});
+
+test("an interrupted grid-stop candidate cannot use an old approach to complete later", () => {
+  for (const interruption of [
+    { minutes: 21, values: {} },
+    { minutes: 14, values: { pv_w: 1200 } },
+    { minutes: 14, values: { battery_w: -300 } },
+    { minutes: 14, values: { soc: 51 } },
+  ]) {
+    let state = advance(emptyObservationProgress(), 0, {
+      soc: 48,
+      battery_w: -1940,
+      grid_w: 3100,
+    });
+    state = advance(state, 5, { soc: 49, battery_w: -1940, grid_w: 3100 });
+    state = advance(state, 10);
+    assert.equal(state.gridStop.count, 1);
+    state = advance(state, interruption.minutes, interruption.values);
+    state = advance(state, interruption.minutes + 5);
+    state = advance(state, interruption.minutes + 10);
+    assert.equal(state.gridStop.observedAt, null);
+    assert.equal(state.gridStop.count, 0);
+  }
+});
+
 test("gaps, mixed solar and continued charging cannot manufacture a grid-stop transition", () => {
   let state = advance(emptyObservationProgress(), 0, {
     soc: 48,

@@ -6637,6 +6637,54 @@ test("policy observations persist evidence across collector restart and export i
   }
 });
 
+test("policy observations retain a drifting grid-stop candidate across collector restart", async () => {
+  const f = await observationFixture();
+  try {
+    assert.equal((await f.create()).status, 200);
+    const id = (await f.state()).run.id;
+    await pool.query(
+      "UPDATE policy_observation_runs SET started_at=clock_timestamp()-interval '2 hours' WHERE id=$1",
+      [id],
+    );
+    const charging = { soc: 49, pvW: 0, gridW: 3000, batteryW: -1930 };
+    const stopped = { soc: 50, pvW: 0, gridW: 1100, batteryW: 0 };
+    await f.insert(0, charging);
+    await f.insert(5 + 4 / 60, charging);
+    await f.insert(10 + 6 / 60, stopped);
+    const before = f.calls.length;
+    await new PolicyObservations(pool).process(f.target.tenant, id);
+    const candidate = (await f.state()).run.progress;
+    assert.ok(candidate.gridCharge.observedAt);
+    assert.equal(candidate.gridStop.count, 1);
+    assert.equal(candidate.gridStop.observedAt, null);
+    await f.insert(15 + 9 / 60, stopped);
+    await new PolicyObservations(pool).process(f.target.tenant, id);
+    const saved = (await f.state()).run.progress;
+    assert.equal(saved.accepted, 4);
+    assert.equal(saved.gridStop.count, 2);
+    assert.equal(saved.gridStop.observedAt, saved.last.at);
+    assert.ok(
+      Date.parse(saved.gridStop.last.at) -
+        Date.parse(saved.gridCharge.last.at) >
+        600000,
+    );
+    await new PolicyObservations(pool).process(f.target.tenant, id);
+    assert.deepEqual((await f.state()).run.progress, saved);
+    assert.equal(f.calls.length, before);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT paused,control_enabled,manual_topup FROM controller_state WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0],
+      { paused: true, control_enabled: false, manual_topup: false },
+    );
+  } finally {
+    await f.dispose();
+  }
+});
+
 test("policy observations cannot relabel invalidated evidence when a stale browser ends a run", async () => {
   const f = await observationFixture();
   try {

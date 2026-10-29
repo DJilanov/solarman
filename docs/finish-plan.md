@@ -1,6 +1,6 @@
 # Solarman completion plan
 
-Updated 2026-10-29. Commissioning, tenant notifications, the independent-watchdog implementation and firmware evidence reporting are deployed through release `46c643431b22433d8fe45d3e595c1f1f6a1a39b4`. The watchdog still needs its own server and selected recipient. This is the current finish plan; [dashboard-plan.md](dashboard-plan.md) retains the original requirements and historical implementation notes.
+Updated 2026-10-29. Commissioning, tenant notifications, the independent-watchdog implementation, firmware evidence reporting and archive/erasure-receipt integrity checks are deployed. The watchdog still needs its own server and selected recipient. This is the current finish plan; [dashboard-plan.md](dashboard-plan.md) retains the original requirements and historical implementation notes.
 
 ## What is actually locked
 
@@ -8,10 +8,10 @@ The quoted Bulgarian monitoring-only notice is an unused translation entry. The 
 
 | Area | Verified state | Remaining work |
 | --- | --- | --- |
-| Native diagnostics | All nine checks passed at 21:14:30 UTC on October 28 after the commissioning deployment. Reports expire after 30 minutes while control is inactive. | Refresh before activation; retain explicit failure/late-response states. Earlier 530/timeout causes remain undiagnosed. |
+| Native diagnostics | All nine checks last passed at 23:32:32 UTC on October 28. Reports expire after 30 minutes while control is inactive. | Refresh before activation; retain explicit failure/late-response states. Earlier 530/timeout causes remain undiagnosed. |
 | Activation | Host writes and workspace control are off. Automation is paused; manual top-up is off. Device-bound commissioning is also required. | Commissioning software is deployed; physical acceptance and the independent source-limit contract remain open. |
-| Physical changes | Zero application inverter-write intents and zero unresolved bindings; scheduled permission is confirmed off. | Attended write/recovery tests have not been performed. |
-| Policy observations | A real, device-bound run had 36 accepted samples and no collector failure at 23:24 UTC on October 28, surviving the commissioning and notification deployments. | Above-50% solar charging/discharging, the reserve transition and a full day/night cycle remain unproven. |
+| Physical changes | Zero application inverter-write intents and zero unresolved bindings; scheduled permission was last verified off. | Attended write/recovery tests have not been performed. |
+| Policy observations | The real, device-bound run had 54 accepted samples and no collector failure at 00:52 UTC on October 29. Later read-only replay also identified a below-reserve charge/stop transition missed by the previous detector; see below. | Above-50% solar charging/discharging, attended recovery and a full day/night cycle remain unproven. |
 | Alerts | Durable in-app incidents and tenant-configured Telegram delivery are deployed. The independent watchdog implementation adds fresh health challenges, TCP context, durable retries and restore quarantine. | Select a real destination, provide an accessible separate monitoring host and prove outage/recovery delivery. |
 | Hosted tenants | The connected test-database rehearsal covers attended commands and notifications. The native Chrome production audit also verified signup, actual provider discovery, duplicate protection, 22 translated page checks and real closure/removal. Production has migrations 001–021. | Complete the browser journey with a different bound home, confirm provider entitlement and perform operator handover; physical acceptance remains separate. |
 | Recovery | Notification release passed both schema-020 upgrade and fresh schema-021 restores, with zero device or delivery calls. Backup healthy; erasure-receipt service verified. | Maintain recurring recovery drills and perform an actual operator handover. |
@@ -53,6 +53,14 @@ Verification passed: type/syntax checks, production build, 161 local unit tests 
 | Stop, failure or restart | Application intent pauses durably; possible scheduled permission is reconciled or visibly unresolved; no automatic rearming after an uncertain write. |
 
 Stored measurements previously showed approximately 1.95 kW charging at 48%, then zero battery power at 50%, with scheduled AC permission off. Solar-surplus charging at exactly 50% was also observed. These are useful native-policy signals; they do not establish the above-50% behavior or independent source limits. Prefer native inverter behavior when it already meets the requirement.
+
+### Reserve-transition detector correction
+
+Read-only inspection found a later native transition: 1,937 W and 1,931 W charging at 49% SOC (00:14:38 and 00:19:42 UTC, October 29), followed by zero battery power at 50% (00:24:44 and 00:29:47). Solar power was zero. The earlier detector required both stopped readings within 600 seconds of the last charging reading, so ordinary upload drift to 605 seconds incorrectly discarded its pending stop candidate.
+
+The correction requires a recent charging approach to begin a stop candidate, then uses the existing continuous-sample rule for its second qualifying stopped reading. A gap, mixed solar, continued charging or departure from 50% still breaks the candidate. The existing per-gap time bound, physical limits, control permissions and provider polling rate are retained. A read-only replay of 55 retained measurements with the matching binding detected the transition. The persisted run is not rewritten or replayed automatically; already missed signals require a later qualifying transition. This is observational evidence and does not grant commissioning approval.
+
+The drift regression failed against the previous detector and passed after the correction. Verification passed type/syntax checks, the production build, 164 local unit tests with three Linux-only skips, all 167 PostgreSQL integration tests and all 40 browser tests. The new database regression preserves a pending candidate across collector restart, proves repeat collection is idempotent and confirms no provider request or control activation. Source/build scanning found no configured secret values.
 
 ## Firmware evidence increment
 

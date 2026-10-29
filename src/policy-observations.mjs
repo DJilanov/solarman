@@ -189,7 +189,8 @@ export function advanceObservation(previous, row, startedAt, timezone) {
     current,
     Boolean(
       next.gridCharge.observedAt &&
-        nearApproach &&
+        // Only entry needs a recent approach; subsequent stop readings must stay continuous.
+        (nearApproach || next.gridStop.count > 0) &&
         current.soc === 50 &&
         current.pvW <= 100 &&
         current.batteryW >= -100,
