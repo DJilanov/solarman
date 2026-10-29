@@ -1,0 +1,41 @@
+To: info@bluesunpv.com
+Subject: BSE20KH3 firmware 2.02 / DSP 1.57 / HMI 1.45: independent charging limits
+
+Please forward this request to technical support for the BSE20KH3 hybrid inverter.
+
+I need the Modbus register specification applicable to this exact device:
+- Model: BSE20KH3, rated power 20,000 W
+- Protocol: 2.02
+- Main DSP: 1.57
+- HMI: 1.45
+- Operating mode: SelfUse, raw 0
+
+Required behavior:
+1. Solar supplies the house first and can charge the battery to 100% SOC, with a 5,000 W solar-to-battery charging limit.
+2. Grid battery top-up is available throughout the day, limited to 2,000 W, and stops at 50% SOC.
+3. Solar charging can continue above 50%; the battery supplies the house down to the 50% on-grid reserve.
+
+Saved diagnostic values from 2026-10-29 05:10:38 UTC:
+- 32-bit run/backup flags: 9; scheduled AC charging permission off
+- Holding register 2504: 100
+- Holding register 2505: 500
+- Holding register 3005: 1000
+- Holding register 3022: 0
+- Holding register 3023: 100
+- Holding register 3036: 500
+
+The integration currently interprets these as a 2,000 W AC charging setting, 50% AC target, 100% overall SOC maximum and 50% on-grid reserve. Please confirm these interpretations for the stated firmware.
+
+With zero solar generation, stored measurements showed approximately 1,930 W battery charging at 49% SOC while scheduled AC permission was off, followed by zero battery power at 50%. A separate attended API top-up request at 50% also left charging off. No inverter setting was written during that attended test.
+
+Please clarify:
+1. The exact addresses, data types, word order, scaling, units and allowed ranges for registers 2504/2505, 3005, 3022-3023 and 3036.
+2. Whether the AC charging limit applies to the grid contribution or total battery charging during mixed solar/grid operation, and how it interacts with native reserve charging and BMS limits.
+3. The supported setting for the 5,000 W solar charging limit: its register, units, range, whether it limits solar only or total charging, and whether it is enforced in SelfUse mode. If independent grid/solar limits are unavailable, please state that explicitly.
+4. Why holding words 3022=0 and 3023=100 coexist with approximately 1,930 W measured charging. We have not assumed that the generic maximum-charging-power table's watt scaling applies to this firmware.
+5. Required modes/flags/BMS conditions, readback verification, restoration of original settings, and any settings that require stopping the inverter before changing them.
+
+Please provide the applicable protocol document or an authoritative technical explanation for these firmware versions.
+
+Manufacturer contact reference, checked 2026-10-29:
+https://new.bluesunpv.com/contact/

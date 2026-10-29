@@ -40,6 +40,24 @@ Run the standard isolated drill with this checkpoint when verifying the live rec
 node scripts/restore-drill.mjs 721725c4-5101-43f5-81dc-bfc2a15ff4b4
 ```
 
+## Attended home check
+
+On 2026-10-29 the owner confirmed attendance, created commissioning run `31b7c811-c77e-4f4f-a7e6-5b9a972ffe9c`, opened its session and enabled attended controls. The host write permission was enabled temporarily for this check; ordinary automation remained paused and unattended approval remained blocked.
+
+| Check | Live result |
+| --- | --- |
+| Native access | Initial verification returned provider callback error 530 at 04:54:19 UTC. Diagnostics then succeeded at 04:56:35, and all nine verification checks passed at 04:57:36. The owner independently supplied a valid flags reply showing raw 9. The earlier delivery failure's cause remains undiagnosed. |
+| At-target API top-up | Command `d0857a85-25da-486b-ba7d-e459695facd4` completed at 05:06:20. Fresh readings showed SOC 50%, PV 0 W, battery power 0 W and flags 9. No scheduled top-up was requested; the temporary manual intent cleared. The frontend's at-target top-up button was also disabled. |
+| Stop | Command `607f1789-8fd5-49dc-945a-d895e57db248` completed at 05:07:13. Scheduled charging was confirmed off and cleanup was clear. |
+| Restart | After restoring the original disabled host permission, an actual PM2 restart revoked the attended session at 05:09:39. Its durable event records `expired` with `restart: true`. Workspace control and manual top-up were disabled; automation stayed paused. |
+| Final readback | Read-only verification `121b603d-67b7-4c7f-b3ab-ce5c50dd8027` passed all nine checks at 05:10:38 and resolved the restart's cleanup obligation by freshly observing permission off. The 2 kW AC setting, 50% grid target, 100% overall SOC and 50% reserve remained verified. |
+
+There were **zero application inverter-write intents** throughout this attended check. It proves the live at-target API path, Stop observation and restart revocation with charging already off. It does not prove a below-50% charging write, interrupted-write recovery, above-reserve solar/discharge behavior, a full day/night cycle or independent source-power limits. The recovery checklist still requires its actual verified disable-write evidence; this check does not manufacture it.
+
+Pre-test offsite checkpoint: `dd4c5ee4-0c11-479f-9dda-dbbb654a73a7`. The application source remained release `7e09c1387c7f8f813e4e7588614d9870a6d9489d`; the test changed runtime state and restored host permission without modifying application code.
+
+Post-test backup `db1f002e-d8f9-4794-984f-8f83922d01e1` passed isolated restore `b7bb71c4-3180-45d5-9456-9bcbb429f89f` at 05:14:53 UTC. Commissioning, observations, notifications and controls were quarantined; the actual erasure receipt was verified. There were zero device or notification calls, and independent inspection found zero remaining drill databases or roles.
+
 ## Remaining acceptance
 
 The deployed audit proves onboarding, discovery, duplicate protection, translated screens and real closure/removal. Binding and monitoring a different customer's inverter, approved physical control, day/night operation, independent source-power limits, actual alert delivery, outside-host outage detection, entitlement and operator recovery-key handover remain open in [finish-plan.md](finish-plan.md).

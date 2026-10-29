@@ -43,3 +43,5 @@ The requested clarification must establish:
 4. Required modes/flags and settings that require stopping the inverter before changing them.
 
 The existing physical-commissioning gate stays blocked on independent source limits. This evidence collection does not approve control, enable host writes, or change the 100% overall SOC / 50% grid target / 50% reserve policy. See [finish-plan.md](finish-plan.md) for the remaining physical and operational acceptance work.
+
+The [English manufacturer request](bluesun-firmware-request.txt) uses the October 29 attended check's final saved readings. It includes the model, firmware, numeric settings and questions, with no account credentials or device serial. Bluesun's [official contact page](https://new.bluesunpv.com/contact/) supplied the contact route checked on October 29. The request has been prepared for review; it has not been sent.
