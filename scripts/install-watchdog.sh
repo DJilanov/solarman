@@ -52,7 +52,7 @@ test ! -e "$1"
 install -d -m 0755 "$1"
 PREFLIGHT
 watchdog_staged=true
-git archive "$release_sha" src/watchdog-config.mjs src/watchdog-probes.mjs src/watchdog-state.mjs src/watchdog-store.mjs src/watchdog.mjs src/telegram.mjs src/notification-secrets.mjs src/stored-secret.mjs scripts/watchdog.mjs test/watchdog.test.mjs deploy/solarman-watchdog.service deploy/solarman-watchdog.timer | ssh -o BatchMode=yes "$WATCHDOG_SSH_TARGET" "tar --no-same-owner -x -C $release_path"
+git archive "$release_sha" src/watchdog-config.mjs src/watchdog-probes.mjs src/watchdog-state.mjs src/watchdog-store.mjs src/watchdog.mjs src/watchdog-permission.mjs src/web-push.mjs src/telegram.mjs src/notification-secrets.mjs src/stored-secret.mjs scripts/watchdog.mjs test/watchdog.test.mjs deploy/watchdog/package.json deploy/watchdog/package-lock.json deploy/solarman-watchdog.service deploy/solarman-watchdog.timer | ssh -o BatchMode=yes "$WATCHDOG_SSH_TARGET" "tar --no-same-owner -x -C $release_path"
 ssh -o BatchMode=yes "$WATCHDOG_SSH_TARGET" bash -s <<'DIRECTORY'
 set -euo pipefail
 if ! id solarman-watchdog >/dev/null 2>&1; then
@@ -73,6 +73,9 @@ trap 'rm -f "$incoming"' EXIT
 chown root:solarman-watchdog "$incoming"
 chmod 0640 "$incoming"
 cd "$release_path"
+cp deploy/watchdog/package.json package.json
+cp deploy/watchdog/package-lock.json package-lock.json
+PATH="$(dirname "$watchdog_node"):$PATH" npm ci --omit=dev --ignore-scripts
 "$watchdog_node" --test test/watchdog.test.mjs
 runuser -u solarman-watchdog -- "$watchdog_node" scripts/watchdog.mjs probe "$incoming"
 runuser -u solarman-watchdog -- "$watchdog_node" scripts/watchdog.mjs status "$incoming" >/dev/null

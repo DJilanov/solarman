@@ -6,6 +6,10 @@ import {
   validTelegramChat,
   validTelegramToken,
 } from "./notification-secrets.mjs";
+import {
+  normalizePushSubscription,
+  webPushConfiguration,
+} from "./web-push.mjs";
 
 export class WatchdogError extends Error {
   /** @param {string} code */
@@ -15,7 +19,8 @@ export class WatchdogError extends Error {
   }
 }
 
-/** @typedef {{version:1,url:string,originHost:string,originPort:number,label:string,language:'en'|'bg',delivery:null|{botToken:string,chatId:string,enabled:boolean}}} WatchdogConfig */
+/** @typedef {{kind:'webpush',subscription:import('./web-push.mjs').WebPushSubscription,vapid:import('./web-push.mjs').WebPushConfiguration,permission:{url:string,token:string},enabled:boolean}} WatchdogPushDelivery */
+/** @typedef {{version:1,url:string,originHost:string,originPort:number,label:string,language:'en'|'bg',delivery:null|{botToken:string,chatId:string,enabled:boolean}|WatchdogPushDelivery}} WatchdogConfig */
 
 /** @param {unknown} value @returns {WatchdogConfig} */
 export function watchdogConfig(value) {
@@ -58,14 +63,50 @@ export function watchdogConfig(value) {
     let delivery = null;
     if (value.delivery !== null) {
       const d = value.delivery;
-      if (
-        !d ||
-        !validTelegramToken(d.botToken) ||
-        !validTelegramChat(d.chatId) ||
-        typeof d.enabled !== "boolean"
-      )
-        throw new Error();
-      delivery = { botToken: d.botToken, chatId: d.chatId, enabled: d.enabled };
+      if (d?.kind === "webpush") {
+        const permission = new URL(d.permission?.url);
+        if (
+          typeof d.enabled !== "boolean" ||
+          permission.origin !== url.origin ||
+          permission.search ||
+          permission.hash ||
+          permission.username ||
+          permission.password ||
+          !/^\/api\/notifications\/push\/watchdog\/[a-f0-9-]{36}$/.test(
+            permission.pathname,
+          ) ||
+          !/^[a-f0-9]{64}$/.test(d.permission?.token) ||
+          d.vapid?.subject !== url.origin
+        )
+          throw new Error();
+        const vapid = webPushConfiguration({
+          WEB_PUSH_PUBLIC_KEY: d.vapid.publicKey,
+          WEB_PUSH_PRIVATE_KEY: d.vapid.privateKey,
+          PUBLIC_URL: d.vapid.subject,
+        });
+        if (!vapid) throw new Error();
+        delivery = {
+          kind: "webpush",
+          subscription: normalizePushSubscription(d.subscription),
+          vapid,
+          permission: { url: permission.href, token: d.permission.token },
+          enabled: d.enabled,
+        };
+      } else {
+        if (
+          !d ||
+          (d.kind !== undefined && d.kind !== "telegram") ||
+          !validTelegramToken(d.botToken) ||
+          !validTelegramChat(d.chatId) ||
+          typeof d.enabled !== "boolean"
+        )
+          throw new Error();
+        delivery = {
+          botToken: d.botToken,
+          chatId: d.chatId,
+          enabled: d.enabled,
+        };
+      }
     }
     return {
       version: 1,
@@ -125,12 +166,21 @@ export function watchdogBindings(config) {
   return {
     target: hash([config.url, config.originHost, config.originPort]),
     destination: config.delivery
-      ? hash([
-          config.delivery.botToken,
-          config.delivery.chatId,
-          config.language,
-          config.label,
-        ])
+      ? "kind" in config.delivery && config.delivery.kind === "webpush"
+        ? hash([
+            config.delivery.kind,
+            config.delivery.subscription,
+            config.delivery.vapid,
+            config.delivery.permission,
+            config.language,
+            config.label,
+          ])
+        : hash([
+            config.delivery.botToken,
+            config.delivery.chatId,
+            config.language,
+            config.label,
+          ])
       : null,
   };
 }

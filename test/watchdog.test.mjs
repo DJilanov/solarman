@@ -13,7 +13,12 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createECDH, randomBytes } from "node:crypto";
+import webpush from "web-push";
+import {
+  probeWatchdogPermission,
+  WATCHDOG_PERMISSION_MS,
+} from "../src/watchdog-permission.mjs";
 import {
   watchdogConfig,
   watchdogBindings,
@@ -70,6 +75,8 @@ async function fixture(t, configured = true) {
       healthProbe: async () => healthy,
       originProbe: async () => "reachable",
       send: (input) => f.sender(input),
+      sendPush: (input) => f.pushSender(input),
+      permissionProbe: async () => f.permission ?? "allowed",
       ...options,
     });
   f.state = () => readWatchdogState(stateDirectory);
@@ -87,6 +94,256 @@ async function fixture(t, configured = true) {
   };
   return f;
 }
+
+async function pushFixture(t) {
+  const f = await fixture(t);
+  const pair = createECDH("prime256v1");
+  pair.generateKeys();
+  f.config.delivery = {
+    kind: "webpush",
+    enabled: false,
+    subscription: {
+      endpoint: "https://web.push.apple.com/example-private-endpoint",
+      keys: {
+        p256dh: pair.getPublicKey().toString("base64url"),
+        auth: randomBytes(16).toString("base64url"),
+      },
+    },
+    vapid: {
+      ...webpush.generateVAPIDKeys(),
+      subject: new URL(base.url).origin,
+    },
+    permission: {
+      url:
+        new URL(base.url).origin +
+        "/api/notifications/push/watchdog/" +
+        randomUUID(),
+      token: "e".repeat(64),
+    },
+  };
+  f.pushSender = async (input) => {
+    f.sent.push(input);
+    return { state: "delivered", code: "push_accepted", messageId: null };
+  };
+  await f.saveConfig();
+  f.enable = async () => {
+    const status = await f.run({ action: "test" });
+    await f.run({ action: "confirm-test", testId: status.testId });
+    f.config.delivery.enabled = true;
+    await f.saveConfig();
+  };
+  return f;
+}
+
+test("watchdog push configuration binds the exact destination, permission and keys without exposing them", async (t) => {
+  const f = await pushFixture(t);
+  const normalized = watchdogConfig(f.config);
+  const before = watchdogBindings(normalized);
+  assert.equal(
+    before.destination,
+    watchdogBindings({
+      ...normalized,
+      delivery: { ...normalized.delivery, enabled: true },
+    }).destination,
+  );
+  for (const patch of [
+    { kind: "other" },
+    { vapid: { ...f.config.delivery.vapid, privateKey: "invalid" } },
+    {
+      permission: {
+        ...f.config.delivery.permission,
+        url:
+          "https://other.example.test/api/notifications/push/watchdog/" +
+          randomUUID(),
+      },
+    },
+    { permission: { ...f.config.delivery.permission, token: "invalid" } },
+    {
+      subscription: {
+        ...f.config.delivery.subscription,
+        endpoint: "https://127.0.0.1/private",
+      },
+    },
+  ])
+    assert.throws(
+      () =>
+        watchdogConfig({
+          ...f.config,
+          delivery: { ...f.config.delivery, ...patch },
+        }),
+      { code: "configuration_invalid" },
+    );
+  assert.notEqual(
+    before.destination,
+    watchdogBindings(
+      watchdogConfig({
+        ...f.config,
+        delivery: {
+          ...f.config.delivery,
+          permission: {
+            ...f.config.delivery.permission,
+            token: "f".repeat(64),
+          },
+        },
+      }),
+    ).destination,
+  );
+  const status = await f.run();
+  const text = JSON.stringify(status);
+  assert.equal(text.includes(f.config.delivery.vapid.privateKey), false);
+  assert.equal(text.includes(f.config.delivery.subscription.endpoint), false);
+  assert.equal(text.includes(f.config.delivery.permission.token), false);
+});
+
+test("watchdog permission reads require a fresh challenge and bounded authenticated response", async () => {
+  const permission = {
+    url: "https://example.test/api/notifications/push/watchdog/" + randomUUID(),
+    token: "f".repeat(64),
+  };
+  for (const [status, allowed, expected] of [
+    [200, true, "allowed"],
+    [200, false, "denied"],
+    [403, false, "denied"],
+    [503, false, "unavailable"],
+  ]) {
+    assert.equal(
+      await probeWatchdogPermission(permission, {
+        transport: async (url, options) => {
+          assert.equal(
+            options.headers.authorization,
+            "Bearer " + permission.token,
+          );
+          assert.equal(options.redirect, "error");
+          return Response.json(
+            { allowed, probe: new URL(url).searchParams.get("probe") },
+            { status },
+          );
+        },
+      }),
+      expected,
+    );
+  }
+  assert.equal(
+    await probeWatchdogPermission(permission, {
+      transport: async () =>
+        Response.json({ allowed: true, probe: "a".repeat(32) }),
+    }),
+    "unavailable",
+  );
+  assert.equal(
+    await probeWatchdogPermission(permission, {
+      transport: async () => new Response(" ".repeat(4097)),
+    }),
+    "unavailable",
+  );
+  assert.equal(
+    await probeWatchdogPermission(permission, {
+      transport: async () => {
+        throw new Error(permission.token);
+      },
+    }),
+    "unavailable",
+  );
+});
+
+test("push acceptance requires the operator's exact test confirmation before independent outage and recovery delivery", async (t) => {
+  const f = await pushFixture(t);
+  let status = await f.run({ action: "test" });
+  assert.equal(status.verified, false);
+  assert.equal(status.enabled, false);
+  assert.equal(status.recent[0].lastCode, "push_accepted");
+  await assert.rejects(
+    f.run({ action: "confirm-test", testId: randomUUID() }),
+    { code: "push_test_confirmation_invalid" },
+  );
+  status = await f.run({ action: "confirm-test", testId: status.testId });
+  assert.equal(status.verified, true);
+  assert.equal(status.enabled, false);
+  assert.equal(status.recent[0].lastCode, "push_operator_confirmed");
+  f.config.delivery.enabled = true;
+  await f.saveConfig();
+  await f.tick(false);
+  await f.tick(false);
+  status = await f.tick(false);
+  assert.equal(status.condition, "down");
+  assert.equal(f.sent.length, 2);
+  await f.tick();
+  status = await f.tick();
+  assert.equal(status.condition, "healthy");
+  assert.equal(f.sent.length, 3);
+  assert.match(f.sent[1].payload.body, /не отговаря/);
+  assert.match(f.sent[2].payload.body, /отново/);
+  assert.equal(f.sent[1].payload.url, "/settings/health");
+  assert.equal(f.sent[1].payload.receipt, undefined);
+  assert.equal(f.sent[1].payload.body.includes(f.config.label), false);
+  const state = await f.state();
+  validateWatchdogState(state);
+  assert.equal(state.jobs[0].history[0].code, "push_accepted");
+  assert.ok(state.jobs[0].operatorConfirmedAt);
+});
+
+test("dashboard subscription revocation cancels independent delivery and a later lease does not restore approval", async (t) => {
+  const f = await pushFixture(t);
+  await f.enable();
+  await f.tick(false);
+  await f.tick(false);
+  f.permission = "denied";
+  let status = await f.tick(false);
+  assert.equal(status.enabled, false);
+  assert.equal(status.verified, false);
+  assert.equal(status.blockedCode, "subscription_revoked");
+  assert.equal(f.sent.length, 1);
+  await assert.rejects(
+    f.run({ action: "confirm-test", testId: status.testId }),
+    { code: "subscription_permission_unavailable" },
+  );
+  f.permission = "allowed";
+  status = await f.tick(false);
+  assert.equal(status.enabled, false);
+  assert.equal(status.verified, false);
+  assert.equal(f.sent.length, 1);
+});
+
+test("a bounded permission lease delivers during an app outage but cannot test or continue indefinitely", async (t) => {
+  const f = await pushFixture(t);
+  await f.enable();
+  await f.tick();
+  f.permission = "unavailable";
+  await assert.rejects(f.run({ action: "new-test" }), {
+    code: "subscription_permission_unavailable",
+  });
+  await f.tick(false);
+  await f.tick(false);
+  let status = await f.tick(false);
+  assert.equal(status.condition, "down");
+  assert.equal(f.sent.length, 2);
+  f.now += WATCHDOG_PERMISSION_MS;
+  status = await f.run({ healthProbe: async () => failed });
+  assert.equal(status.enabled, false);
+  assert.equal(status.verified, false);
+  assert.equal(status.blockedCode, "subscription_permission_expired");
+  assert.equal(f.sent.length, 2);
+});
+
+test("restored push targets cannot reuse an accepted or operator-confirmed test", async (t) => {
+  const f = await pushFixture(t);
+  await f.enable();
+  const old = (await f.state()).testId;
+  let status = await f.run({ action: "quarantine" });
+  assert.equal(status.enabled, false);
+  assert.equal(status.verified, false);
+  await assert.rejects(f.run({ action: "confirm-test", testId: old }), {
+    code: "push_test_confirmation_invalid",
+  });
+  f.config.delivery.enabled = false;
+  await f.saveConfig();
+  status = await f.run({ action: "new-test" });
+  assert.notEqual(status.testId, old);
+  assert.equal(status.verified, false);
+  status = await f.run({ action: "confirm-test", testId: status.testId });
+  assert.equal(status.verified, true);
+  assert.equal(status.enabled, false);
+});
 
 async function server(t, handler) {
   const instance = createServer(handler);

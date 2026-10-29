@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { watchdogBindings, WatchdogError } from "./watchdog-config.mjs";
+import { WATCHDOG_PERMISSION_MS } from "./watchdog-permission.mjs";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const HASH = /^[a-f0-9]{64}$/;
@@ -21,6 +22,7 @@ export function emptyWatchdogState() {
     destination: null,
     enabled: false,
     verifiedAt: null,
+    permissionAt: null,
     blockedCode: null,
     quarantined: false,
     condition: "unknown",
@@ -49,6 +51,9 @@ export function validateWatchdogState(state) {
       typeof state.enabled !== "boolean" ||
       typeof state.quarantined !== "boolean" ||
       (state.verifiedAt !== null && !timestamp(state.verifiedAt)) ||
+      (state.permissionAt !== undefined &&
+        state.permissionAt !== null &&
+        !timestamp(state.permissionAt)) ||
       (state.blockedCode !== null && !/^[a-z_]{1,60}$/.test(state.blockedCode))
     )
       throw new Error();
@@ -168,6 +173,11 @@ export function validateWatchdogState(state) {
       )
         throw new Error();
       if (
+        job.operatorConfirmedAt !== undefined &&
+        !timestamp(job.operatorConfirmedAt)
+      )
+        throw new Error();
+      if (
         job.history.some((attempt) => attempt.state === "unconfirmed") &&
         !job.hadUnconfirmed
       )
@@ -226,6 +236,7 @@ export function reconcileWatchdog(state, config, now) {
   }
   if (targetChanged || destinationChanged) {
     state.verifiedAt = null;
+    state.permissionAt = null;
     state.blockedCode = null;
     state.testId = null;
   }
@@ -239,16 +250,20 @@ export function reconcileWatchdog(state, config, now) {
       if (job.kind === "test") cancel(job, "restore", now);
 }
 
-/** @param {object} state @param {import('./watchdog-config.mjs').WatchdogConfig} config @returns {boolean} */
-export function watchdogDeliveryEnabled(state, config) {
+/** @param {object} state @param {import('./watchdog-config.mjs').WatchdogConfig} config @param {number} [now] @returns {boolean} */
+export function watchdogDeliveryEnabled(state, config, now = Date.now()) {
   const bindings = watchdogBindings(config);
   return Boolean(
     config.delivery?.enabled &&
-      !state.quarantined &&
-      state.target === bindings.target &&
-      state.destination === bindings.destination &&
-      state.verifiedAt &&
-      !state.blockedCode,
+    !state.quarantined &&
+    state.target === bindings.target &&
+    state.destination === bindings.destination &&
+    (config.delivery?.kind !== "webpush" ||
+      (state.permissionAt &&
+        now >= Date.parse(state.permissionAt) &&
+        now - Date.parse(state.permissionAt) < WATCHDOG_PERMISSION_MS)) &&
+    state.verifiedAt &&
+    !state.blockedCode,
   );
 }
 
@@ -349,7 +364,10 @@ export function observeWatchdog(state, config, sample) {
       for (const job of state.jobs)
         if (job.incidentId === state.incident.id && job.kind === "outage")
           cancel(job, "recovered_before_delivery", now);
-      if (state.incident.announced && watchdogDeliveryEnabled(state, config))
+      if (
+        state.incident.announced &&
+        watchdogDeliveryEnabled(state, config, now)
+      )
         enqueue(state, config, "recovery", now, state.incident.id);
     }
     state.condition = "healthy";
@@ -358,7 +376,7 @@ export function observeWatchdog(state, config, sample) {
   if (
     state.incident &&
     !state.incident.announced &&
-    watchdogDeliveryEnabled(state, config)
+    watchdogDeliveryEnabled(state, config, now)
   ) {
     enqueue(state, config, "outage", now, state.incident.id);
     state.incident.announced = true;
@@ -430,6 +448,7 @@ export function quarantineWatchdog(state, now) {
   for (const job of state.jobs) cancel(job, "restore", now);
   state.quarantined = true;
   state.verifiedAt = null;
+  state.permissionAt = null;
   state.blockedCode = "restore";
   state.testId = null;
   if (state.incident) state.incident.announced = false;
@@ -447,7 +466,7 @@ export function dueWatchdog(state, config, now, onlyId = null) {
           Date.parse(job.nextAttemptAt) <= now &&
           ((job.kind === "test" &&
             (!state.quarantined || !config.delivery.enabled)) ||
-            watchdogDeliveryEnabled(state, config)),
+            watchdogDeliveryEnabled(state, config, now)),
       )
       .sort(
         (a, b) =>
@@ -526,7 +545,12 @@ export function completeWatchdogDelivery(state, job, result, now) {
     job.target === state.target &&
     job.destination === state.destination &&
     !job.cancelRequested;
-  if (delivered && job.kind === "test" && current) {
+  if (
+    delivered &&
+    result.code !== "push_accepted" &&
+    job.kind === "test" &&
+    current
+  ) {
     if ((!state.verifiedAt || state.blockedCode) && state.incident)
       state.incident.announced = false;
     state.verifiedAt = at(now);
@@ -540,13 +564,68 @@ export function completeWatchdogDelivery(state, job, result, now) {
       "bot_unauthorized",
       "destination_rejected",
       "invalid_configuration",
+      "push_expired",
+      "push_authorization_rejected",
     ].includes(result.code)
   ) {
     state.verifiedAt = null;
     state.blockedCode = result.code;
+    if (result.code.startsWith("push_")) state.testId = null;
     for (const pending of state.jobs)
       cancel(pending, "destination_blocked", now);
   }
+}
+
+/** @param {object} state @param {import('./watchdog-config.mjs').WatchdogConfig} config @param {'allowed'|'denied'|'unavailable'} permission @param {number} now @returns {void} */
+export function updateWatchdogPermission(state, config, permission, now) {
+  if (config.delivery?.kind !== "webpush") return;
+  if (permission === "allowed") state.permissionAt = at(now);
+  else if (
+    permission === "denied" ||
+    (state.permissionAt &&
+      now - Date.parse(state.permissionAt) >= WATCHDOG_PERMISSION_MS)
+  ) {
+    state.permissionAt = null;
+    state.verifiedAt = null;
+    state.testId = null;
+    state.blockedCode =
+      permission === "denied"
+        ? "subscription_revoked"
+        : "subscription_permission_expired";
+    for (const job of state.jobs) cancel(job, state.blockedCode, now);
+  }
+}
+
+/** @param {object} state @param {import('./watchdog-config.mjs').WatchdogConfig} config @param {string} id @param {number} now @returns {void} */
+export function confirmWatchdogPushTest(state, config, id, now) {
+  const job = state.jobs.find(
+    (item) => item.id === id && item.id === state.testId,
+  );
+  const binding = watchdogBindings(config);
+  if (
+    config.delivery?.kind !== "webpush" ||
+    !job ||
+    job.kind !== "test" ||
+    job.state !== "delivered" ||
+    job.cancelRequested ||
+    !["push_accepted", "push_operator_confirmed"].includes(job.lastCode) ||
+    job.target !== binding.target ||
+    job.destination !== binding.destination ||
+    !state.permissionAt ||
+    now < Date.parse(state.permissionAt) ||
+    now - Date.parse(state.permissionAt) >= WATCHDOG_PERMISSION_MS ||
+    now < Date.parse(job.completedAt) ||
+    now - Date.parse(job.completedAt) >= WATCHDOG_PERMISSION_MS
+  )
+    throw new WatchdogError("push_test_confirmation_invalid");
+  if (state.quarantined && config.delivery.enabled)
+    throw new WatchdogError("disable_delivery_before_testing");
+  job.operatorConfirmedAt ??= at(now);
+  job.lastCode = "push_operator_confirmed";
+  state.verifiedAt = job.operatorConfirmedAt;
+  state.quarantined = false;
+  state.blockedCode = null;
+  if (state.incident) state.incident.announced = false;
 }
 
 /** @param {object} state @param {number} now @returns {void} */
@@ -567,8 +646,8 @@ export function pruneWatchdog(state, now) {
   );
 }
 
-/** @param {object} state @param {import('./watchdog-config.mjs').WatchdogConfig} config @returns {object} */
-export function watchdogStatus(state, config) {
+/** @param {object} state @param {import('./watchdog-config.mjs').WatchdogConfig} config @param {number} [now] @returns {object} */
+export function watchdogStatus(state, config, now = Date.now()) {
   const binding = watchdogBindings(config);
   const matches =
     state.target === binding.target &&
@@ -582,7 +661,17 @@ export function watchdogStatus(state, config) {
     configured: config.delivery !== null,
     verified: matches && state.verifiedAt !== null,
     quarantined: state.quarantined,
-    enabled: watchdogDeliveryEnabled(state, config),
+    enabled: watchdogDeliveryEnabled(state, config, now),
+    transport:
+      config.delivery?.kind === "webpush"
+        ? "webpush"
+        : config.delivery
+          ? "telegram"
+          : null,
+    permissionAt:
+      config.delivery?.kind === "webpush" && matches
+        ? (state.permissionAt ?? null)
+        : null,
     blockedCode: matches ? state.blockedCode : null,
     configurationChanged: !matches,
     testId: matches ? state.testId : null,

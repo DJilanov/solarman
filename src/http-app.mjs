@@ -293,6 +293,25 @@ export function createApp({ pool, hub, config }) {
       }
       if (request.method === "POST" && request.headers.origin !== config.origin)
         throw new HttpError(403, "Request origin is not allowed");
+      const watchdogPermission =
+        /^\/api\/notifications\/push\/watchdog\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.exec(pathname);
+      if (watchdogPermission && request.method === "GET") {
+        const probe = url.searchParams.get("probe");
+        if (
+          !probe ||
+          !/^[a-f0-9]{32}$/.test(probe) ||
+          url.searchParams.getAll("probe").length !== 1
+        )
+          throw new HttpError(400, "Invalid health probe");
+        const limitKey = limitPublic(request, response, "watchdog-permission");
+        const allowed = await hub.notifications.push.watchdogPermission(
+          watchdogPermission[1],
+          request.headers.authorization,
+        );
+        if (allowed) limiter.clear(limitKey);
+        json(response, allowed ? 200 : 403, { allowed, probe });
+        return;
+      }
       if (pathname === "/api/notifications/push/receipt" && request.method === "POST") {
         // The encrypted push carries a one-use receipt token, including when the browser session has expired.
         const limitKey = limitPublic(request, response, "push-receipt");

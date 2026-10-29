@@ -1,8 +1,8 @@
 # Independent outage monitoring
 
-The watchdog checks the public dashboard from a separate Linux server. It needs Node 22+, systemd and util-linux `flock`. It has no npm dependencies, database access, SOLARMAN credentials or inverter commands. The main application does not start it.
+The watchdog checks the public dashboard from a separate Linux server. It needs Node 22+, systemd and util-linux `flock`. It has no database access, SOLARMAN credentials or inverter commands. A small, separately locked dependency set supplies the existing Web Push encryption library. The main application does not start it.
 
-No independent service or real recipient has been installed. Only the application host is currently accessible with the available SSH keys. A separate, always-on host and a verified destination remain prerequisites for operational acceptance. The owner selected iPhone Web Push for dashboard alerts. The watchdog transport described here is currently Telegram; pairing the independent monitor with that browser recipient remains separate work when its host is available. The main app's iPhone subscription does not by itself monitor an offline server.
+The owner selected `root@89.167.46.193` as the independent host and confirmed the dashboard's iPhone test on October 29. Installation and the separate-host test must be verified before calling outside-host delivery operational. The watchdog supports the selected iPhone subscription as well as Telegram. The main app's subscription alone does not monitor an offline server.
 
 ## Checks and durable evidence
 
@@ -18,7 +18,11 @@ State and attempts live on the monitoring host. Each dispatch is saved and synce
 
 Copy `deploy/watchdog.example.json` to a private file outside Git, mode 0600. It is valid, monitors the home dashboard in Bulgarian and has `delivery: null`, so it cannot send messages. Select `en` or `bg`, a public HTTPS `/healthz` URL without credentials/query parameters and a literal origin IP. Plain HTTP is allowed only for loopback test fixtures.
 
-For alerts, replace `delivery: null` with an object containing the actual `botToken`, numeric `chatId` and `enabled: false`. No recipient is inferred from account emails. The token file is the only required credential; never commit or log it. Installation uses root ownership, group access only for the dedicated service account and mode 0640.
+For Telegram, replace `delivery: null` with an object containing the actual `botToken`, numeric `chatId` and `enabled: false`. No recipient is inferred from account emails. Installation uses root ownership, group access only for the dedicated service account and mode 0640. Never commit or log the configuration.
+
+For the existing iPhone, run `scripts/export-watchdog.mjs <channel-id> <unused-absolute-private-path>` with the application's private environment. It requires a currently verified, enabled platform-administrator device and creates a mode-0600 configuration with delivery off. It copies only the selected subscription, its VAPID signing pair and a read-only permission token; database/provider credentials and the application encryption key are absent. Transfer it privately to the installer, then remove temporary export copies. The independent package lock installs only the Web Push library and its dependencies.
+
+The monitor checks a fresh authenticated subscription permission every minute. The token is bound to channel/workspace/user/revision/endpoint; removal, reenrollment, closure or restore stops delivery. During a real application outage, the last allowed permission can be used for at most 24 hours. An answering application with an unavailable permission endpoint cannot authorize a send. A revoked or expired permission cancels pending work and removes approval; later permission success cannot silently restore it. A changed subscription requires a fresh export and test.
 
 Export `WATCHDOG_SSH_TARGET` as the selected separate root SSH target and `WATCHDOG_CONFIG_FILE` as the absolute private path. `WATCHDOG_NODE_BINARY` optionally selects an absolute Node path; its default is `/usr/bin/node`.
 
@@ -41,10 +45,11 @@ Run commands on the monitoring host as `solarman-watchdog`, using the installed 
 | `run` | Record one sample/transitions and dispatch at most one due, permitted message. Used by the timer. |
 | `test` | Create the first destination test or resume the same last test. Confirmed tests are not resent. |
 | `new-test` | Explicitly request another test; pending work and a one-minute cooldown block it. |
+| `confirm-test <reference>` | For Web Push only, record the operator's confirmation of the exact accepted test after it appears on the selected device. This sends no message. |
 | `cancel-test` | Cancel future attempts of the last test, preserving history and uncertainty. |
 | `quarantine` | Disable effective delivery and cancel restored pending work, without network requests. |
 
-After `test`, inspect `status`. Confirmation requires Telegram's message ID for the exact chat. Then set `delivery.enabled` to `true` in the private configuration. An existing outage is queued when verified delivery becomes enabled. Changing the target, token, chat, label or language invalidates verification and cancels pending work. Credential/destination rejection blocks incident delivery until a new confirmed test.
+After `test`, inspect `status`. Telegram confirmation requires its message ID for the exact chat. Web Push initially records only `push_accepted`, never device display or automatic verification. After the operator confirms seeing the independent-monitor test, use `confirm-test <reference>` for that exact latest test; status records `push_operator_confirmed` separately from the transport attempt. Then set `delivery.enabled` to `true` in the private configuration. An existing outage is queued when verified delivery becomes enabled. Changing the target, token, chat, label or language invalidates verification and cancels pending work. Credential/destination rejection blocks incident delivery until a new confirmed test.
 
 Set `delivery.enabled` to `false` to cancel pending regular delivery on the next invocation. Explicit tests can run while regular alerts are disabled; use `cancel-test` to cancel those. Stop the timer and service to drain transport before removal or an immediate stop. Accepted messages cannot be withdrawn. History retains uncertainty even after a later confirmed retry.
 

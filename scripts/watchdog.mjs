@@ -11,13 +11,19 @@ async function main() {
   const raw = process.argv.slice(2),
     locked = raw[0] === "--under-lock";
   const args = locked ? raw.slice(1) : raw;
+  const testId = args[0] === "confirm-test" ? args[1] : undefined;
+  const parsed = testId ? [args[0], ...args.slice(2)] : args;
   const [
     action,
     configFile = "/etc/solarman-watchdog/config.json",
     directory = "/var/lib/solarman-watchdog",
-  ] = args;
+  ] = parsed;
   if (
-    args.length > 3 ||
+    parsed.length > 3 ||
+    (parsed[0] === "confirm-test" &&
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(
+        testId ?? "",
+      )) ||
     ![
       "probe",
       "status",
@@ -26,6 +32,7 @@ async function main() {
       "new-test",
       "cancel-test",
       "quarantine",
+      "confirm-test",
     ].includes(action) ||
     !path.isAbsolute(configFile) ||
     !path.isAbsolute(directory)
@@ -96,6 +103,7 @@ async function main() {
         JSON.stringify(
           await runWatchdog(configFile, directory, {
             action,
+            testId,
             signal: abort.signal,
           }),
         ),

@@ -60,4 +60,12 @@ Post-test backup `db1f002e-d8f9-4794-984f-8f83922d01e1` passed isolated restore 
 
 ## Remaining acceptance
 
-The deployed audit proves onboarding, discovery, duplicate protection, translated screens and real closure/removal. Binding and monitoring a different customer's inverter, approved physical control, day/night operation, mixed-source behavior, actual alert delivery, outside-host outage detection, entitlement and operator recovery-key handover remain open in [finish-plan.md](finish-plan.md).
+The deployed audit proves onboarding, discovery, duplicate protection, translated screens and real closure/removal. Binding and monitoring a different customer's inverter, approved physical control, day/night operation, mixed-source behavior, outside-host outage detection, entitlement and operator recovery-key handover remain open in [finish-plan.md](finish-plan.md).
+
+## iPhone delivery acceptance
+
+Release `b1de6e38cb437bd88c932b245c2001b42b64f201` was pushed and deployed with schema 022. All 187 Linux unit tests, 172 database tests and 47 browser tests passed. The public HTTPS challenge and exact release passed; native Chrome rendered the Bulgarian notification controls with a registered worker and no automatic permission prompt.
+
+The owner installed the Home Screen app and received its test. At 09:27:54 UTC on October 29, the service worker returned the one-use display receipt. An authenticated read confirmed `enabled=true`, `pending=false`, `quarantined=false`, a verified timestamp and delivery code `push_displayed`. This is real device acceptance rather than inferred push-service acceptance. No inverter command was sent.
+
+Pre-upgrade backup `aaa23f89-056c-405a-87b3-bb8d03e8a4eb` passed isolated upgrade restore `0e34342a-209a-4743-bd3c-7961d15191ac`, applying migration 022. Post-upgrade backup `b70048b5-baa3-444c-ac88-f5172d3020c5` passed restore `f7d4d20a-1c35-47c4-ad74-6768beb1dd2c`. Both quarantined controls/notifications, verified the real erasure receipt and made zero device or delivery calls. No temporary drill databases or roles remained.

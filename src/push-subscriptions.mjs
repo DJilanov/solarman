@@ -11,6 +11,8 @@ import {
   recordNotificationChange,
 } from "./notification-store.mjs";
 import { testNotification } from "./notification-messages.mjs";
+import { equalToken } from "./auth.mjs";
+import { watchdogPermissionToken } from "./watchdog-permission.mjs";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 
@@ -22,6 +24,37 @@ export class PushSubscriptions {
     this.notifications = notifications;
     this.security = new AccountSecurity(pool);
     this.configuration = webPushConfiguration(hub.env);
+  }
+
+  /** @param {string} id @param {unknown} authorization @returns {Promise<boolean>} */
+  async watchdogPermission(id, authorization) {
+    if (
+      typeof authorization !== "string" ||
+      !/^Bearer [a-f0-9]{64}$/.test(authorization)
+    )
+      return false;
+    const channel = (
+      await this.pool.query(
+        `SELECT c.*,t.lifecycle FROM notification_channels c JOIN tenants t ON t.id=c.tenant_id
+       JOIN users u ON u.tenant_id=c.tenant_id AND u.id=c.user_id
+       WHERE c.id=$1 AND c.kind='webpush'`,
+        [id],
+      )
+    ).rows[0];
+    return Boolean(
+      channel &&
+      this.configuration &&
+      equalToken(
+        authorization.slice(7),
+        watchdogPermissionToken(this.hub.key, channel),
+      ) &&
+      channel.enabled &&
+      !channel.quarantined &&
+      !channel.revoked_at &&
+      channel.verified_at &&
+      channel.secret &&
+      ["active", "suspended"].includes(channel.lifecycle),
+    );
   }
 
   /** @param {{id:string,tenant_id:string}} session @returns {Promise<object>} */

@@ -27,6 +27,7 @@ import { ApiCapacityError } from "../../src/api-capacity.mjs";
 import { quarantineControlsForRollback } from "../../src/control-quarantine.mjs";
 import { Notifications } from "../../src/notifications.mjs";
 import { webPushConfiguration } from "../../src/web-push.mjs";
+import { watchdogPermissionToken } from "../../src/watchdog-permission.mjs";
 import { quarantineNotifications } from "../../src/notification-lifecycle.mjs";
 import { verifyStoredNotificationSecrets } from "../../src/notification-secrets.mjs";
 import { ControlJournal } from "../../src/control-journal.mjs";
@@ -7603,6 +7604,48 @@ async function browserPushFixture() {
   const acknowledge = (receipt, patch = {}) => fetchApi("/notifications/push/receipt", { method: "POST", body: { ...receipt, ...patch }, csrf: false });
   return { ...f, pushed, subscription, pushState, pushChange, subscribe, acknowledge };
 }
+
+test("independent push permission requires a verified live subscription and invalidates removed, changed or restored targets", async () => {
+  const f = await browserPushFixture();
+  const request = async (id, token) => {
+    const probe = randomBytes(16).toString("hex");
+    const response = await fetch(`${origin}/api/notifications/push/watchdog/${id}?probe=${probe}`,{headers:{authorization:"Bearer "+token}});
+    const body = await response.json();
+    assert.equal(body.probe,probe);
+    assert.equal(response.headers.get("cache-control"),"no-store");
+    assert.deepEqual(Object.keys(body).sort(),["allowed","probe"]);
+    return {status:response.status,allowed:body.allowed};
+  };
+  try {
+    await f.subscribe();
+    let channel = (await pool.query("SELECT * FROM notification_channels WHERE tenant_id=$1 AND kind='webpush'",[f.target.tenant])).rows[0];
+    const token = watchdogPermissionToken(key,channel);
+    assert.deepEqual(await request(channel.id,token),{status:403,allowed:false});
+    await f.service.runOnce(); await f.acknowledge(f.pushed[0].payload.receipt);
+    assert.deepEqual(await request(channel.id,token),{status:200,allowed:true});
+    assert.deepEqual(await request(channel.id,"0".repeat(64)),{status:403,allowed:false});
+    assert.deepEqual(await request(randomUUID(),token),{status:403,allowed:false});
+    assert.equal((await fetch(`${origin}/api/notifications/push/watchdog/${channel.id}`)).status,400);
+    await pool.query("UPDATE tenants SET lifecycle='offboarding' WHERE id=$1",[f.target.tenant]);
+    assert.deepEqual(await request(channel.id,token),{status:403,allowed:false});
+    await pool.query("UPDATE tenants SET lifecycle='active' WHERE id=$1",[f.target.tenant]);
+    await pool.query("UPDATE notification_channels SET revision=revision+1 WHERE id=$1",[channel.id]);
+    assert.deepEqual(await request(channel.id,token),{status:403,allowed:false});
+    channel = (await pool.query("SELECT * FROM notification_channels WHERE id=$1",[channel.id])).rows[0];
+    const fresh = watchdogPermissionToken(key,channel);
+    assert.deepEqual(await request(channel.id,fresh),{status:200,allowed:true});
+    await quarantineNotifications(pool,f.target.tenant,"restore");
+    assert.deepEqual(await request(channel.id,fresh),{status:403,allowed:false});
+    await pool.query("DELETE FROM notification_attempts WHERE tenant_id=$1",[f.target.tenant]);
+    await pool.query("DELETE FROM notification_outbox WHERE tenant_id=$1",[f.target.tenant]);
+    await pool.query("DELETE FROM notification_events WHERE tenant_id=$1",[f.target.tenant]);
+    await pool.query("DELETE FROM notification_channels WHERE id=$1",[channel.id]);
+    assert.deepEqual(await request(channel.id,fresh),{status:403,allowed:false});
+  } finally {
+    await pool.query("UPDATE tenants SET lifecycle='active' WHERE id=$1",[f.target.tenant]);
+    await f.dispose();
+  }
+});
 
 test("browser push requires account proof, isolates subscriptions and enables only after a device display receipt", async () => {
   const f = await browserPushFixture();
