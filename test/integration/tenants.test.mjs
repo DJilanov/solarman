@@ -41,6 +41,7 @@ import {
   observationIdentity,
   observationBinding,
   emptyObservationProgress,
+  advanceObservation,
 } from "../../src/policy-observations.mjs";
 import { Invitations, lockInvitationEmail } from "../../src/invitations.mjs";
 import {
@@ -442,6 +443,7 @@ async function controlFixture(
   writes = false,
   owner = ids.alpha,
   commissioned = true,
+  nativeController = false,
 ) {
   await pool.query("DELETE FROM commissioning_events WHERE tenant_id=$1", [
     owner.tenant,
@@ -546,14 +548,16 @@ async function controlFixture(
       rawHolding: { 3005: 1000, 3022: 0, 3023: 100, 3036: 500 },
     }),
   };
-  runtime.controller.disable = async () => {
-    calls.push("disable");
-    return 9;
-  };
-  runtime.controller.tick = async () => {
-    calls.push("tick");
-    return { snapshot: structuredClone(snapshot), decision: decide(snapshot) };
-  };
+  if (!nativeController) {
+    runtime.controller.disable = async () => {
+      calls.push("disable");
+      return 9;
+    };
+    runtime.controller.tick = async () => {
+      calls.push("tick");
+      return { snapshot: structuredClone(snapshot), decision: decide(snapshot) };
+    };
+  }
   return {
     runtime,
     snapshot,
@@ -6960,9 +6964,14 @@ test("policy observations distinguish unavailable current identity from a change
   }
 });
 
-async function commissioningFixture(writes = false) {
+async function commissioningFixture(writes = false, nativeController = false) {
   const fixture = await lifecycleFixture();
-  const control = await controlFixture(writes, fixture.target, false);
+  const control = await controlFixture(
+    writes,
+    fixture.target,
+    false,
+    nativeController,
+  );
   await completeCommand(control.runtime, "verify", control.user);
   hub.runtimes.set(fixture.target.tenant, control.runtime);
   const state = async () =>
@@ -7016,7 +7025,7 @@ test("commissioning preparation requires reauthentication, CSRF, a fresh binding
     const state = await f.state();
     assert.equal(state.run.state, "preparing");
     assert.equal(state.run.currentBinding, true);
-    assert.equal(state.run.requirements.length, 7);
+    assert.equal(state.run.requirements.length, 6);
     assert.equal(
       state.run.requirements.every((r) => !r.passed),
       true,
@@ -7034,6 +7043,139 @@ test("commissioning preparation requires reauthentication, CSRF, a fresh binding
     );
     assert.equal((await f.change("attend", { attending: true })).status, 409);
     assert.equal((await f.change("approve")).status, 409);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("native solar approval requires physical evidence and leaves activation and Resume separate", async () => {
+  const f = await commissioningFixture(true, true);
+  try {
+    const device = new TenantJourneyCloud(
+      {
+        origin,
+        device: f.target.device,
+        providerEmail: "approval-provider@example.test",
+        providerPassword: "approval-provider-password",
+        appId: "fixture-app",
+        appSecret: "fixture-secret",
+        botToken: "unused-approval-fixture-token",
+        chatId: "-1001234567890",
+      },
+      globalThis.fetch,
+    );
+    Object.assign(f.snapshot, {
+      pvW: 0,
+      loadW: 1200,
+      gridW: 1200,
+      batteryW: 0,
+    });
+    f.runtime.client.command = async (raw) => {
+      await f.runtime.journal.authorizeDispatch(raw);
+      f.calls.push(raw);
+      return device.reply(raw);
+    };
+    assert.equal((await f.change("create")).status, 200);
+    assert.equal((await f.change("approve")).status, 409);
+    assert.equal((await f.change("attend", { attending: true })).status, 200);
+    await completeCommand(f.runtime, "commission_controls", f.user);
+    await completeCommand(f.runtime, "commission_topup", f.user);
+    const recovery = await completeCommand(f.runtime, "stop", f.user);
+    assert.equal(recovery.status, "succeeded");
+    assert.ok(device.writes.some(
+      (write) => write.address === 206 && write.values[1] === 25,
+    ));
+    assert.ok(device.writes.some(
+      (write) => write.address === 206 && write.values[1] === 9,
+    ));
+    assert.equal((await f.change("end")).status, 200);
+
+    const startedAt = new Date(Date.now() - 25 * 3600000).toISOString();
+    let progress = emptyObservationProgress();
+    for (let minute = 0; minute <= 1440; minute += 5) {
+      const at = new Date(Date.parse(startedAt) + minute * 60000);
+      let values = { soc: 50, pv_w: 0, load_w: 1000, grid_w: 1100, battery_w: 0 };
+      if (minute < 10) {
+        values = {
+          soc: minute === 0 ? 48 : 49,
+          pv_w: 0,
+          load_w: 1000,
+          grid_w: 3040,
+          battery_w: -1940,
+        };
+      } else if (minute === 20 || minute === 25) {
+        values = {
+          soc: minute === 20 ? 51 : 52,
+          pv_w: 2500,
+          load_w: 1000,
+          grid_w: 0,
+          battery_w: -1400,
+        };
+      } else if (minute === 30 || minute === 35) {
+        values = {
+          soc: minute === 30 ? 60 : 59,
+          pv_w: 0,
+          load_w: 3000,
+          grid_w: 2100,
+          battery_w: 1000,
+        };
+      }
+      progress = advanceObservation(
+        progress,
+        {
+          id: String(minute + 1),
+          observed_at: at,
+          received_at: new Date(at.getTime() + 1000),
+          reading_source: "provider",
+          sampling_seconds: 300,
+          ...values,
+        },
+        startedAt,
+        "Europe/Sofia",
+      );
+    }
+    const observationId = randomUUID();
+    const state = await f.state();
+    await pool.query(
+      "INSERT INTO policy_observation_runs(id,tenant_id,account_id,device,binding,identity,verification,cursor_id,progress,started_at) VALUES($1,$2,$3,$4,$5,$6,$7,0,$8,$9)",
+      [
+        observationId,
+        f.target.tenant,
+        f.target.account,
+        f.target.device,
+        f.runtime.controlBinding(),
+        state.identity,
+        f.runtime.verification,
+        progress,
+        startedAt,
+      ],
+    );
+    assert.equal((await f.change("evidence", { observationRunId: observationId })).status, 200);
+    assert.equal((await f.change("approve")).status, 409);
+    assert.equal((await f.change("evidence", {
+      observationRunId: observationId,
+      recoveryCommandId: recovery.id,
+    })).status, 200);
+    assert.equal((await f.state()).run.requirements.every((item) => item.passed), true);
+    assert.equal((await f.change("approve", { currentPassword: "wrong-password" })).status, 400);
+    assert.equal((await f.state()).run.state, "preparing");
+    assert.equal((await f.change("approve")).status, 200);
+    assert.equal((await f.state()).run.state, "approved");
+    assert.equal((await f.change("approve")).status, 409);
+    assert.equal(f.runtime.controlEnabled, false);
+    assert.equal(f.runtime.paused, true);
+    assert.equal(f.runtime.manualTopup, false);
+    assert.equal(f.runtime.status().control.canEnable, true);
+    assert.equal(f.runtime.status().control.canStart, false);
+    assert.equal(f.runtime.status().policy.solarPowerLimit, "native");
+    assert.equal((await completeCommand(f.runtime, "enable_controls", f.user)).status, "succeeded");
+    assert.equal(f.runtime.paused, true);
+    assert.equal((await completeCommand(f.runtime, "resume", f.user)).status, "succeeded");
+    assert.equal(f.runtime.paused, false);
+    assert.equal((await completeCommand(f.runtime, "stop", f.user)).status, "succeeded");
+    assert.equal((await f.change("invalidate")).status, 200);
+    assert.equal(f.runtime.controlEnabled, false);
+    assert.equal(f.runtime.journal.owned, false);
   } finally {
     await f.dispose();
   }
@@ -8405,7 +8547,7 @@ test("an invited tenant completes the connected home journey through attended co
     assert.equal(cloud.writes.length, 0);
     const monitoring = await json("/overview", { auth: member });
     assert.equal(monitoring.latest.soc, 30);
-    assert.equal(monitoring.controller.policy.solarPowerCapVerified, false);
+    assert.equal(monitoring.controller.policy.solarPowerLimit, "native");
     assert.equal(JSON.stringify(monitoring).includes(ids.alpha.device), false);
     const selected = await json("/settings", { auth: member });
     assert.equal(selected.account.email, fixture.providerEmail);
@@ -8437,9 +8579,9 @@ test("an invited tenant completes the connected home journey through attended co
     };
     const prepared = await commission("create");
     assert.equal(prepared.run.state, "preparing");
-    assert.equal(
-      prepared.run.requirements.find((r) => r.code === "sourceLimits").passed,
-      false,
+    assert.deepEqual(
+      prepared.run.requirements.map((r) => r.code),
+      ["solar", "discharge", "gridCharge", "gridStop", "dayNight", "recovery"],
     );
     await commission("attend", { attending: true });
     await command("commission_controls");

@@ -66,7 +66,7 @@ If hardware writes were enabled and the API is unavailable, process shutdown can
 
 ## Commissioning and rollback
 
-Migration 020 revokes previous activation while retaining cleanup obligations; activation alone cannot replace commissioning approval. Ordinary starts and enabling writes check approved device-bound commissioning. Attended sessions require current-password confirmation and end on expiry or service restart. Keep host writes disabled until an attended physical test is ready. The independent source-limit mapping remains unverified, so unattended approval stays blocked.
+Migration 020 revokes previous activation while retaining cleanup obligations; activation alone cannot replace commissioning approval. Ordinary starts and enabling writes check approved device-bound commissioning. Attended sessions require current-password confirmation and end on expiry or service restart. Keep host writes disabled until an attended physical test is ready. Approval requires all six physical acceptance checks. Solar charging follows native inverter and battery limits; the withdrawn application solar-cap requirement is not an approval blocker.
 
 If the new release fails health checks, deployment stops that process and runs `scripts/quarantine-rollback.mjs` before starting the previous release. Quarantine pauses/revokes all workspace controls, invalidates commissioning and observations, cancels queued starts and preserves physical cleanup. If quarantine fails, the previous application is not started. This prevents older software, which lacks the new commissioning gate, from inheriting an attended session.
 

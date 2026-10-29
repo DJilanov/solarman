@@ -313,7 +313,7 @@ export interface ControllerStatus {
     reserveSoc: number;
     solarTargetSoc: number;
     acChargeKw: number;
-    solarPowerCapVerified: boolean;
+    solarPowerLimit: "native";
   };
   profile: string;
   deviceSelected: boolean;
@@ -592,8 +592,7 @@ export interface CommissioningData {
         | "gridCharge"
         | "gridStop"
         | "dayNight"
-        | "recovery"
-        | "sourceLimits";
+        | "recovery";
       passed: boolean;
     }[];
     events: { action: string; revision: string; created_at: string }[];

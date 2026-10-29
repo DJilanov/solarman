@@ -27,8 +27,6 @@ export function commissioningRequirements(evidence) {
       ),
     },
     { code: "recovery", passed: Boolean(evidence?.recovery?.commandId) },
-    // This firmware's independent source-limit register contract has not been established.
-    { code: "sourceLimits", passed: false },
   ];
 }
 
@@ -350,7 +348,7 @@ export class Commissioning {
         )
           throw new SecurityError(
             409,
-            "Physical policy evidence and verified independent power limits are required before approval",
+            "Physical policy and recovery evidence are required before approval",
           );
         state = "approved";
         action = "approved";

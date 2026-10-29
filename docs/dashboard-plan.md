@@ -1,5 +1,7 @@
 # Solarman dashboard implementation plan
 
+Scope update, 2026-10-29: the owner withdrew the 5 kW solar-power-cap requirement. Solar charging follows native inverter/battery limits up to 100% SOC. The earlier solar-cap requirements below are historical and superseded; current acceptance is defined in [finish-plan.md](finish-plan.md).
+
 The current execution order, production state and acceptance gates are in the [completion plan](finish-plan.md). The audit and work breakdown below retain their original timestamps and are historical; subsequent implementation and releases are reflected in the current plan.
 
 ## Historical completion audit — 2026-10-28

@@ -2,6 +2,8 @@
 
 Updated 2026-10-29. Commissioning, tenant notifications, the independent-watchdog implementation, firmware evidence reporting and archive/erasure-receipt integrity checks are deployed. The watchdog still needs its own server and selected recipient. This is the current finish plan; [dashboard-plan.md](dashboard-plan.md) retains the original requirements and historical implementation notes.
 
+Scope update, 2026-10-29: the owner withdrew the 5 kW solar-power-cap requirement. Solar charging follows native inverter and battery limits up to the existing 100% SOC target. The 2 kW grid setting, 50% grid target and 50% reserve remain required. This supersedes the older solar-cap requirements in the historical plan.
+
 ## What is actually locked
 
 The quoted Bulgarian monitoring-only notice is an unused translation entry. The current Controls page already shows individual blockers, their responsible actor and next action. The selected `bluesun-bse20kh3` profile is supported for the observed protocol 2.02 / DSP 1.57 / HMI 1.45.
@@ -9,20 +11,20 @@ The quoted Bulgarian monitoring-only notice is an unused translation entry. The 
 | Area | Verified state | Remaining work |
 | --- | --- | --- |
 | Native diagnostics | All nine checks last passed at 05:10:38 UTC on October 29 after the attended check's restart. Reports expire after 30 minutes while control is inactive. | Refresh before activation; retain explicit failure/late-response states. The initial 530 recurred before subsequent successful reads; its cause remains undiagnosed. |
-| Activation | Host writes and workspace control are off. Automation is paused; manual top-up is off. Device-bound commissioning is also required. | Commissioning software is deployed; physical acceptance and the independent source-limit contract remain open. |
+| Activation | Host writes and workspace control are off. Automation is paused; manual top-up is off. Device-bound commissioning is also required. | Commissioning software is deployed; the remaining six physical acceptance checks must pass. |
 | Physical changes | An attended at-target API check, Stop and real restart revocation passed on October 29; permission was freshly observed off. Zero application inverter-write intents and zero unresolved bindings. | Below-target charging writes and recovery from actual scheduled permission remain untested. |
 | Policy observations | The real, device-bound run had 54 accepted samples and no collector failure at 00:52 UTC on October 29. Later read-only replay also identified a below-reserve charge/stop transition missed by the previous detector; see below. | Above-50% solar charging/discharging, attended recovery and a full day/night cycle remain unproven. |
 | Alerts | Durable in-app incidents and tenant-configured Telegram delivery are deployed. The independent watchdog implementation adds fresh health challenges, TCP context, durable retries and restore quarantine. | Select a real destination, provide an accessible separate monitoring host and prove outage/recovery delivery. |
 | Hosted tenants | The connected test-database rehearsal covers attended commands and notifications. The native Chrome production audit also verified signup, actual provider discovery, duplicate protection, 22 translated page checks and real closure/removal. Production has migrations 001–021. | Complete the browser journey with a different bound home, confirm provider entitlement and perform operator handover; physical acceptance remains separate. |
 | Recovery | Notification release passed both schema-020 upgrade and fresh schema-021 restores, with zero device or delivery calls. Backup healthy; erasure-receipt service verified. | Maintain recurring recovery drills and perform an actual operator handover. |
 
-**Baseline audit finding:** the inspected release gated starts on settings, firmware, clock, capacity and permissions without a physical-commissioning approval gate. Observation runs deliberately grant no control permission. The implementation below adds the missing gate; hardware acceptance and independent source-limit verification remain open.
+**Baseline audit finding:** the inspected release gated starts on settings, firmware, clock, capacity and permissions without a physical-commissioning approval gate. Observation runs deliberately grant no control permission. The implementation below adds the missing gate; hardware acceptance remains open.
 
 ## Commissioning implementation
 
 The commissioning increment implements durable device-bound runs/events, current-password confirmation, optimistic revisions, a 30-minute attended session, explicit test-control/top-up actions, and approval checks at acceptance, capacity activation, intent persistence and inverter dispatch. Ordinary Resume stays blocked during attended testing. Session expiry, restart, connection/firmware/lifecycle changes, restore and deployment rollback revoke the applicable permission while retaining physical cleanup. Read-only observation snapshots and verified Stop evidence can be saved separately from approval.
 
-The EN/BG commissioning page is linked from Controls. Preparation requires fresh settings checks but works with host writes off. Source-limit verification remains a blocking checklist item: neither measured low power nor a saved settings report supplies the missing firmware contract. No physical inverter write or unattended activation was performed while implementing this increment.
+The EN/BG commissioning page is linked from Controls. Preparation requires fresh settings checks but works with host writes off. The withdrawn solar-power-cap requirement no longer blocks approval. All six physical acceptance checks remain required. No physical inverter write or unattended activation was performed while implementing this increment.
 
 Commissioning checks passed: type/syntax checks, production build, 129 local unit tests with one Linux-only skip, 143 PostgreSQL integration tests and all 33 browser tests. The browser case covers lost responses, explicit attendance, Stop during pending work, EN/BG and 320 px layout. Both old/fresh offsite restore proofs passed, including attended/approved canaries, quarantine and archive checks. No production commissioning session or approval has been fabricated.
 
@@ -46,13 +48,13 @@ Verification passed: type/syntax checks, production build, 161 local unit tests 
 
 | Condition | Acceptance result |
 | --- | --- |
-| Solar surplus | House supplied first; battery can charge above 50% toward the separate 100% overall SOC target. Requested solar charging cap: 5 kW, subject to verified firmware support. |
+| Solar surplus | House supplied first; battery can charge above 50% toward the separate 100% overall SOC target. Solar power follows native inverter and battery/BMS limits. |
 | Solar deficit/night, SOC above 50% | Battery supports house consumption down to the 50% reserve. Grid can supply demand beyond available battery output. |
 | SOC below 50%, insufficient solar | Grid top-up is available throughout the day, using the verified approximately 2 kW AC setting, and stops at 50%. |
 | Mixed solar/grid | Solar has priority. Establish whether the AC setting limits total charging or the grid contribution before claiming an independent 2 kW grid cap. |
 | Stop, failure or restart | Application intent pauses durably; possible scheduled permission is reconciled or visibly unresolved; no automatic rearming after an uncertain write. |
 
-Stored measurements previously showed approximately 1.95 kW charging at 48%, then zero battery power at 50%, with scheduled AC permission off. Solar-surplus charging at exactly 50% was also observed. These are useful native-policy signals; they do not establish the above-50% behavior or independent source limits. Prefer native inverter behavior when it already meets the requirement.
+Stored measurements previously showed approximately 1.95 kW charging at 48%, then zero battery power at 50%, with scheduled AC permission off. Solar-surplus charging at exactly 50% was also observed. These are useful native-policy signals; they do not establish the above-50% behavior or exact mixed-source attribution. Prefer native inverter behavior when it already meets the requirement.
 
 ### Reserve-transition detector correction
 
@@ -66,7 +68,7 @@ The subsequent [attended home check](deployment-acceptance.md#attended-home-chec
 
 ## Firmware evidence increment
 
-The commissioning page now provides an EN/BG firmware clarification request before a run is prepared. It uses saved numeric settings, separate observed/saved firmware identities and timestamps, and explicitly unverified raw register words. Old reports retain missing-word labels rather than inferred values. An explicit settings check saves the raw words from existing reads without additional polling. Preview/copy/download never sends a provider request or support message. Public reference provenance and contradictions are recorded in [firmware-evidence.md](firmware-evidence.md); the independent source-limit and commissioning gates remain unchanged.
+The commissioning page provides an EN/BG saved-device-evidence report before a run is prepared. It uses saved numeric settings, separate observed/saved firmware identities and timestamps, and explicitly unverified raw register words. Old reports retain missing-word labels rather than inferred values. An explicit settings check saves the raw words from existing reads without additional polling. Preview/copy/download never sends a provider request or support message. The report contains diagnostic evidence rather than manufacturer questions. Public reference provenance and contradictions are recorded in [firmware-evidence.md](firmware-evidence.md); the physical commissioning gates remain required.
 
 Verification passed: type/syntax checks, production build, 162 local unit tests with three Linux-only skips, all 164 PostgreSQL integration tests and all 39 browser tests. The added browser cases cover saved/expired/malformed evidence, unavailable clipboard and recovery, UTF-8 download, privacy exclusions, profile specificity, EN/BG and a visually inspected 320 px layout. An initial integration assertion incorrectly expected raw words in Activity's filtered projection; the corrected test proves runtime status, durable settings and stored command evidence. The complete database rerun passed after that correction.
 
@@ -78,6 +80,14 @@ The connected tenant rehearsal injects one such failure during settings verifica
 
 Verification passed type/syntax checks, production build, 176 local unit tests with three Linux-only skips, all 167 PostgreSQL integration tests and all 40 browser tests. The focused retry regression failed against the previous transport. Source/build scanning found no configured secret values. A disconnected test-database tunnel was re-established after confirming its listener was absent; the focused and complete database runs then passed.
 
+## Native solar policy
+
+The owner withdrew the application solar-power cap. Runtime status now identifies solar power limits as `native`; the old unverified-cap flag and permanently failing source-limit requirement are removed. Controls, Settings, observations and diagnostic exports explain the native inverter/battery limits and the 100% SOC target in English and Bulgarian. The 2 kW AC setting, 50% grid target and 50% reserve are unchanged. Existing observation bindings are retained because no physical setting or control mapping changed.
+
+Approval still requires all four physical signals, a complete day/night cycle and verified scheduled-charge recovery. The database regression exercises simulated register writes through the real controller and journal, records observations, rejects incomplete recovery evidence and a wrong password, and proves that approval leaves controls disabled and automation paused. Activation and Resume remain explicit separate actions. Production approval and physical recovery evidence are not fabricated.
+
+Verification passed type/syntax checks, the production build, 176 local unit tests with three Linux-only skips, all 168 PostgreSQL integration tests and all 41 browser tests. The focused commissioning regression failed against the previous permanent gate. The browser suite covers consistent EN/BG policy text across Controls, Settings and observations, diagnostic exports without outreach questions, missing evidence, clipboard recovery and the inspected 320 px Bulgarian layout. Source/build scanning found no configured secret values.
+
 ## 1. Complete commissioning and activation
 
 The commissioning lifecycle, attended-control path, dispatch gates, translated states, persistence/export and restore quarantine are implemented in the increment above. Physical acceptance remains separate.
@@ -85,10 +95,10 @@ The commissioning lifecycle, attended-control path, dispatch gates, translated s
 Primary files: `src/control-readiness.mjs`, `src/tenant-runtime.mjs`, `src/control-journal.mjs`, `src/http-app.mjs`, `web/control-readiness.tsx`, `web/pages.tsx`, `web/policy-observations.tsx`.
 
 - Refresh explicit verification when preparing an actual attended session; do not repeatedly renew an unused report.
-- Resolve the independent source-limit contract before claiming full-policy approval. The pre-commissioning support report now makes that next action available without host writes or a prepared run; see [firmware-evidence.md](firmware-evidence.md).
+- Solar charging follows native inverter and battery limits up to 100% SOC. The owner withdrew the application solar-power-cap requirement. Review or export saved diagnostics without vendor outreach; see [firmware-evidence.md](firmware-evidence.md).
 - The owner requested minimal vendor interaction and cancelled the proposed firmware-clarification message before sending. Use existing documentation and collected evidence for further investigation; contact the manufacturer only for a case explicitly requested by the owner.
 - Complete the physical checklist below through the implemented attended path, preserving readbacks and recovery evidence. Verify the operator can follow monitoring → verified settings → attended commissioning → approved policy → enabled but paused → resumed supervision.
-- Retain the implemented separation between observations and permission. A passing report or observed low charging power cannot replace physical acceptance or the missing source-limit contract.
+- Retain the implemented separation between observations and permission. A passing settings report cannot replace physical acceptance and verified recovery.
 
 **Exit:** valid settings alone cannot authorize unattended starts; an owner can follow the next required action; concurrent Stop, permission changes, restart and late responses cannot bypass approval or abandon cleanup.
 
@@ -96,14 +106,14 @@ Primary files: `src/control-readiness.mjs`, `src/tenant-runtime.mjs`, `src/contr
 
 Primary files: `src/controller.mjs`, `src/telemetry.mjs`, `src/supervision.mjs`, commissioning records; procedure: [controller.md](controller.md).
 
-- Obtain the exact firmware register contract for a separate solar charging cap: address, units, range, battery-side meaning, readback and reversal. The observed raw 100 at registers 3022–3023 is insufficient evidence. The [manufacturer datasheet](https://www.bluesunpv.com/wp-content/uploads/2024/12/BSE20-30KH3_v2406-Rev-01_EN.pdf) describes ratings without providing that firmware register contract.
-- Represent verified capabilities explicitly. Display the requested 5 kW cap as unverified until demonstrated; avoid deriving a fixed power cap from variable battery voltage or unrelated BMS current telemetry.
+- Retain the verified 2 kW AC charging setting. Solar charging uses native inverter and battery/BMS limits; the application writes no solar power-limit register.
+- Present native solar power limits explicitly, separately from the 100% SOC target. Do not derive a fixed power cap from variable battery voltage or unrelated BMS current telemetry.
 - Keep the independent SOC settings intact: overall maximum 100%, grid target 50%, on-grid reserve 50%. Any new setting requires a named command with validated bounds, readback and the original value recorded.
 - Use the existing observation run during daylight and above-reserve conditions. Complete attended cases for solar charging above 50%, discharge above 50%, below-reserve charging and stopping at 50%, then mixed sources and a full day/night cycle.
 - Test Stop during pending work, delayed callbacks, lost responses, provider failure and restart. Simulate grid/battery faults, midnight/timezone changes and hard-to-produce failures in software; record which recovery outcomes were also demonstrated physically.
 - If native behavior meets the policy, keep supervision as the default. Enable repeating daily charging windows only for a demonstrated gap; application request expiry does not physically expire an unreachable inverter's schedule.
 
-**Exit:** each claimed behavior has device-bound physical evidence, no cleanup is unresolved, and the solar cap is verified or its limitation has an explicit agreed scope decision. Exact grid-versus-solar charging attribution requires suitable measurements.
+**Exit:** each claimed behavior has device-bound physical evidence, no cleanup is unresolved, and the native solar policy is explicit. Exact grid-versus-solar charging attribution requires suitable measurements.
 
 ## 3. Deliver external alerts and outage detection
 
@@ -142,11 +152,11 @@ For each independently reviewable release:
 
 ## Execution order and dependencies
 
-The commissioning and notification software is implemented. The remaining critical path is **exact firmware clarification → supported source-limit implementation, if required → attended physical acceptance → approved activation → full day/night observation**. Passive observations may continue while waiting for firmware evidence or suitable SOC/daylight conditions.
+The commissioning and notification software is implemented. The remaining critical path is **physical observations and attended recovery → approved activation → continued day/night observation**. Passive observations may continue while waiting for suitable SOC/daylight conditions.
 
 In parallel, select a notification destination and independent monitoring host, install/test the watchdog, and complete the disposable-tenant journey and EN/BG audit. Confirm the provider entitlement before admitting another controlled home. Independent outage monitoring and operator handover must pass before unattended completion.
 
-The software can be completed without manufacturing physical evidence. Daylight/SOC conditions, the independent 5 kW mapping, a chosen notification destination, an independent monitoring location and the real provider entitlement are explicit external dependencies. The full home requirement remains open until these are resolved.
+The software can be completed without manufacturing physical evidence. Daylight/SOC conditions, a chosen notification destination, an independent monitoring location and the real provider entitlement are explicit external dependencies. The full home requirement remains open until these are resolved.
 
 ## Verification record
 

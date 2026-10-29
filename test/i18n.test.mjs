@@ -45,7 +45,7 @@ test("every literal translation used by the interface exists in both catalogues"
     "control-readiness.tsx",
     "policy-observations.tsx",
     "commissioning.tsx",
-    "firmware-support.tsx",
+    "firmware-evidence.tsx",
     "notifications.tsx",
   ]) {
     const source = readFileSync(
@@ -122,9 +122,9 @@ test("account security errors and event labels have English and Bulgarian transl
     "Stored observation evidence checked.",
     "The observation change is unconfirmed. Reload its status before trying again.",
     "Unable to update observations",
-    "Support request copied",
+    "Diagnostic report copied",
     "Archive verification failed. Download it again.",
-    "Clipboard access is unavailable. Download the support request instead.",
+    "Clipboard access is unavailable. Download the diagnostic report instead.",
     "Observed in readings",
     "Waiting for conditions",
     "Window recorded",

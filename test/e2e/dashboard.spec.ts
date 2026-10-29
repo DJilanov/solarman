@@ -3690,7 +3690,7 @@ test("policy observations preserve an unknown start, distinguish physical signal
   ).toBeVisible();
   await expect(
     page.getByText(
-      "Отделният лимит от 5 kW за соларно зареждане няма проверено съответствие с настройка. Наблюдаването на мощност под 5 kW не доказва наличие на лимит.",
+      "Соларното зареждане следва ограниченията на инвертора и батерията до целеви заряд от 100%.",
       { exact: true },
     ),
   ).toBeVisible();
@@ -3866,7 +3866,6 @@ test("commissioning separates preparation from attended controls, keeps Stop ava
               "gridStop",
               "dayNight",
               "recovery",
-              "sourceLimits",
             ] as const
           ).map((code) => ({ code, passed: false })),
         };
@@ -3985,7 +3984,7 @@ test("commissioning separates preparation from attended controls, keeps Stop ava
     }),
   ).toBeVisible();
   await expect(
-    page.getByText("Отделни ограничения на мощността от мрежата и слънцето", {
+    page.getByText("Потвърдено изключване на зареждането по график", {
       exact: true,
     }),
   ).toBeVisible();
@@ -4406,7 +4405,7 @@ test("notifications retry a failed page load and paginate history without dispat
   expect(offsets).toContain(25);
 });
 
-async function firmwareSupportFixture(page: Page): Promise<OverviewData> {
+async function firmwareEvidenceFixture(page: Page): Promise<OverviewData> {
   await signIn(page);
   const overview = (await (
     await page.request.get("/api/overview")
@@ -4492,7 +4491,7 @@ async function firmwareSupportFixture(page: Page): Promise<OverviewData> {
       ],
     },
   };
-  overview.controller.policy.solarPowerCapVerified = false;
+  overview.controller.policy.solarPowerLimit = "native";
   if (overview.controller.control.verification)
     overview.controller.control.verification.holdingRegisters = {
       2504: 100,
@@ -4518,10 +4517,28 @@ async function firmwareSupportFixture(page: Page): Promise<OverviewData> {
   return overview;
 }
 
-test("firmware support is available before commissioning and exports only saved technical evidence", async ({
+test("native solar policy is consistent in Controls, Settings and observations in both languages", async ({
   page,
 }) => {
-  await firmwareSupportFixture(page);
+  await firmwareEvidenceFixture(page);
+  for (const [language, message] of [
+    ["en", "Solar charging follows the inverter and battery limits, up to the 100% SOC target."],
+    ["bg", "Соларното зареждане следва ограниченията на инвертора и батерията до целеви заряд от 100%."],
+  ] as const) {
+    await page.goto("/controls");
+    await page.locator(".language-switch select").selectOption(language);
+    for (const path of ["/controls", "/settings", "/controls/observations"]) {
+      await page.goto(path);
+      await expect(page.locator("main")).toContainText(message);
+      await expect(page.locator("main")).not.toContainText(/5\s*(kW|кВт)/i);
+    }
+  }
+});
+
+test("device evidence is available before commissioning and exports only saved technical evidence", async ({
+  page,
+}) => {
+  await firmwareEvidenceFixture(page);
   const mutations: string[] = [];
   page.on("request", (request) => {
     if (
@@ -4539,25 +4556,25 @@ test("firmware support is available before commissioning and exports only saved 
   ).toBeDisabled();
   await expect(
     page.getByRole("heading", {
-      name: "Resolve the firmware power-limit mapping",
+      name: "Saved device evidence",
       exact: true,
     }),
   ).toBeVisible();
   await page
-    .getByText("Review the firmware support request", { exact: true })
+    .getByText("Review saved device evidence", { exact: true })
     .click();
   const preview = page.getByRole("region", {
-    name: "Support request preview",
+    name: "Device evidence preview",
     exact: true,
   });
   await expect(preview).toContainText("Settings report expired");
   await expect(preview).toContainText("2026-10-28T21:14:30.000Z");
   const downloaded = page.waitForEvent("download");
   await page
-    .getByRole("button", { name: "Download support request", exact: true })
+    .getByRole("button", { name: "Download diagnostic report", exact: true })
     .click();
   const download = await downloaded;
-  expect(download.suggestedFilename()).toBe("solarman-firmware-support.txt");
+  expect(download.suggestedFilename()).toBe("solarman-device-evidence.txt");
   const file = await download.path();
   expect(file).not.toBeNull();
   const text = readFileSync(file!, "utf8");
@@ -4567,7 +4584,9 @@ test("firmware support is available before commissioning and exports only saved 
   expect(text).toContain("HMI version: 1.45");
   expect(text).toContain("AC charging setting: 2000 W");
   expect(text).toContain("Overall SOC maximum: 100 %");
-  expect(text).toContain("3022-3023");
+  expect(text).toContain("Saved holding-register words");
+  expect(text).not.toMatch(/5\s*kW/i);
+  expect(text).not.toContain("Please provide");
   expect(text).toContain("\n3022: 0\n3023: 100\n");
   expect(text).toContain("\n2504: 100\n");
   expect(text).not.toContain("PRIVATE-DIAGNOSTIC-DATA");
@@ -4591,10 +4610,10 @@ test("firmware support is available before commissioning and exports only saved 
   expect(mutations).toEqual([]);
 });
 
-test("firmware support keeps missing observations separate, handles clipboard failures and translates the request on mobile", async ({
+test("device evidence keeps missing observations separate, handles clipboard failures and translates the report on mobile", async ({
   page,
 }) => {
-  const overview = await firmwareSupportFixture(page);
+  const overview = await firmwareEvidenceFixture(page);
   const observed = overview.controller.control.firmware;
   if (!observed) throw new Error("Missing firmware fixture");
   observed.protocol = "PRIVATE-PROTOCOL";
@@ -4619,19 +4638,19 @@ test("firmware support keeps missing observations separate, handles clipboard fa
   await page.locator(".language-switch select").selectOption("bg");
   await expect(
     page.getByRole("heading", {
-      name: "Уточняване на ограниченията на мощността във фърмуера",
+      name: "Запазени данни за устройството",
       exact: true,
     }),
   ).toBeVisible();
   await page
-    .getByText("Преглед на запитването за фърмуера", { exact: true })
+    .getByText("Преглед на запазените данни за устройството", { exact: true })
     .click();
   const preview = page.getByRole("region", {
-    name: "Преглед на запитването за поддръжка",
+    name: "Преглед на данните за устройството",
     exact: true,
   });
   const text = await preview.textContent();
-  expect(text).toContain("Запитване за регистрите на фърмуера");
+  expect(text).toContain("Запазени данни за устройството");
   expect(text).not.toContain("PRIVATE-");
   expect(text?.split("Версия на основния DSP: 1.57")).toHaveLength(2);
   await page.evaluate(() =>
@@ -4648,11 +4667,11 @@ test("firmware support keeps missing observations separate, handles clipboard fa
     }),
   );
   await page
-    .getByRole("button", { name: "Копирай запитването", exact: true })
+    .getByRole("button", { name: "Копирай диагностичния отчет", exact: true })
     .click();
   await expect(
     page.getByText(
-      "Няма достъп до клипборда. Изтеглете запитването като файл.",
+      "Няма достъп до клипборда. Изтеглете диагностичния отчет като файл.",
       { exact: true },
     ),
   ).toBeVisible();
@@ -4661,23 +4680,23 @@ test("firmware support keeps missing observations separate, handles clipboard fa
       configurable: true,
       value: {
         writeText: async (value: string): Promise<void> => {
-          sessionStorage.setItem("firmware-support-copy", value);
+          sessionStorage.setItem("firmware-evidence-copy", value);
         },
       },
     }),
   );
   await page
-    .getByRole("button", { name: "Копирай запитването", exact: true })
+    .getByRole("button", { name: "Копирай диагностичния отчет", exact: true })
     .click();
   await expect(
-    page.getByText("Запитването е копирано", { exact: true }),
+    page.getByText("Диагностичният отчет е копиран", { exact: true }),
   ).toBeVisible();
   expect(
-    await page.evaluate(() => sessionStorage.getItem("firmware-support-copy")),
+    await page.evaluate(() => sessionStorage.getItem("firmware-evidence-copy")),
   ).toBe(text);
   const downloaded = page.waitForEvent("download");
   await page
-    .getByRole("button", { name: "Изтегли запитването", exact: true })
+    .getByRole("button", { name: "Изтегли диагностичния отчет", exact: true })
     .click();
   const file = await (await downloaded).path();
   expect(file).not.toBeNull();
@@ -4689,18 +4708,18 @@ test("firmware support keeps missing observations separate, handles clipboard fa
     ),
   ).toBe(true);
   await page.screenshot({
-    path: "test-results/firmware-support-mobile-bg.png",
+    path: "test-results/firmware-evidence-mobile-bg.png",
     fullPage: true,
   });
   await page.locator(".language-switch select").selectOption("en");
   await expect(
-    page.getByText("Support request copied", { exact: true }),
+    page.getByText("Diagnostic report copied", { exact: true }),
   ).not.toBeVisible();
   await expect(
-    page.getByRole("region", { name: "Support request preview", exact: true }),
-  ).toContainText("Firmware register clarification request");
+    page.getByRole("region", { name: "Device evidence preview", exact: true }),
+  ).toContainText("Saved device evidence");
   await expect(
-    page.getByRole("region", { name: "Support request preview", exact: true }),
+    page.getByRole("region", { name: "Device evidence preview", exact: true }),
   ).toContainText("2504: Not recorded");
   verification.holdingRegisters = {
     2504: -1,
@@ -4710,10 +4729,10 @@ test("firmware support keeps missing observations separate, handles clipboard fa
   };
   await page.reload();
   await page
-    .getByText("Review the firmware support request", { exact: true })
+    .getByText("Review saved device evidence", { exact: true })
     .click();
   const invalidWords = page.getByRole("region", {
-    name: "Support request preview",
+    name: "Device evidence preview",
     exact: true,
   });
   await expect(invalidWords).toContainText("2504: Not recorded");
@@ -4722,10 +4741,10 @@ test("firmware support keeps missing observations separate, handles clipboard fa
   expect(mutations).toEqual([]);
 });
 
-test("firmware support does not attach Bluesun register questions to another selected profile", async ({
+test("device evidence is hidden for another selected profile", async ({
   page,
 }) => {
-  const overview = await firmwareSupportFixture(page);
+  const overview = await firmwareEvidenceFixture(page);
   overview.controller.profile = "monitor-only";
   await page.goto("/controls/commissioning");
   await expect(
@@ -4733,12 +4752,12 @@ test("firmware support does not attach Bluesun register questions to another sel
   ).toBeVisible();
   await expect(
     page.getByRole("heading", {
-      name: "Resolve the firmware power-limit mapping",
+      name: "Saved device evidence",
       exact: true,
     }),
   ).not.toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Download support request", exact: true }),
+    page.getByRole("button", { name: "Download diagnostic report", exact: true }),
   ).not.toBeVisible();
 });
 

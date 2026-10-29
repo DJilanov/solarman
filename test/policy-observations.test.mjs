@@ -104,7 +104,6 @@ test("solar evidence needs distinct source times and a rising SOC above the grid
   assert.equal(state.solar.observedAt, reading(10).observed_at);
   assert.equal(state.solar.first.soc, 51);
   assert.equal(state.solar.last.soc, 52);
-  assert.equal("solarPowerCapVerified" in state, false);
   const original = structuredClone(state.solar);
   state = advance(state, 15, { soc: 52, pv_w: 0, battery_w: 0 });
   assert.deepEqual(state.solar, original);

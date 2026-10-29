@@ -446,7 +446,7 @@ export class TenantRuntime {
         reserveSoc: 50,
         solarTargetSoc: 100,
         acChargeKw: 2,
-        solarPowerCapVerified: false,
+        solarPowerLimit: "native",
       },
     };
   }

@@ -15,9 +15,9 @@ The supported profile is the Bluesun **BSE20KH3**, 20 kW, protocol 2.02, main DS
 
 Monitoring can display plausible native readings with different control settings, but hardware controls remain blocked. The controller never silently corrects these settings. It never writes the global SOC target, current limit, BMS protections or off-grid reserve.
 
-The requested 5 kW solar power cap is **not configured**: registers 3022–3023 returned raw 100, inconsistent with interpreting the generic protocol's watt scaling as the effective limit. The AC setting is not a separately verified grid-contribution limit during mixed PV/grid charging.
+Solar charging follows native inverter and battery/BMS limits, with the verified 100% overall SOC target. The owner withdrew the application solar-power-cap requirement on October 29. No solar power-limit register is written. The 2 kW AC setting remains required; exact source attribution during mixed PV/grid charging needs suitable measurements.
 
-The [firmware evidence review](firmware-evidence.md) records the conflicting public tables and the exact clarification still needed. The commissioning page offers an EN/BG request using saved diagnostics before a commissioning run exists. Explicit verification retains the relevant raw words from reads already performed; preparing or exporting the request adds no device request and grants no control permission.
+The [firmware evidence review](firmware-evidence.md) records the public tables and saved numeric observations. The commissioning page offers an EN/BG diagnostic report before a run exists. Explicit verification retains raw words from reads already performed; exporting the report adds no device request and grants no control permission.
 
 ## Firmware verification
 
@@ -27,7 +27,7 @@ A fresh online upload reporting a different model/protocol/firmware, or a legacy
 
 The product action is **Stop scheduled top-ups**: it pauses application requests and clears scheduled AC permission. It cannot promise that native reserve charging stops below 50%. Solar charging, the global 100% SOC target and native reserve settings are not changed by this action.
 
-The [manufacturer model datasheet](https://www.bluesunpv.com/wp-content/uploads/2024/12/BSE20-30KH3_v2406-Rev-01_EN.pdf) describes electrical ratings. This review did not establish a firmware-specific independent solar charging limit. The generic maximum-charging-power entry and the installation's observed raw 100 remain inconsistent; no power-limit write was added.
+The [manufacturer model datasheet](https://www.bluesunpv.com/wp-content/uploads/2024/12/BSE20-30KH3_v2406-Rev-01_EN.pdf) describes electrical ratings. The application leaves solar power limits to the native inverter and battery. The generic maximum-charging-power entry and the installation's observed raw 100 remain diagnostic information; no power-limit write was added.
 
 ## Runtime behavior
 
@@ -73,9 +73,9 @@ Controls separates the saved device verification from the current clock evidence
 6. Open **Commission the home policy** and prepare a device-bound run after fresh verification. Preparation works with host writes disabled and does not change the inverter. Collect policy observations separately and save their snapshot in commissioning.
 7. For an attended physical test, the server operator permits hardware writes. After fresh verification, confirm attendance with the current dashboard password and open a 30-minute session. **Enable attended controls** reserves control capacity while normal automation stays paused; **Test grid top-up to 50%** is the explicit test action. Ordinary Resume and top-up remain blocked without approved commissioning. Stop remains available during pending work.
 8. Ending or expiring the session persists pause, cancels manual intent, revokes activation and retains/attempts physical cleanup. Expiry is checked every 15 seconds without provider requests; every enabling dispatch independently rechecks its deadline. Restart cancels all attended sessions before loading runtimes. Application expiry does not turn daily inverter schedules into a physical watchdog; failed cleanup remains visible and recoverable.
-9. Save observations and, optionally, a successful Stop command with its verified disable write as recovery evidence. Unattended approval requires the physical checklist, day/night coverage and established independent source-power limits. The source-limit contract is currently unverified, so approval stays blocked. Once all required firmware capabilities and evidence are established, approval, workspace activation and Resume remain separate actions.
+9. Save observations and, optionally, a successful Stop command with its verified disable write as recovery evidence. Unattended approval requires all four observed charging/discharging signals, full day/night coverage and verified recovery. Solar power uses native inverter and battery limits. Approval, workspace activation and Resume remain separate actions.
 
-Real OpenAPI discovery, HTTPS callbacks, combined diagnostic register reads and the 20 kW rated-power register have been verified. Physical write commissioning and the separate solar charging limit remain outstanding. Reported clock comparison is now part of preflight and monitoring. Recorded production measurements show battery charging while timed AC permission is off: this flag is not proof that every native grid charging mechanism has stopped.
+Real OpenAPI discovery, HTTPS callbacks, combined diagnostic register reads and the 20 kW rated-power register have been verified. Physical write commissioning remains outstanding. Reported clock comparison is now part of preflight and monitoring. Recorded production measurements show battery charging while timed AC permission is off: this flag is not proof that every native grid charging mechanism has stopped.
 
 Observed native behavior on 2026-10-28: at 10:15 UTC, SOC was 48% and battery charging was 1,947 W with scheduled AC permission off. At 10:31 and 10:34 UTC, SOC was 50% and battery power was 0 W, with house demand supplied by solar and grid. No application writes were enabled. This supports native reserve charging and stopping at 50% for those observations; it does not yet establish solar charging or house supply from the battery above 50%.
 

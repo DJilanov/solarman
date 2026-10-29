@@ -534,7 +534,7 @@ export default function PolicyObservationsPage(): ReactNode {
           <Panel title={tr("Still requires commissioning")}>
             <p>
               {tr(
-                "The independent 5 kW solar charging cap has no verified mapping. Observing power below 5 kW does not prove a limit.",
+                "Solar charging follows the inverter and battery limits, up to the 100% SOC target.",
               )}
             </p>
             <p>

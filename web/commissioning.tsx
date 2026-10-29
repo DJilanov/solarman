@@ -5,7 +5,7 @@ import { useWorkspace } from "./context";
 import { useData, request, isUnconfirmedResponse } from "./api";
 import { tr } from "./i18n";
 import { Heading, Loading, Notice, Panel, when } from "./components";
-import { FirmwareSupport } from "./firmware-support";
+import { FirmwareEvidence } from "./firmware-evidence";
 import type { CommissioningData, PolicyObservationData } from "./types";
 
 const requirements: Record<
@@ -18,7 +18,6 @@ const requirements: Record<
   gridStop: "Grid charging stops at 50%",
   dayNight: "Complete day and night observation",
   recovery: "Verified scheduled-charge recovery",
-  sourceLimits: "Independent grid and solar power limits",
 };
 const states: Record<string, string> = {
   preparing: "Preparing commissioning",
@@ -227,7 +226,7 @@ export default function CommissioningPage(): ReactNode {
           </p>
         )}
       </Panel>
-      <FirmwareSupport controller={overview?.controller ?? null} />
+      <FirmwareEvidence controller={overview?.controller ?? null} />
       {run && (
         <>
           <Panel

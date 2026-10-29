@@ -67,7 +67,7 @@ test("commissioning permission binds approval to the current verified device and
     );
 });
 
-test("settings and complete observation signals cannot manufacture verified independent power limits", () => {
+test("native solar commissioning requires all physical signals, a day/night cycle and recovery", () => {
   assert.equal(
     commissioningRequirements(null).every((r) => !r.passed),
     true,
@@ -86,9 +86,30 @@ test("settings and complete observation signals cannot manufacture verified inde
     observation: { progress: p },
     recovery: { commandId: randomUUID() },
   });
+  assert.equal(requirements.length, 6);
+  assert.deepEqual(requirements.filter((r) => !r.passed), []);
+  for (const code of ["solar", "discharge", "gridCharge", "gridStop"]) {
+    const missing = structuredClone(p);
+    missing[code].observedAt = null;
+    assert.deepEqual(
+      commissioningRequirements({
+        observation: { progress: missing },
+        recovery: { commandId: randomUUID() },
+      }).filter((r) => !r.passed).map((r) => r.code),
+      [code],
+    );
+  }
   assert.deepEqual(
-    requirements.filter((r) => !r.passed).map((r) => r.code),
-    ["sourceLimits"],
+    commissioningRequirements({ observation: { progress: p } })
+      .filter((r) => !r.passed).map((r) => r.code),
+    ["recovery"],
+  );
+  assert.deepEqual(
+    commissioningRequirements({
+      observation: { progress: { ...p, nightSeen: false } },
+      recovery: { commandId: randomUUID() },
+    }).filter((r) => !r.passed).map((r) => r.code),
+    ["dayNight"],
   );
   assert.throws(
     () => commissioningRequirements({ observation: { progress: {} } }),

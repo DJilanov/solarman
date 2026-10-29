@@ -11,7 +11,7 @@ The rehearsal is in the final test in [tenants.test.mjs](../test/integration/ten
 | Private invitation | Actual administrator invitation; one-use activation; member cookie; no administrator access; empty new workspace. |
 | Provider setup | Member-owned credentials; App ID in the token URL; lowercase SHA-256 password in the body; plant/inverter discovery; selected device and timezone. |
 | Monitoring and settings | Real runtime receives fixture telemetry; a correlated 530 read failure recovers once and nine native checks pass; all seven native attempts are accounted for; no writes during verification; another tenant cannot read the command. |
-| Observation and commissioning | Fresh device-bound observation/run; current-password attendance; ordinary Resume rejected; independent power-limit approval stays blocked. |
+| Observation and commissioning | Fresh device-bound observation/run; current-password attendance; ordinary Resume rejected; incomplete physical evidence blocks approval. |
 | Attended charging | Actual named commands, callbacks and journal records; temporary window/permission written and read back; Stop has a verified disable write. |
 | Reserve transition | Diagnostic Refresh performs no write. The actual scheduler callback observes 50%, clears scheduled permission, completes the manual request and remains paused. |
 | Solar and battery signs | Fixture charging above 50% and discharging above reserve display with the correct signs; full-resolution CSV retains the solar sample. This is software mapping evidence. |
@@ -46,7 +46,7 @@ The transport forwards only the application's loopback origin, rejects redirects
 
 ## What this does not certify
 
-This is a connected software acceptance test. It does not prove the firmware's independent 2 kW grid / 5 kW solar enforcement, physical solar priority, native battery/BMS behavior, complete day/night operation, a live outside-host outage, actual Telegram delivery, licensed hosted-user allowance or a deployed browser journey for a new customer.
+This is a connected software acceptance test. It does not prove the physical grid-charging limit during mixed sources, physical solar priority, native battery/BMS behavior, complete day/night operation, a live outside-host outage, actual Telegram delivery, licensed hosted-user allowance or a deployed browser journey for a new customer.
 
 The exact firmware contract, attended hardware acceptance, chosen real destination, separate monitor host and operator handover remain required in [finish-plan.md](finish-plan.md). The existing browser suite covers EN/BG and phone states for the individual screens; this test adds the continuous backend journey without weakening those remaining requirements.
 

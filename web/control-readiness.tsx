@@ -470,7 +470,7 @@ export function ControlReadinessPanel({
       )}
       <p className="fine-print">
         {tr(
-          "Verification checks the inverter rating, charge settings and clock. Physical charging behavior and the separate solar power limit require additional verification.",
+          "Verification checks the inverter rating, charge settings and clock. Physical charging behavior requires separate commissioning evidence.",
         )}
       </p>
     </Panel>

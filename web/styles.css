@@ -143,7 +143,7 @@ button:disabled {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.firmware-support-preview {
+.firmware-evidence-preview {
   max-height: 360px;
   overflow: auto;
   white-space: pre-wrap;

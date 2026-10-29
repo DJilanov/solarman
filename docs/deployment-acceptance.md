@@ -52,7 +52,7 @@ On 2026-10-29 the owner confirmed attendance, created commissioning run `31b7c81
 | Restart | After restoring the original disabled host permission, an actual PM2 restart revoked the attended session at 05:09:39. Its durable event records `expired` with `restart: true`. Workspace control and manual top-up were disabled; automation stayed paused. |
 | Final readback | Read-only verification `121b603d-67b7-4c7f-b3ab-ce5c50dd8027` passed all nine checks at 05:10:38 and resolved the restart's cleanup obligation by freshly observing permission off. The 2 kW AC setting, 50% grid target, 100% overall SOC and 50% reserve remained verified. |
 
-There were **zero application inverter-write intents** throughout this attended check. It proves the live at-target API path, Stop observation and restart revocation with charging already off. It does not prove a below-50% charging write, interrupted-write recovery, above-reserve solar/discharge behavior, a full day/night cycle or independent source-power limits. The recovery checklist still requires its actual verified disable-write evidence; this check does not manufacture it.
+There were **zero application inverter-write intents** throughout this attended check. It proves the live at-target API path, Stop observation and restart revocation with charging already off. It does not prove a below-50% charging write, interrupted-write recovery, above-reserve solar/discharge behavior, a full day/night cycle or exact source attribution during mixed charging. The recovery checklist still requires its actual verified disable-write evidence; this check does not manufacture it.
 
 Pre-test offsite checkpoint: `dd4c5ee4-0c11-479f-9dda-dbbb654a73a7`. The application source remained release `7e09c1387c7f8f813e4e7588614d9870a6d9489d`; the test changed runtime state and restored host permission without modifying application code.
 
@@ -60,4 +60,4 @@ Post-test backup `db1f002e-d8f9-4794-984f-8f83922d01e1` passed isolated restore 
 
 ## Remaining acceptance
 
-The deployed audit proves onboarding, discovery, duplicate protection, translated screens and real closure/removal. Binding and monitoring a different customer's inverter, approved physical control, day/night operation, independent source-power limits, actual alert delivery, outside-host outage detection, entitlement and operator recovery-key handover remain open in [finish-plan.md](finish-plan.md).
+The deployed audit proves onboarding, discovery, duplicate protection, translated screens and real closure/removal. Binding and monitoring a different customer's inverter, approved physical control, day/night operation, mixed-source behavior, actual alert delivery, outside-host outage detection, entitlement and operator recovery-key handover remain open in [finish-plan.md](finish-plan.md).

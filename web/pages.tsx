@@ -894,7 +894,7 @@ export function Controls(): ReactNode {
             "Manual request expiry limits this application's intent. Inverter schedules repeat daily and may remain enabled while the API is unreachable.",
           )}{" "}
           {tr(
-            "The separate 5 kW solar power cap is not configured or verified. Existing inverter and battery limits continue to apply.",
+            "Solar charging follows the inverter and battery limits, up to the 100% SOC target.",
           )}
         </Notice>
       )}
@@ -1446,7 +1446,7 @@ export function SettingsPage(): ReactNode {
           </div>
           <Notice>
             {tr(
-              "The separate 5 kW solar power cap remains unverified and is not changed by this application.",
+              "Solar charging follows the inverter and battery limits, up to the 100% SOC target.",
             )}
           </Notice>
         </Panel>
