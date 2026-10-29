@@ -22,7 +22,7 @@ import type {
   Measurement,
 } from "./types";
 
-import { power, when, formatNumber } from "./format";
+import { power, when } from "./format";
 export { COLORS, power, energy, when, age } from "./format";
 
 export function Panel({
@@ -231,166 +231,84 @@ export function PowerFlow({
 }): ReactNode {
   const batteryCharging = reading ? reading.batteryW < -10 : false;
   const imported = reading ? reading.gridW > 10 : true;
-  const active = Boolean(reading && !stale);
+  const nodes = [
+    {
+      key: "solar",
+      label: "Solar",
+      value: reading?.pvW,
+      icon: Sun,
+      detail: null,
+    },
+    {
+      key: "house",
+      label: "Your home",
+      value: reading?.loadW,
+      icon: Home,
+      detail: null,
+    },
+    {
+      key: "grid",
+      label: "Grid",
+      value: reading?.gridW,
+      icon: PlugZap,
+      detail: reading
+        ? imported
+          ? "Grid import"
+          : reading.gridW < -10
+            ? "Grid export"
+            : "Grid idle"
+        : "Awaiting a reading",
+    },
+    {
+      key: "battery",
+      label: "Battery",
+      value: reading?.batteryW,
+      icon: BatteryCharging,
+      detail: reading
+        ? batteryCharging
+          ? "Battery charging"
+          : reading.batteryW > 10
+            ? "Battery supplying"
+            : "Battery idle"
+        : "Awaiting a reading",
+    },
+  ];
   return (
     <div
-      className={`flow-diagram ${active ? "flow-live" : ""}`}
+      className={`flow-diagram ${reading && !stale ? "flow-live" : ""}`}
       aria-label={tr("Solar, house, grid and battery power flow")}
     >
       <svg
         className="flow-lines"
-        viewBox="0 0 700 300"
+        viewBox="0 0 420 330"
         preserveAspectRatio="none"
         aria-hidden="true"
       >
-        <path d="M185 92 H267" className="flow-track" />
-        <path d="M434 92 H516" className="flow-track" />
-        <path d="M350 205 V137" className="flow-track" />
+        <path d="M210 35V160M67 160H353" className="flow-track" />
         <path
-          d="M185 92 H267"
+          d="M210 35V160"
           className={`flow-current solar ${reading && reading.pvW > 30 ? "moving" : ""}`}
         />
         <path
-          d="M434 92 H516"
+          d="M210 160H353"
           className={`flow-current grid ${imported ? "reverse" : ""} ${reading && Math.abs(reading.gridW) > 30 ? "moving" : ""}`}
         />
         <path
-          d="M350 205 V137"
+          d="M67 160H210"
           className={`flow-current battery ${batteryCharging ? "reverse" : ""} ${reading && Math.abs(reading.batteryW) > 30 ? "moving" : ""}`}
         />
       </svg>
-      <Link to="/analytics" className="flow-source source-solar">
-        <span className="source-icon">
-          <Sun size={23} />
-        </span>
-        <span className="source-label">{tr("Solar production")}</span>
-        <strong>{power(reading?.pvW)}</strong>
-        <small>{tr("Photovoltaic input")}</small>
-      </Link>
-      <Link to="/analytics" className="flow-source source-house">
-        <span className="source-icon">
-          <Home size={23} />
-        </span>
-        <span className="source-label">{tr("Your home")}</span>
-        <strong>{power(reading?.loadW)}</strong>
-        <small>{tr("House consumption")}</small>
-      </Link>
-      <Link to="/analytics" className="flow-source source-grid">
-        <span className="source-icon">
-          <PlugZap size={23} />
-        </span>
-        <span className="source-label">
-          {reading
-            ? imported
-              ? tr("Grid import")
-              : reading.gridW < -10
-                ? tr("Grid export")
-                : tr("Grid idle")
-            : tr("Grid power")}
-        </span>
-        <strong>{power(reading?.gridW)}</strong>
-        <small>
-          {reading
-            ? imported
-              ? tr("Supporting your home")
-              : tr("Connection to the grid")
-            : tr("Awaiting a reading")}
-        </small>
-      </Link>
-      <Link to="/analytics" className="flow-source source-battery">
-        <span className="source-icon">
-          <BatteryCharging size={22} />
-        </span>
-        <span className="source-label">
-          {reading
-            ? batteryCharging
-              ? tr("Battery charging")
-              : reading.batteryW > 10
-                ? tr("Battery supplying")
-                : tr("Battery idle")
-            : tr("Battery power")}
-        </span>
-        <strong>{power(reading?.batteryW)}</strong>
-        <small>
-          {reading
-            ? tr("{{soc}}% state of charge", { soc: reading.soc })
-            : tr("Awaiting a reading")}
-        </small>
-      </Link>
+      {nodes.map(({ key, label, value, icon: Icon, detail }) => (
+        <Link to="/analytics" key={key} className={`flow-source source-${key}`}>
+          <span className="source-icon">
+            <Icon size={23} />
+          </span>
+          <span className="source-label">{tr(label)}</span>
+          <strong>{power(value)}</strong>
+          {detail && <small>{tr(detail)}</small>}
+        </Link>
+      ))}
     </div>
-  );
-}
-
-export function BatteryReserve({
-  reading,
-  controller,
-}: {
-  reading: Measurement | null;
-  controller: ControllerStatus;
-}): ReactNode {
-  const soc = reading?.soc ?? 0;
-  return (
-    <Panel
-      title={tr("Battery reserve")}
-      subtitle={tr("Use solar. Keep a backup.")}
-      className="reserve-panel"
-    >
-      <div className="soc-ring">
-        <svg viewBox="0 0 180 180" aria-hidden="true">
-          <circle className="ring-track" cx="90" cy="90" r="72" />
-          <circle
-            className="ring-progress"
-            cx="90"
-            cy="90"
-            r="72"
-            strokeDasharray={`${(soc / 100) * 452.4} 452.4`}
-          />
-        </svg>
-        <div>
-          <strong>{reading ? `${soc}%` : "—"}</strong>
-          <span>{tr("State of charge")}</span>
-        </div>
-      </div>
-      <div className="reserve-scale">
-        <div className="scale-label">
-          <span>{tr("Grid reserve")}</span>
-          <strong>50%</strong>
-        </div>
-        <div className="reserve-track">
-          <span style={{ width: `${soc}%` }} />
-          <i />
-        </div>
-        <div className="scale-ends">
-          <span>0%</span>
-          <span>100%</span>
-        </div>
-      </div>
-      <div className="reserve-facts">
-        <div>
-          <span>{tr("Solar SOC target")}</span>
-          <strong>100%</strong>
-        </div>
-        <div>
-          <span>{tr("Grid top-up setting")}</span>
-          <strong>{tr("2 kW → 50%")}</strong>
-        </div>
-        <div>
-          <span>{tr("Battery temperature")}</span>
-          <strong>
-            {reading ? `${formatNumber(reading.temperatureC, 1)}°C` : "—"}
-          </strong>
-        </div>
-      </div>
-      <p className="fine-print">
-        {controller.writesEnabled
-          ? tr(
-              "The controller removes grid-charging permission at 50% so stored solar energy can supply your home.",
-            )
-          : tr(
-              "These are the supported control policy targets. Hardware writes are currently disabled.",
-            )}
-      </p>
-    </Panel>
   );
 }
 

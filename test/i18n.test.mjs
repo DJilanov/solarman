@@ -25,6 +25,10 @@ test("Bulgarian covers the complete English catalogue with matching interpolatio
 test("every literal translation used by the interface exists in both catalogues", () => {
   for (const file of [
     "App.tsx",
+    "home.tsx",
+    "grid-charge.tsx",
+    "automations.tsx",
+    "history-navigation.tsx",
     "components.tsx",
     "pages.tsx",
     "charts.tsx",

@@ -12,7 +12,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Clock3,
   Copy,
   Download,
   ExternalLink,
@@ -36,7 +35,6 @@ import { useWorkspace } from "./context";
 import {
   ActivityList,
   age,
-  BatteryReserve,
   COLORS,
   DailyChart,
   EmptyState,
@@ -46,9 +44,7 @@ import {
   Metric,
   Notice,
   Panel,
-  power,
   PowerChart,
-  PowerFlow,
   SetupNotice,
   StatusBadge,
   when,
@@ -61,302 +57,14 @@ import type {
 } from "./types";
 import { WriteHistory } from "./write-history";
 import { ControlReadinessPanel } from "./control-readiness";
-import { IncidentSummary } from "./incident-summary";
-import { BackupNotice } from "./backup-health";
 import { CapacityNotice, CapacityDetails } from "./api-capacity";
+import { BackupNotice } from "./backup-health";
 import AccessAdministration from "./access-admin";
 import {
   TenantAdministration,
   WorkspaceLifecyclePanel,
 } from "./tenant-lifecycle";
 import type { TenantMetadata } from "./types";
-
-export function Overview(): ReactNode {
-  const {
-    overview: data,
-    overviewError: error,
-    overviewLoading: loading,
-    session,
-    command,
-    busy,
-  } = useWorkspace();
-  if (!data)
-    return loading ? (
-      <Loading />
-    ) : (
-      <Notice tone="danger">
-        {error ?? tr("Unable to load your workspace")}
-      </Notice>
-    );
-  const { latest, controller, today, recent } = data;
-  const stale =
-    (controller.telemetry?.deviceState !== undefined &&
-      controller.telemetry.deviceState !== 1) ||
-    (latest
-      ? Date.now() - new Date(latest.at).getTime() >
-        (controller.pollSeconds + 180) * 1000
-      : true);
-  const date = new Intl.DateTimeFormat(locale(), {
-    timeZone: session.tenant.timezone,
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-  }).format(new Date());
-  return (
-    <>
-      <Heading
-        eyebrow={date.toUpperCase()}
-        title={tr("Energy overview")}
-        description={tr("A clear view of your solar, battery, and home.")}
-        action={
-          <button
-            className="button secondary"
-            disabled={
-              busy || !controller.apiConfigured || !controller.deviceSelected
-            }
-            onClick={() => {
-              void command("refresh");
-            }}
-          >
-            <RefreshCw size={16} className={busy ? "spin" : ""} />
-            {tr("Refresh readings")}
-          </button>
-        }
-      />
-      {error && <Notice tone="danger">{error}</Notice>}
-      <SetupNotice controller={controller} />
-      {session.user.platformAdmin && <BackupNotice status={data.backup} />}
-      <CapacityNotice capacity={controller.capacity} />
-      <IncidentSummary
-        alerts={data.alerts}
-        timezone={session.tenant.timezone}
-      />
-      {controller.supervision.issue && (
-        <Notice tone="danger">
-          <span>{tr(controller.supervision.issue.message)}</span>
-          <small className="observation-time">
-            {tr("Observed {{time}}", {
-              time: when(
-                controller.supervision.issue.observedAt,
-                session.tenant.timezone,
-              ),
-            })}
-          </small>
-        </Notice>
-      )}
-      {latest && stale && (
-        <Notice>
-          {tr("These are the last available readings from")}{" "}
-          {when(latest.at, session.tenant.timezone)}
-          {tr(". They are not current live values.")}
-        </Notice>
-      )}
-      <div className="metrics-grid">
-        <Metric
-          label={tr("Solar production")}
-          value={power(latest?.pvW)}
-          detail={
-            latest
-              ? tr("Available solar power")
-              : tr("Waiting for your inverter")
-          }
-          icon={Sun}
-          color={COLORS.solar}
-        />
-        <Metric
-          label={tr("House consumption")}
-          value={power(latest?.loadW)}
-          detail={
-            latest
-              ? tr("Current household demand")
-              : tr("Waiting for your inverter")
-          }
-          icon={Home}
-          color={COLORS.house}
-        />
-        <Metric
-          label={
-            latest && latest.gridW < 0 ? tr("Grid export") : tr("Grid import")
-          }
-          value={power(latest?.gridW)}
-          detail={
-            latest
-              ? latest.gridW < 0
-                ? tr("Power sent to the grid")
-                : tr("Power drawn from the grid")
-              : tr("Waiting for your inverter")
-          }
-          icon={PlugZap}
-          color={COLORS.grid}
-        />
-        <Metric
-          label={
-            latest && latest.batteryW < 0
-              ? tr("Battery charging")
-              : tr("Battery output")
-          }
-          value={power(latest?.batteryW)}
-          detail={
-            latest
-              ? tr("{{soc}}% state of charge", { soc: latest.soc })
-              : tr("Waiting for your inverter")
-          }
-          icon={BatteryCharging}
-          color={COLORS.battery}
-        />
-      </div>
-      <div className="overview-main">
-        <Panel
-          title={tr("Where your power flows")}
-          subtitle={tr("The latest readings from your selected inverter")}
-          action={
-            <span className={`live-label ${latest && !stale ? "fresh" : ""}`}>
-              <span className="status-dot" />
-              {age(latest?.at)}
-            </span>
-          }
-        >
-          <PowerFlow reading={latest} stale={stale} />
-          <div className="flow-footnote">
-            <Clock3 size={14} />
-            <span>
-              {tr(
-                "Checking for device uploads every {{count}} minutes. Refreshing this page uses stored data.",
-                { count: controller.pollSeconds / 60 },
-              )}
-            </span>
-          </div>
-          {latest && (
-            <div className="reading-provenance">
-              <span className={`reading-source ${latest.source}`}>
-                {tr(
-                  latest.source === "provider"
-                    ? "Logger readings"
-                    : "Live diagnostics",
-                )}
-              </span>
-              <span>
-                {tr("Collected {{time}} · Received {{received}}", {
-                  time: when(latest.at, session.tenant.timezone),
-                  received: age(latest.receivedAt),
-                })}
-              </span>
-            </div>
-          )}
-        </Panel>
-        {controller.profile === "bluesun-bse20kh3" ? (
-          <BatteryReserve reading={latest} controller={controller} />
-        ) : (
-          <Panel
-            title={tr("Your connected system")}
-            subtitle={tr("Account-specific monitoring")}
-          >
-            <div className="connection-summary">
-              <span className="summary-symbol">
-                <Sun size={35} />
-              </span>
-              <h3>
-                {controller.deviceSelected
-                  ? tr("Read-only monitoring")
-                  : tr("Connect your solar system")}
-              </h3>
-              <p>
-                {controller.deviceSelected
-                  ? tr(
-                      "View the readings returned by your inverter in Connection settings. Hardware controls require a verified device profile.",
-                    )
-                  : tr(
-                      "Link your own SOLARMAN account, then choose an inverter from your plants.",
-                    )}
-              </p>
-              <Link className="button secondary" to="/settings">
-                {tr("Connection settings")} <ArrowRight size={15} />
-              </Link>
-            </div>
-          </Panel>
-        )}
-      </div>
-      <div className="section-heading">
-        <div>
-          <h2>{tr("Today at a glance")}</h2>
-          <p>{tr("Estimated energy from valid sample intervals")}</p>
-        </div>
-        <span className="coverage-pill">
-          {Math.round(today.coverage * 100)}
-          {tr("% data coverage")}
-        </span>
-      </div>
-      <div className="daily-metrics">
-        <div>
-          <span className="small-symbol solar">
-            <Sun size={18} />
-          </span>
-          <div>
-            <span>{tr("Solar generated")}</span>
-            <strong>
-              {energy(today.totals?.solarKwh)} <small>{tr("kWh")}</small>
-            </strong>
-          </div>
-        </div>
-        <div>
-          <span className="small-symbol house">
-            <Home size={18} />
-          </span>
-          <div>
-            <span>{tr("House consumption")}</span>
-            <strong>
-              {energy(today.totals?.loadKwh)} <small>{tr("kWh")}</small>
-            </strong>
-          </div>
-        </div>
-        <div>
-          <span className="small-symbol grid">
-            <ArrowDownLeft size={18} />
-          </span>
-          <div>
-            <span>{tr("Grid imported")}</span>
-            <strong>
-              {energy(today.totals?.importKwh)} <small>{tr("kWh")}</small>
-            </strong>
-          </div>
-        </div>
-        <div>
-          <span className="small-symbol battery">
-            <BatteryCharging size={18} />
-          </span>
-          <div>
-            <span>{tr("Battery charged")}</span>
-            <strong>
-              {energy(today.totals?.chargeKwh)} <small>{tr("kWh")}</small>
-            </strong>
-          </div>
-        </div>
-      </div>
-      <Panel
-        title={tr("Your energy through the day")}
-        subtitle={tr("Power and battery state of charge")}
-        action={
-          <Link className="text-link" to="/analytics">
-            {tr("Explore analytics")} <ArrowRight size={14} />
-          </Link>
-        }
-      >
-        <PowerChart data={today} timezone={session.tenant.timezone} />
-      </Panel>
-      <Panel
-        title={tr("Recent activity")}
-        subtitle={tr("Your commands and scheduled checks")}
-        action={
-          <Link className="text-link" to="/activity">
-            {tr("View all activity")} <ArrowRight size={14} />
-          </Link>
-        }
-      >
-        <ActivityList items={recent} timezone={session.tenant.timezone} />
-      </Panel>
-    </>
-  );
-}
 
 export function AnalyticsPage(): ReactNode {
   const { session } = useWorkspace();
@@ -594,7 +302,7 @@ function ControlRecovery({
   );
 }
 
-export function Controls(): ReactNode {
+export function AdvancedControls(): ReactNode {
   const {
     overview: data,
     overviewLoading,
@@ -614,7 +322,7 @@ export function Controls(): ReactNode {
     <>
       <Heading
         eyebrow={tr("YOUR BATTERY, YOUR CONTROL")}
-        title={tr("System controls")}
+        title={tr("Advanced controls and diagnostics")}
         description={tr(
           "Clear actions with device acknowledgments and readback verification.",
         )}
@@ -1057,8 +765,17 @@ export function ActivityPage(): ReactNode {
 }
 
 export function SettingsPage(): ReactNode {
-  const { session, refreshSession, command, busy } = useWorkspace();
+  const { session, refreshSession, command, busy, overview } = useWorkspace();
   const { data, error, loading, reload } = useData<SettingsData>("/settings");
+  const [apiDetailsOpen, setApiDetailsOpen] = useState(false);
+  const apiNeedsAttention = Boolean(
+    data?.budget &&
+    (data.budget.state !== "available" ||
+      data.budget.capacity?.admitted === false),
+  );
+  useEffect(() => {
+    if (apiNeedsAttention) setApiDetailsOpen(true);
+  }, [apiNeedsAttention]);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [appId, setAppId] = useState("");
@@ -1159,33 +876,55 @@ export function SettingsPage(): ReactNode {
         description={tr(
           "Manage the provider account and inverter belonging to your workspace.",
         )}
-        action={
-          <div className="settings-actions">
-            <Link className="button secondary small" to="/settings/security">
-              {tr("Account security")}
-            </Link>
-            <Link className="button secondary small" to="/settings/health">
-              {tr("System health")}
-            </Link>
-            <Link
-              className="button secondary small"
-              to="/settings/notifications"
-            >
-              {tr("External notifications")}
-            </Link>
-            <Link className="button secondary small" to="/settings/data">
-              {tr("Data and privacy")}
-            </Link>
-          </div>
-        }
       />
+      <div className="settings-shortcuts">
+        <Link
+          aria-label={tr("External notifications")}
+          to="/settings/notifications"
+        >
+          <strong>{tr("Notifications")}</strong>
+          <span>
+            {tr("External notifications")} <ArrowRight size={15} />
+          </span>
+        </Link>
+        <Link aria-label={tr("Account security")} to="/settings/security">
+          <strong>{tr("Account security")}</strong>
+          <span>
+            {tr("Password and browser sessions")} <ArrowRight size={15} />
+          </span>
+        </Link>
+        <Link aria-label={tr("System health")} to="/settings/health">
+          <strong>{tr("System health")}</strong>
+          <span>
+            {tr("Review health and alerts")} <ArrowRight size={15} />
+          </span>
+        </Link>
+        <Link aria-label={tr("Data and privacy")} to="/settings/data">
+          <strong>{tr("Data and privacy")}</strong>
+          <span>
+            {tr("Manage your saved data")} <ArrowRight size={15} />
+          </span>
+        </Link>
+        {session.user.platformAdmin && (
+          <Link to="/workspaces">
+            <strong>{tr("Manage users and homes")}</strong>
+            <span>
+              {tr("Administration")} <ArrowRight size={15} />
+            </span>
+          </Link>
+        )}
+      </div>
+      {session.user.platformAdmin && <BackupNotice status={overview?.backup} />}
       {error && <Notice tone="danger">{error}</Notice>}
       {message && (
         <Notice tone={message.error ? "danger" : "success"}>
           {message.text}
         </Notice>
       )}
-      <WorkspaceLifecyclePanel />
+      <details className="advanced-disclosure">
+        <summary>{tr("Workspace lifecycle")}</summary>
+        <WorkspaceLifecyclePanel />
+      </details>
       <div className="settings-grid">
         <Panel
           title={tr("SOLARMAN account")}
@@ -1457,197 +1196,213 @@ export function SettingsPage(): ReactNode {
             )}
           </Notice>
         </Panel>
-        <Panel
-          title={tr("API usage")}
-          subtitle={tr("Budget shared by accounts using the same App ID")}
-          className="api-budget"
+        <details
+          className="advanced-disclosure api-budget-disclosure"
+          open={apiDetailsOpen}
+          onToggle={(event) => setApiDetailsOpen(event.currentTarget.open)}
         >
-          {data.budget ? (
-            <>
-              {data.budget.capacity && (
-                <CapacityDetails
-                  capacity={data.budget.capacity}
-                  disabled={
-                    Boolean(pending) || busy || !data.controller.deviceSelected
-                  }
-                  onRetry={() => {
-                    void command("retry_capacity").then(reload);
-                  }}
-                />
-              )}
-              <p className="fine-print">
-                {tr("Connected workspaces sharing this budget: {{count}}", {
-                  count: data.budget.workspaces,
-                })}
-              </p>
-              <div className="usage-number">
-                {formatNumber(data.budget.routineRemaining)}
-                <span>{tr("calls available for routine use")}</span>
-              </div>
-              <div
-                className={`coverage-track ${data.budget.state !== "available" ? "budget-limited" : ""}`}
-                role="meter"
-                aria-label={tr("API budget used")}
-                aria-valuemin={0}
-                aria-valuemax={data.budget.limit}
-                aria-valuenow={data.budget.limit - data.budget.remaining}
-              >
-                <i
-                  style={{
-                    width: `${Math.min(100, (1 - data.budget.remaining / data.budget.limit) * 100)}%`,
-                  }}
-                />
-              </div>
-              {data.budget.state !== "available" && (
-                <Notice tone="danger">
-                  {tr(
-                    data.budget.state === "exhausted"
-                      ? "The API request budget is exhausted"
-                      : "The remaining API budget is reserved for stopping and recovery",
-                  )}
-                </Notice>
-              )}
-              {data.budget.balanceAttemptedAt &&
-                Date.now() -
-                  new Date(data.budget.balanceAttemptedAt).getTime() >
-                  60_000 &&
-                (!data.budget.providerCheckedAt ||
-                  new Date(data.budget.balanceAttemptedAt) >
-                    new Date(data.budget.providerCheckedAt)) && (
-                  <Notice>
+          <summary>{tr("API capacity and usage")}</summary>
+          <Panel
+            title={tr("API usage")}
+            subtitle={tr("Budget shared by accounts using the same App ID")}
+            className="api-budget"
+          >
+            {data.budget ? (
+              <>
+                {data.budget.capacity && (
+                  <CapacityDetails
+                    capacity={data.budget.capacity}
+                    disabled={
+                      Boolean(pending) ||
+                      busy ||
+                      !data.controller.deviceSelected
+                    }
+                    onRetry={() => {
+                      void command("retry_capacity").then(reload);
+                    }}
+                  />
+                )}
+                <p className="fine-print">
+                  {tr("Connected workspaces sharing this budget: {{count}}", {
+                    count: data.budget.workspaces,
+                  })}
+                </p>
+                <div className="usage-number">
+                  {formatNumber(data.budget.routineRemaining)}
+                  <span>{tr("calls available for routine use")}</span>
+                </div>
+                <div
+                  className={`coverage-track ${data.budget.state !== "available" ? "budget-limited" : ""}`}
+                  role="meter"
+                  aria-label={tr("API budget used")}
+                  aria-valuemin={0}
+                  aria-valuemax={data.budget.limit}
+                  aria-valuenow={data.budget.limit - data.budget.remaining}
+                >
+                  <i
+                    style={{
+                      width: `${Math.min(100, (1 - data.budget.remaining / data.budget.limit) * 100)}%`,
+                    }}
+                  />
+                </div>
+                {data.budget.state !== "available" && (
+                  <Notice tone="danger">
                     {tr(
-                      "The last provider balance check failed. Local request limits still apply.",
+                      data.budget.state === "exhausted"
+                        ? "The API request budget is exhausted"
+                        : "The remaining API budget is reserved for stopping and recovery",
                     )}
                   </Notice>
                 )}
-              <div className="usage-facts">
-                <span>
-                  {tr("This workspace · last 24 hours")}{" "}
-                  <strong>
-                    {data.apiUsage.today.toLocaleString(locale())}
-                  </strong>
-                </span>
-                <span>
-                  {tr("Tracked calls · last 365 days")}{" "}
-                  <strong>{formatNumber(data.budget.tracked)}</strong>
-                </span>
-                <span>
-                  {tr("Adjusted provider balance")}{" "}
-                  <strong>
-                    {data.budget.providerRemaining === null
-                      ? tr("Not checked yet")
-                      : formatNumber(data.budget.providerRemaining)}
-                  </strong>
-                </span>
-                <span>
-                  {tr("Provider balance checked")}{" "}
-                  <strong>
-                    {data.budget.providerCheckedAt
-                      ? age(data.budget.providerCheckedAt)
-                      : tr("Not checked yet")}
-                  </strong>
-                </span>
-                <span>
-                  {tr("Reserved for recovery")}{" "}
-                  <strong>{formatNumber(data.budget.reserve)}</strong>
-                </span>
-                <span>
-                  {tr("Local rolling request limit")}{" "}
-                  <strong>{formatNumber(data.budget.limit)}</strong>
-                </span>
-                <span>
-                  {tr("Sampling interval")}{" "}
-                  <strong>
-                    {tr("{{count}} minutes", {
-                      count: data.controller.pollSeconds / 60,
-                    })}
-                  </strong>
-                </span>
-                <span>
-                  {tr("This workspace · projected / year")}{" "}
-                  <strong>
-                    {data.controller.annualProjectedCalls.toLocaleString(
-                      locale(),
-                    )}{" "}
-                    {tr("/ year")}
-                  </strong>
-                </span>
-                <span>
-                  {tr("Shared App ID · projected / year")}{" "}
-                  <strong>{formatNumber(data.budget.projected)}</strong>
-                </span>
-              </div>
-              {data.budget.projected >
-                data.budget.limit - data.budget.reserve && (
-                <Notice tone="danger">
-                  {tr(
-                    "Projected usage exceeds the routine budget. Optimize control polling or configure a licensed allowance before continuous operation.",
+                {data.budget.balanceAttemptedAt &&
+                  Date.now() -
+                    new Date(data.budget.balanceAttemptedAt).getTime() >
+                    60_000 &&
+                  (!data.budget.providerCheckedAt ||
+                    new Date(data.budget.balanceAttemptedAt) >
+                      new Date(data.budget.providerCheckedAt)) && (
+                    <Notice>
+                      {tr(
+                        "The last provider balance check failed. Local request limits still apply.",
+                      )}
+                    </Notice>
                   )}
-                </Notice>
-              )}
-              <p className="fine-print">
-                {tr(
-                  "The provider balance is checked at most once a day and reduced for subsequent app requests. Calls made elsewhere appear at the next check. A local rolling 365-day limit also applies; hosted use requires suitable provider licensing.",
+                <div className="usage-facts">
+                  <span>
+                    {tr("This workspace · last 24 hours")}{" "}
+                    <strong>
+                      {data.apiUsage.today.toLocaleString(locale())}
+                    </strong>
+                  </span>
+                  <span>
+                    {tr("Tracked calls · last 365 days")}{" "}
+                    <strong>{formatNumber(data.budget.tracked)}</strong>
+                  </span>
+                  <span>
+                    {tr("Adjusted provider balance")}{" "}
+                    <strong>
+                      {data.budget.providerRemaining === null
+                        ? tr("Not checked yet")
+                        : formatNumber(data.budget.providerRemaining)}
+                    </strong>
+                  </span>
+                  <span>
+                    {tr("Provider balance checked")}{" "}
+                    <strong>
+                      {data.budget.providerCheckedAt
+                        ? age(data.budget.providerCheckedAt)
+                        : tr("Not checked yet")}
+                    </strong>
+                  </span>
+                  <span>
+                    {tr("Reserved for recovery")}{" "}
+                    <strong>{formatNumber(data.budget.reserve)}</strong>
+                  </span>
+                  <span>
+                    {tr("Local rolling request limit")}{" "}
+                    <strong>{formatNumber(data.budget.limit)}</strong>
+                  </span>
+                  <span>
+                    {tr("Sampling interval")}{" "}
+                    <strong>
+                      {tr("{{count}} minutes", {
+                        count: data.controller.pollSeconds / 60,
+                      })}
+                    </strong>
+                  </span>
+                  <span>
+                    {tr("This workspace · projected / year")}{" "}
+                    <strong>
+                      {data.controller.annualProjectedCalls.toLocaleString(
+                        locale(),
+                      )}{" "}
+                      {tr("/ year")}
+                    </strong>
+                  </span>
+                  <span>
+                    {tr("Shared App ID · projected / year")}{" "}
+                    <strong>{formatNumber(data.budget.projected)}</strong>
+                  </span>
+                </div>
+                {data.budget.projected >
+                  data.budget.limit - data.budget.reserve && (
+                  <Notice tone="danger">
+                    {tr(
+                      "Projected usage exceeds the routine budget. Optimize control polling or configure a licensed allowance before continuous operation.",
+                    )}
+                  </Notice>
                 )}
-              </p>
-            </>
-          ) : (
-            <EmptyState
-              icon={PlugZap}
-              title={tr("API budget unavailable")}
-              description={tr(
-                "Link an account with OpenAPI credentials to track its shared request budget.",
-              )}
-            />
-          )}
-        </Panel>
+                <p className="fine-print">
+                  {tr(
+                    "The provider balance is checked at most once a day and reduced for subsequent app requests. Calls made elsewhere appear at the next check. A local rolling 365-day limit also applies; hosted use requires suitable provider licensing.",
+                  )}
+                </p>
+              </>
+            ) : (
+              <EmptyState
+                icon={PlugZap}
+                title={tr("API budget unavailable")}
+                description={tr(
+                  "Link an account with OpenAPI credentials to track its shared request budget.",
+                )}
+              />
+            )}
+          </Panel>
+        </details>
       </div>
       {data.readings && (
-        <Panel
-          title={tr("Provider readings")}
-          subtitle={tr(
-            "Collected {{time}} · Read-only values returned for your selected device",
-            { time: when(data.readings.collected_at, session.tenant.timezone) },
-          )}
-        >
-          <div className="input-with-icon search-box">
-            <Search size={17} />
-            <input
-              aria-label={tr("Search device readings")}
-              placeholder={tr("Find a parameter…")}
-              value={pointSearch}
-              onChange={(event) => setPointSearch(event.target.value)}
-            />
-          </div>
-          <div className="readings-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>{tr("Parameter")}</th>
-                  <th>{tr("Value")}</th>
-                  <th>{tr("Unit")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {points.slice(0, 100).map((p) => (
-                  <tr key={p.key}>
-                    <td>
-                      {p.name}
-                      <small>{p.key}</small>
-                    </td>
-                    <td>{p.value}</td>
-                    <td>{p.unit || "—"}</td>
+        <details className="advanced-disclosure">
+          <summary>{tr("Provider readings")}</summary>
+          <Panel
+            title={tr("Provider readings")}
+            subtitle={tr(
+              "Collected {{time}} · Read-only values returned for your selected device",
+              {
+                time: when(data.readings.collected_at, session.tenant.timezone),
+              },
+            )}
+          >
+            <div className="input-with-icon search-box">
+              <Search size={17} />
+              <input
+                aria-label={tr("Search device readings")}
+                placeholder={tr("Find a parameter…")}
+                value={pointSearch}
+                onChange={(event) => setPointSearch(event.target.value)}
+              />
+            </div>
+            <div className="readings-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{tr("Parameter")}</th>
+                    <th>{tr("Value")}</th>
+                    <th>{tr("Unit")}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {points.length > 100 && (
-            <p className="fine-print">
-              {tr("Showing the first 100 results. Search to narrow the list.")}
-            </p>
-          )}
-        </Panel>
+                </thead>
+                <tbody>
+                  {points.slice(0, 100).map((p) => (
+                    <tr key={p.key}>
+                      <td>
+                        {p.name}
+                        <small>{p.key}</small>
+                      </td>
+                      <td>{p.value}</td>
+                      <td>{p.unit || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {points.length > 100 && (
+              <p className="fine-print">
+                {tr(
+                  "Showing the first 100 results. Search to narrow the list.",
+                )}
+              </p>
+            )}
+          </Panel>
+        </details>
       )}
     </>
   );

@@ -4,6 +4,12 @@ Updated 2026-10-29. Commissioning, tenant notifications, the independent-watchdo
 
 Scope update, 2026-10-29: the owner withdrew the 5 kW solar-power-cap requirement. Solar charging follows native inverter and battery limits up to the existing 100% SOC target. The 2 kW grid setting, 50% grid target and 50% reserve remain required. This supersedes the older solar-cap requirements in the historical plan.
 
+## Homeowner interface redesign
+
+The owner accepted the smoked-glass / 1990s hi-fi direction on October 29. The implementation replaces the six-item everyday navigation with Home, Automations, History and Settings; puts reviewed grid charging on Home; separates energy history from action history; and moves commissioning, recovery and administrator detail out of routine control flows. A guided setup links connection, read-only verification and the existing attended evidence/approval process. The production policy and all server-side write gates remain unchanged. This UI work does not grant commissioning approval or imply the remaining physical acceptance checks are complete.
+
+Redesign verification: type/syntax checks and the production build passed; 215 local unit tests passed with three Linux-only skips; all 178 PostgreSQL integration tests and all 54 browser tests passed. Browser coverage includes the new charging dialog, blocked starts, stale-reading stops, EN/BG layouts at 320–1440 px, existing commissioning/recovery controls, account security, notifications and tenant lifecycle flows.
+
 ## What is actually locked
 
 The quoted Bulgarian monitoring-only notice is an unused translation entry. The current Controls page already shows individual blockers, their responsible actor and next action. The selected `bluesun-bse20kh3` profile is supported for the observed protocol 2.02 / DSP 1.57 / HMI 1.45.

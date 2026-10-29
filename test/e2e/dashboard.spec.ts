@@ -35,9 +35,279 @@ async function signIn(page: Page): Promise<void> {
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Energy overview", exact: true }),
+    page.getByRole("heading", { name: "Your energy, at a glance.", exact: true }),
   ).toBeVisible();
 }
+
+async function homeConsoleFixture(page: Page): Promise<OverviewData> {
+  await signIn(page);
+  const data = (await (
+    await page.request.get("/api/overview")
+  ).json()) as OverviewData;
+  const at = new Date().toISOString();
+  data.latest = {
+    at,
+    receivedAt: at,
+    source: "provider",
+    samplingSeconds: 360,
+    soc: 30,
+    temperatureC: 20,
+    pvW: 500,
+    loadW: 800,
+    gridW: 2300,
+    batteryW: -2000,
+    acEnabled: true,
+  };
+  Object.assign(data.controller, {
+    apiConfigured: true,
+    deviceSelected: true,
+    profile: "bluesun-bse20kh3",
+    writesEnabled: true,
+    paused: true,
+    manualTopup: false,
+    mode: "paused",
+    error: null,
+    setupError: null,
+    recoveryTesting: false,
+  });
+  data.controller.telemetry = {
+    source: "provider",
+    collectedAt: at,
+    receivedAt: at,
+    deviceState: 1,
+    clock: null,
+  };
+  data.controller.control.canStart = true;
+  data.controller.control.canStop = true;
+  data.controller.control.workspaceEnabled = true;
+  data.controller.control.reasons = [];
+  data.controller.control.recovery = {
+    state: "clear",
+    pending: false,
+    inFlight: false,
+    confirmedOffAt: at,
+    updatedAt: at,
+    writes: [],
+  };
+  await page.route("**/api/overview", (route) => route.fulfill({ json: data }));
+  await page.reload();
+  return data;
+}
+
+test("Home offers a reviewed grid charging request and keeps confirmation distinct from charging", async ({
+  page,
+}) => {
+  await homeConsoleFixture(page);
+  const actions: string[] = [];
+  const id = randomUUID();
+  await page.route("**/api/commands", async (route) => {
+    actions.push((route.request().postDataJSON() as { action: string }).action);
+    await route.fulfill({
+      status: 202,
+      json: { id, action: "topup", status: "queued" },
+    });
+  });
+  await page.route(`**/api/commands/${id}`, (route) =>
+    route.fulfill({
+      json: {
+        id,
+        action: "topup",
+        status: "succeeded",
+        message: "Device settings verified",
+      },
+    }),
+  );
+  await page
+    .getByRole("button", { name: "Charge from grid", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Charge from the grid",
+    exact: true,
+  });
+  await expect(dialog).toContainText("50%");
+  await expect(dialog).toContainText("Up to 2 kW");
+  await expect(dialog).toContainText("Solar can continue charging up to 100%");
+  await expect(
+    dialog.getByRole("button", { name: "Start charging request", exact: true }),
+  ).toBeEnabled();
+  expect(actions).toEqual([]);
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Charge from grid", exact: true }),
+  ).toBeFocused();
+  await page
+    .getByRole("button", { name: "Charge from grid", exact: true })
+    .click();
+  await dialog
+    .getByRole("button", { name: "Start charging request", exact: true })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  await expect.poll(() => actions).toEqual(["topup"]);
+  await expect(page.locator(".toast")).toContainText("Request queued");
+  await expect(page.locator(".toast")).toContainText(
+    "Device settings verified",
+  );
+});
+
+test("Home charging explains completed reserve, stale readings, setup and recovery without sending commands", async ({
+  page,
+}) => {
+  const data = await homeConsoleFixture(page);
+  const baseline = structuredClone(data);
+  const actions: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/commands"
+    )
+      actions.push("command");
+  });
+  for (const scenario of [
+    "satisfied",
+    "stale",
+    "offline",
+    "setup",
+    "recovery",
+    "unsupported",
+    "missing",
+  ] as const) {
+    Object.assign(data, structuredClone(baseline));
+    if (scenario === "satisfied" && data.latest) data.latest.soc = 80;
+    if (scenario === "stale" && data.latest)
+      data.latest.at = new Date(Date.now() - 86400000).toISOString();
+    if (scenario === "offline" && data.controller.telemetry)
+      data.controller.telemetry.deviceState = 0;
+    if (scenario === "setup") {
+      data.controller.writesEnabled = false;
+      data.controller.control.canStart = false;
+    }
+    if (scenario === "recovery")
+      data.controller.control.recovery.pending = true;
+    if (scenario === "unsupported") data.controller.profile = "monitoring-only";
+    if (scenario === "missing") data.latest = null;
+    await page.reload();
+    await page
+      .getByRole("button", { name: "Charge from grid", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    const start = dialog.getByRole("button", { name: "Start charging request", exact: true });
+    if (scenario === "recovery") {
+      await expect(start).toHaveCount(0);
+      await expect(dialog.getByRole("button", { name: "Stop app top-ups", exact: true })).toBeEnabled();
+    } else await expect(start).toBeDisabled();
+    if (scenario === "satisfied")
+      await expect(dialog).toContainText(
+        "Solar can continue charging above this level",
+      );
+    if (scenario === "setup")
+      await expect(
+        dialog.getByRole("link", { name: "Continue setup", exact: true }),
+      ).toHaveAttribute("href", "/controls/setup");
+    if (scenario === "recovery")
+      await expect(
+        dialog.getByRole("link", { name: "Review recovery", exact: true }),
+      ).toHaveAttribute("href", "/controls/advanced");
+    if (
+      scenario === "stale" ||
+      scenario === "offline" ||
+      scenario === "missing"
+    )
+      await expect(
+        dialog.getByRole("button", {
+          name: "Refresh device readings",
+          exact: true,
+        }),
+      ).toBeVisible();
+    await page.keyboard.press("Escape");
+  }
+  expect(actions).toEqual([]);
+});
+
+test("active top-ups expose an honest stop action even when readings are stale", async ({
+  page,
+}) => {
+  const data = await homeConsoleFixture(page);
+  data.controller.manualTopup = true;
+  if (data.latest)
+    data.latest.at = new Date(Date.now() - 86400000).toISOString();
+  const actions: string[] = [];
+  await page.route("**/api/commands", async (route) => {
+    actions.push((route.request().postDataJSON() as { action: string }).action);
+    await route.fulfill({
+      status: 202,
+      json: {
+        id: randomUUID(),
+        action: "stop",
+        status: "succeeded",
+        message: "Automation paused",
+      },
+    });
+  });
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Manage app top-up", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText(
+    "Solar and native reserve charging continue",
+  );
+  await dialog
+    .getByRole("button", { name: "Stop app top-ups", exact: true })
+    .click();
+  await expect.poll(() => actions).toEqual(["stop"]);
+});
+
+test("the homeowner console has four navigation items and usable Bulgarian phone layouts", async ({
+  page,
+}) => {
+  await homeConsoleFixture(page);
+  await expect(
+    page.getByRole("navigation", { name: "Main navigation" }).getByRole("link"),
+  ).toHaveCount(4);
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const language of ["bg", "en"]) {
+      await page
+        .getByLabel(language === "bg" ? "Language" : "Език")
+        .selectOption(language);
+      for (const path of [
+        "/",
+        "/controls",
+        "/analytics",
+        "/settings",
+        "/controls/setup",
+      ]) {
+        await page.goto(path);
+        await expect(page.locator("h1")).toBeVisible();
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth > innerWidth,
+          ),
+          `${width} ${language} ${path}`,
+        ).toBe(false);
+      }
+    }
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.getByLabel("Language").selectOption("bg");
+  await page
+    .getByRole("button", { name: "Зареди от мрежата", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toContainText("До 2 kW");
+  await page.screenshot({ path: "test-results/home-charge-mobile-bg.png" });
+  await page.keyboard.press("Escape");
+  await page.screenshot({
+    path: "test-results/home-console-mobile-bg.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await page.screenshot({
+    path: "test-results/home-console-desktop-bg.png",
+    fullPage: true,
+  });
+});
 
 function inverterClockTime(at: string, differenceSeconds: number): string {
   return new Intl.DateTimeFormat("sv-SE", {
@@ -102,7 +372,7 @@ test("startup session failures can be retried without signing in again", async (
       ).toHaveCount(0);
       release();
       await expect(
-        page.getByRole("heading", { name: "Преглед на енергията", exact: true }),
+        page.getByRole("heading", { name: "Всичко е пред теб.", exact: true }),
       ).toBeVisible();
       expect(checks).toBe(2);
       await page.getByLabel("Език").selectOption("en");
@@ -216,7 +486,7 @@ test("successful account recovery clears a failed startup check and permits sign
     await user.getByLabel("Password", { exact: true }).fill(replacement);
     await user.getByRole("button", { name: "Sign in", exact: true }).click();
     await expect(
-      user.getByRole("heading", { name: "Energy overview", exact: true }),
+      user.getByRole("heading", { name: "Your energy, at a glance.", exact: true }),
     ).toBeVisible();
     const remaining = await context.request.get("/api/auth/session");
     expect(remaining.status()).toBe(200);
@@ -275,7 +545,7 @@ test("account security renews the current browser and revokes other browsers wit
         .getByRole("button", { name: "Sign in", exact: true })
         .click();
       await expect(
-        second.getByRole("heading", { name: "Energy overview", exact: true }),
+        second.getByRole("heading", { name: "Your energy, at a glance.", exact: true }),
       ).toBeVisible();
     };
     await loginSecond(initial);
@@ -504,7 +774,7 @@ test("stored measurements render charts, legends and a full CSV download", async
         ],
       );
     await signIn(page);
-    await page.getByRole("link", { name: "Analytics", exact: true }).click();
+    await page.getByRole("link", { name: "History", exact: true }).click();
     const day = new Intl.DateTimeFormat("en-CA", {
       timeZone: account.timezone,
     });
@@ -601,9 +871,9 @@ test("email login, honest setup states and all dashboard pages work", async ({
     fullPage: true,
   });
   for (const [link, title] of [
-    ["Analytics", "Energy analytics"],
-    ["Controls", "System controls"],
-    ["Activity", "System activity"],
+    ["Automations", "Automations"],
+    ["History", "Energy analytics"],
+    ["Actions and events", "System activity"],
     ["Settings", "Workspace settings"],
   ]) {
     await page.getByRole("link", { name: link, exact: true }).click();
@@ -631,12 +901,10 @@ test("mobile layouts remain within the viewport and sign-out is available", asyn
   await page.setViewportSize({ width: 320, height: 740 });
   await signIn(page);
   for (const link of [
-    "Overview",
-    "Analytics",
-    "Controls",
-    "Activity",
+    "Home",
+    "Automations",
+    "History",
     "Settings",
-    "Workspaces",
   ]) {
     await page.getByRole("link", { name: link, exact: true }).click();
     await expect(page.locator("h1")).toBeVisible();
@@ -645,7 +913,7 @@ test("mobile layouts remain within the viewport and sign-out is available", asyn
     );
     expect(overflow, link).toBe(false);
   }
-  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  await page.getByRole("link", { name: "Home", exact: true }).click();
   await page.screenshot({
     path: "test-results/overview-mobile.png",
     fullPage: true,
@@ -661,7 +929,7 @@ test("an invitation creates an isolated user who links their own provider accoun
   browser,
 }) => {
   await signIn(page);
-  await page.getByRole("link", { name: "Workspaces", exact: true }).click();
+  await page.getByRole("link", { name: "Administration", exact: true }).click();
   const email = `tenant-${Date.now()}@example.test`;
   await page
     .getByLabel("Workspace name", { exact: true })
@@ -692,10 +960,10 @@ test("an invitation creates an isolated user who links their own provider accoun
       .fill("e2e-workspace-password");
     await invited.getByRole("button", { name: "Create my workspace" }).click();
     await expect(
-      invited.getByRole("heading", { name: "Energy overview" }),
+      invited.getByRole("heading", { name: "Your energy, at a glance." }),
     ).toBeVisible();
     await expect(
-      invited.getByRole("link", { name: "Workspaces", exact: true }),
+      invited.getByRole("link", { name: "Administration", exact: true }),
     ).toHaveCount(0);
     await invited.getByRole("link", { name: "Settings", exact: true }).click();
     await expect(
@@ -739,12 +1007,11 @@ test("Bulgarian pages, setup messages, controls and an open form switch without 
   ).toBeVisible();
   await page.setViewportSize({ width: 320, height: 740 });
   for (const [link, title] of [
-    ["Преглед", "Преглед на енергията"],
-    ["Анализи", "Енергийни анализи"],
-    ["Управление", "Управление на системата"],
-    ["История", "История на системата"],
+    ["Начало", "Всичко е пред теб."],
+    ["Автоматизации", "Автоматизации"],
+    ["История", "Енергийни анализи"],
+    ["Действия и събития", "История на системата"],
     ["Настройки", "Настройки на пространството"],
-    ["Пространства", "Потребителски пространства"],
   ]) {
     await page.getByRole("link", { name: link, exact: true }).click();
     await expect(
@@ -781,19 +1048,20 @@ test("Bulgarian pages, setup messages, controls and an open form switch without 
       exact: true,
     })
     .click();
-  await expect(page.getByRole("alert")).toContainText(
+  await expect(page.getByRole("alert").filter({ hasText: "SOLARMAN" })).toContainText(
     "SOLARMAN отхвърли заявката (код 2101021)",
   );
   await page.locator(".language-switch select").selectOption("en");
-  await expect(page.getByRole("alert")).toContainText(
+  await expect(page.getByRole("alert").filter({ hasText: "SOLARMAN" })).toContainText(
     "SOLARMAN rejected request (code 2101021)",
   );
   await page.locator(".language-switch select").selectOption("bg");
-  await page.getByRole("link", { name: "Управление", exact: true }).click();
+  await page.getByRole("link", { name: "Автоматизации", exact: true }).click();
+  await page.getByRole("link", { name: "Разширено управление и диагностика", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Дозареждане до 50%", exact: true }),
   ).toBeDisabled();
-  await page.getByRole("link", { name: "Преглед", exact: true }).click();
+  await page.getByRole("link", { name: "Начало", exact: true }).click();
   await page.screenshot({
     path: "test-results/overview-bulgarian-mobile.png",
     fullPage: true,
@@ -1035,7 +1303,8 @@ test("read-only device verification explains locks and keeps Stop available afte
     }),
   );
   await page.reload();
-  await page.getByRole("link", { name: "Controls", exact: true }).click();
+  await page.getByRole("link", { name: "Automations", exact: true }).click();
+  await page.getByRole("link", { name: "Advanced controls and diagnostics", exact: true }).click();
   await expect(
     page.getByText("The administrator has disabled changes to the inverter", {
       exact: true,
@@ -1066,11 +1335,10 @@ test("read-only device verification explains locks and keeps Stop available afte
   await expect(
     page.getByText("Scheduled AC permission", { exact: true }).locator(".."),
   ).toContainText("Not read yet");
-  await page.getByRole("link", { name: "Overview", exact: true }).click();
-  await expect(page.locator(".reading-provenance")).toContainText(
-    "Logger readings",
-  );
-  await page.getByRole("link", { name: "Controls", exact: true }).click();
+  await page.getByRole("link", { name: "Home", exact: true }).click();
+  await expect(page.locator(".console-reading-time")).toContainText("Recorded");
+  await page.getByRole("link", { name: "Automations", exact: true }).click();
+  await page.getByRole("link", { name: "Advanced controls and diagnostics", exact: true }).click();
   overview.controller.error = "Device settings need attention";
   overview.controller.control.canStart = false;
   await page.reload();
@@ -1211,7 +1479,8 @@ test("readiness distinguishes failed device checks from a newer passing clock an
     }),
   );
   await page.reload();
-  await page.getByRole("link", { name: "Controls", exact: true }).click();
+  await page.getByRole("link", { name: "Automations", exact: true }).click();
+  await page.getByRole("link", { name: "Advanced controls and diagnostics", exact: true }).click();
   const saved = page.getByRole("region", {
     name: "Saved device verification",
     exact: true,
@@ -1429,7 +1698,8 @@ test("expired verification and cached clock evidence need an explicit fresh chec
     }),
   );
   await page.reload();
-  await page.getByRole("link", { name: "Controls", exact: true }).click();
+  await page.getByRole("link", { name: "Automations", exact: true }).click();
+  await page.getByRole("link", { name: "Advanced controls and diagnostics", exact: true }).click();
   const saved = page.getByRole("region", {
     name: "Saved device verification",
     exact: true,
@@ -1492,6 +1762,7 @@ test("shared API budgets explain remaining capacity and recovery limits in both 
     await route.fulfill({ json: settings });
   });
   await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await page.locator(".api-budget-disclosure > summary").click();
   const panel = page.locator(".api-budget");
   await expect(panel).toContainText(
     "Connected workspaces sharing this budget: 2",
@@ -1709,7 +1980,8 @@ test("capacity admission explains waiting, retries without premature success and
     error: "Device settings need attention",
   });
   overview.controller.control.workspaceEnabled = true;
-  await page.getByRole("link", { name: "Управление", exact: true }).click();
+  await page.getByRole("link", { name: "Автоматизации", exact: true }).click();
+  await page.getByRole("link", { name: "Разширено управление и диагностика", exact: true }).click();
   await page
     .getByRole("button", { name: "Изключи управлението", exact: true })
     .click();
@@ -1770,7 +2042,7 @@ test("uncertain writes remain distinct from confirmed cleanup in English and Bul
   await page.route("**/api/overview", (route) =>
     route.fulfill({ json: overview }),
   );
-  await page.goto("/controls");
+  await page.goto("/controls/advanced");
   const panel = page.locator(".write-recovery");
   await expect(panel).toContainText("Write outcome unknown");
   await expect(
@@ -1850,7 +2122,7 @@ test("native supervision and observed charging problems remain clear on mobile i
   await page.route("**/api/overview", (route) =>
     route.fulfill({ json: overview }),
   );
-  await page.goto("/controls");
+  await page.goto("/controls/advanced");
   await expect(
     page.getByText("Monitoring existing inverter policy", { exact: true }),
   ).toBeVisible();
@@ -1877,7 +2149,7 @@ test("native supervision and observed charging problems remain clear on mobile i
       () => document.documentElement.scrollWidth > innerWidth,
     ),
   ).toBe(false);
-  await page.getByRole("link", { name: "Преглед", exact: true }).click();
+  await page.getByRole("link", { name: "Начало", exact: true }).click();
   await expect(
     page.getByText(/Домът се захранва от мрежата над резерва/),
   ).toBeVisible();
@@ -2035,7 +2307,8 @@ test("full write history includes recovery and paginated command evidence withou
       );
     }
     await signIn(page);
-    await page.getByRole("link", { name: "Activity", exact: true }).click();
+    await page.getByRole("link", { name: "History", exact: true }).click();
+    await page.getByRole("link", { name: "Actions and events", exact: true }).click();
     await page
       .getByRole("link", { name: "All inverter writes", exact: true })
       .click();
@@ -2350,7 +2623,7 @@ test("recovery health distinguishes a failed latest test from previous success i
   await page.route("**/api/operations?**", (route) =>
     route.fulfill({ json: health }),
   );
-  await page.reload();
+  await page.goto("/settings");
   await expect(
     page.getByText("Backup and recovery need attention."),
   ).toBeVisible();
@@ -2454,7 +2727,7 @@ test("saved recovery works through the public page and downloads a Bulgarian key
       .getByRole("button", { name: "Create my workspace", exact: true })
       .click();
     await expect(
-      user.getByRole("heading", { name: "Energy overview", exact: true }),
+      user.getByRole("heading", { name: "Your energy, at a glance.", exact: true }),
     ).toBeVisible();
     await user.goto("/settings/security");
     await user
@@ -2556,7 +2829,7 @@ test("saved recovery works through the public page and downloads a Bulgarian key
     await user.getByLabel("Парола", { exact: true }).fill(replacement);
     await user.getByRole("button", { name: "Вход", exact: true }).click();
     await expect(
-      user.getByRole("heading", { name: "Преглед на енергията", exact: true }),
+      user.getByRole("heading", { name: "Всичко е пред теб.", exact: true }),
     ).toBeVisible();
     await user.goto("/settings/security");
     await user
@@ -2583,7 +2856,7 @@ test("administrators revoke and reissue invitations and provide a single-use pri
   await signIn(page);
   const email = `invitation-access-${randomUUID()}@example.test`;
   const initial = "invitation-access-fixture-password";
-  await page.getByRole("link", { name: "Workspaces", exact: true }).click();
+  await page.getByRole("link", { name: "Administration", exact: true }).click();
   await page
     .getByLabel("Workspace name", { exact: true })
     .fill("Access lifecycle fixture");
@@ -2629,7 +2902,7 @@ test("administrators revoke and reissue invitations and provide a single-use pri
       .getByRole("button", { name: "Create my workspace", exact: true })
       .click();
     await expect(
-      user.getByRole("heading", { name: "Energy overview", exact: true }),
+      user.getByRole("heading", { name: "Your energy, at a glance.", exact: true }),
     ).toBeVisible();
     await page.getByLabel("Account email", { exact: true }).fill(email);
     await page
@@ -2802,12 +3075,12 @@ test("a delayed identity cannot replace an activated user and recovery preserves
       .getByRole("button", { name: "Create my workspace", exact: true })
       .click();
     await expect(
-      user.getByRole("heading", { name: "Energy overview", exact: true }),
+      user.getByRole("heading", { name: "Your energy, at a glance.", exact: true }),
     ).toBeVisible();
     release();
     await finished;
     await expect(
-      user.getByRole("link", { name: "Workspaces", exact: true }),
+      user.getByRole("link", { name: "Administration", exact: true }),
     ).toHaveCount(0);
     const session = (await (
       await user.request.get("/api/auth/session")
@@ -2848,7 +3121,7 @@ test("a delayed identity cannot replace an activated user and recovery preserves
       .getByRole("link", { name: "Return to dashboard", exact: true })
       .click();
     await expect(
-      page.getByRole("link", { name: "Workspaces", exact: true }),
+      page.getByRole("link", { name: "Administration", exact: true }),
     ).toBeVisible();
   } finally {
     release();
@@ -3022,6 +3295,7 @@ test("workspace suspension and resumption preserve member access and require sep
     expect(overview.controller.control.workspaceEnabled).toBe(false);
     expect(overview.controller.control.verification).toBeNull();
     await member.reload();
+    await member.locator("summary").filter({ hasText: "Състояние на пространството" }).click();
     await expect(
       member.getByText("Пространството е достъпно", { exact: true }),
     ).toBeVisible();
@@ -3367,7 +3641,7 @@ test("workspace closure uses real cookies, reports a lost response and permits c
     await member.getByRole("button", { name: "Sign in", exact: true }).click();
     await expect(
       member.getByText("Workspace closing", { exact: true }),
-    ).toHaveCount(2);
+    ).toHaveCount(1);
     await panel
       .getByLabel("Парола за таблото при закриване", { exact: true })
       .fill(process.env.E2E_PASSWORD!);
@@ -3694,7 +3968,7 @@ test("policy observations explain the real empty state without sending inverter 
     )
       commands++;
   });
-  await page.goto("/controls");
+  await page.goto("/controls/advanced");
   await page
     .getByRole("link", { name: "Observe the home policy", exact: true })
     .click();
@@ -4881,9 +5155,9 @@ test("native solar policy is consistent in Controls, Settings and observations i
     ["en", "Solar charging follows the inverter and battery limits, up to the 100% SOC target."],
     ["bg", "Соларното зареждане следва ограниченията на инвертора и батерията до целеви заряд от 100%."],
   ] as const) {
-    await page.goto("/controls");
+    await page.goto("/controls/advanced");
     await page.locator(".language-switch select").selectOption(language);
-    for (const path of ["/controls", "/settings", "/controls/observations"]) {
+    for (const path of ["/controls/advanced", "/settings", "/controls/observations"]) {
       await page.goto(path);
       await expect(page.locator("main")).toContainText(message);
       await expect(page.locator("main")).not.toContainText(/5\s*(kW|кВт)/i);

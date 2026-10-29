@@ -4,7 +4,7 @@ A private solar monitoring and battery control dashboard, hosted at **https://so
 
 ## Workspaces and accounts
 
-Users sign in with a local email/password. Each workspace links its own SOLARMAN Smart email/password in **Settings**, tests that connection, and selects an inverter discovered for that account. The platform administrator creates private, single-use invitations under **Workspaces**; each invitation expires after 24 hours. No email is sent automatically.
+Users sign in with a local email/password. Each workspace links its own SOLARMAN Smart email/password in **Settings**, tests that connection, and selects an inverter discovered for that account. The platform administrator creates private, single-use invitations under **Administration** (or **Settings → Manage users and homes** on a phone); each invitation expires after 24 hours. No email is sent automatically.
 
 Measurements, exports, jobs, automation state and API usage are scoped to the session's tenant. Composite database foreign keys enforce account ownership. Local passwords use salted scrypt hashes; provider password hashes and optional personal OpenAPI credentials use AES-256-GCM encryption bound to their tenant and account. The master encryption key stays outside PostgreSQL. Sessions use hashed opaque identifiers, HttpOnly cookies, CSRF tokens and origin checks.
 
@@ -12,15 +12,16 @@ SOLARMAN OpenAPI **App ID / App Secret** activation is required in addition to a
 
 ## Dashboard
 
-- **Overview:** solar, house, grid and battery flow, reserve, current controller status and daily estimates.
-- **Analytics:** power/SOC charts, date ranges, daily energy estimates, data coverage and full-resolution CSV export.
-- **Controls:** refresh diagnostics, top up to 50%, stop scheduled top-ups, pause/resume automation. Commands have idempotent request IDs, device acknowledgments, write readbacks and an audit trail.
-- **Activity:** searchable command history with individual request, verification and write details, plus all inverter writes including unlinked recovery operations and earlier bindings.
-- **System health:** persistent device, control-recovery and API-capacity alerts with seen/active/resolved states, available from Settings and an Overview alert summary.
-- **Account security:** change the dashboard password, review browser sessions, sign out another browser or every other browser, and inspect recent private security events. Available from Settings in English and Bulgarian.
-- **Settings:** private provider link, optional personal API keys, device discovery, compatibility profile, timezone, API usage and raw provider readings.
+- **Home:** battery charge display, solar/home/grid/battery flow, the **Charge from grid** action, home policy and daily estimates. The charging dialog reviews the actual policy target and AC limit, explains unavailable actions, and keeps a charging request distinct from confirmed device behavior.
+- **Automations:** solar priority, reserve and AC charging policy, pause/resume, one-time top-ups and contextual **Stop app top-ups**. Stopping app top-ups clears scheduled permission; solar and the inverter's native reserve charging may continue.
+- **History:** energy charts, date ranges, daily estimates, coverage and full-resolution CSV export under **Energy history**; searchable commands and device write evidence under **Actions and events**.
+- **Settings:** provider connection, device discovery, compatibility profile, timezone, notifications, account security and data/privacy. API usage, lifecycle actions and raw provider readings are behind explicit disclosures. Platform administrators manage users and homes separately from the four everyday navigation items.
 
-Missing data stays unavailable rather than becoming zero. Estimated energy excludes gaps longer than twice the sampling interval and honors the selected timezone and daylight-saving boundaries. Browser refreshes read the database; explicit **Refresh readings** requests contact the inverter.
+**Automations → Continue setup** guides connection, read-only device verification and physical commissioning/approval. Setup explains the next requirement and retains detailed checks under Advanced. Readiness, current-password confirmation, attendance, device-bound evidence and activation requirements remain enforced by the server. The redesign does not complete commissioning or enable hardware writes on its own.
+
+**Advanced controls and diagnostics** retains verification, refresh, activation, recovery and the complete inverter write journal. System health retains persistent device, recovery, capacity and backup alerts. All pages share a restrained glass/electronics theme with readable text, visible focus, reduced motion/transparency support and English/Bulgarian layouts.
+
+Missing data stays unavailable rather than becoming zero. Estimated energy excludes gaps longer than twice the sampling interval and honors the selected timezone and daylight-saving boundaries. Browser refreshes read the database; explicit **Refresh device readings** or diagnostic requests contact the inverter.
 
 Normalized analytics and guarded controls currently support the **Bluesun BSE20KH3** profile diagnosed in this project. Other inverters can display read-only provider parameters in Settings; their normalized power charts require a verified model mapping.
 

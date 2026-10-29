@@ -11,7 +11,7 @@ async function signIn(page: Page): Promise<void> {
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Energy overview", exact: true }),
+    page.getByRole("heading", { name: "Your energy, at a glance.", exact: true }),
   ).toBeVisible();
 }
 

@@ -11,7 +11,6 @@ import {
 } from "react";
 import {
   Link,
-  NavLink,
   Navigate,
   Route,
   Routes,
@@ -22,11 +21,11 @@ import {
   Activity,
   ArrowRight,
   Building2,
-  ChartNoAxesCombined,
+  History,
   Check,
   ChevronRight,
   CircleHelp,
-  LayoutDashboard,
+  Home,
   Loader2,
   LockKeyhole,
   LogOut,
@@ -35,22 +34,25 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sun,
+  Zap,
   X,
 } from "lucide-react";
 import { ApiError, isUnconfirmedResponse, request, useData } from "./api";
 import { Context } from "./context";
 import { usePrivateAccess } from "./private-access";
 import { WorkspaceLifecycleNotice } from "./tenant-lifecycle";
-import { age, Loading, Notice, StatusBadge } from "./components";
+import { age, Loading, Notice } from "./components";
 import {
-  Overview,
   AnalyticsPage,
-  Controls,
+  AdvancedControls,
   ActivityPage,
   SettingsPage,
   WorkspacesPage,
 } from "./pages";
 import type { Action, Command, OverviewData, Session } from "./types";
+import HomePage from "./home";
+import AutomationsPage, { ControlSetupPage } from "./automations";
+import { HistoryNavigation } from "./history-navigation";
 
 const CommandDetailsPage = lazy(() => import("./command-details"));
 const SystemHealthPage = lazy(() => import("./system-health"));
@@ -70,13 +72,13 @@ function Brand({ compact = false }: { compact?: boolean }): ReactNode {
   return (
     <div className={`brand ${compact ? "compact" : ""}`}>
       <span className="brand-mark">
-        <Sun size={23} strokeWidth={1.7} />
+        <Zap size={23} strokeWidth={1.7} />
       </span>
       <div>
         <strong>
-          solarman<span> / </span>
+          solarman<span>.</span>
         </strong>
-        {!compact && <small>{tr("ENERGY WORKSPACE")}</small>}
+        {!compact && <small>{tr("HOME ENERGY")}</small>}
       </div>
     </div>
   );
@@ -523,21 +525,22 @@ function Dashboard({
     }
   };
   const navigation = [
-    { to: "/", label: "Overview", icon: LayoutDashboard },
-    { to: "/analytics", label: "Analytics", icon: ChartNoAxesCombined },
-    { to: "/controls", label: "Controls", icon: SlidersHorizontal },
-    { to: "/activity", label: "Activity", icon: Activity },
+    { to: "/", label: "Home", icon: Home },
+    { to: "/controls", label: "Automations", icon: SlidersHorizontal },
+    { to: "/analytics", label: "History", icon: History },
     { to: "/settings", label: "Settings", icon: Settings2 },
-    ...(session.user.platformAdmin
-      ? [{ to: "/workspaces", label: "Workspaces", icon: Building2 }]
-      : []),
   ];
+  const matchesSection = (to: string): boolean =>
+    to === "/"
+      ? location.pathname === "/"
+      : to === "/analytics"
+        ? location.pathname.startsWith("/analytics") ||
+          location.pathname.startsWith("/activity")
+        : location.pathname === to || location.pathname.startsWith(`${to}/`);
   const section =
-    navigation.find(
-      (item) =>
-        item.to === location.pathname ||
-        (item.to !== "/" && location.pathname.startsWith(`${item.to}/`)),
-    )?.label ?? "Overview";
+    location.pathname === "/workspaces"
+      ? "Administration"
+      : (navigation.find((item) => matchesSection(item.to))?.label ?? "Home");
   return (
     <Context.Provider
       value={{
@@ -555,11 +558,7 @@ function Dashboard({
     >
       <div className="app-shell">
         <aside className="sidebar">
-          <Link
-            to="/"
-            className="brand-link"
-            aria-label={tr("Solarman overview")}
-          >
+          <Link to="/" className="brand-link" aria-label={tr("Solarman Home")}>
             <Brand />
           </Link>
           <div className="workspace-label">
@@ -568,29 +567,33 @@ function Dashboard({
             </span>
             <div>
               <strong>{session.tenant.name}</strong>
-              <small>{tr("Private workspace")}</small>
+              <small>{tr("My home")}</small>
             </div>
           </div>
-          <span className="nav-label">{tr("WORKSPACE")}</span>
-          <nav>
+          <span className="nav-label">{tr("MY HOME")}</span>
+          <nav aria-label={tr("Main navigation")}>
             {navigation.map(({ to, label, icon: Icon }) => (
-              <NavLink
+              <Link
                 to={to}
-                end={to === "/"}
                 key={to}
-                className={({ isActive }) =>
-                  isActive ? "nav-item active" : "nav-item"
-                }
+                className={matchesSection(to) ? "nav-item active" : "nav-item"}
+                aria-current={matchesSection(to) ? "page" : undefined}
               >
                 <Icon size={18} strokeWidth={1.6} />
                 <span>{tr(label)}</span>
                 {to === "/controls" && data?.controller.mode === "active" && (
                   <i className="nav-active-dot" />
                 )}
-              </NavLink>
+              </Link>
             ))}
           </nav>
           <div className="sidebar-bottom">
+            {session.user.platformAdmin && (
+              <Link className="admin-nav-link" to="/workspaces">
+                <Building2 size={17} />
+                {tr("Administration")}
+              </Link>
+            )}
             <div className="sidebar-tip">
               <CircleHelp size={18} />
               <p>
@@ -617,15 +620,17 @@ function Dashboard({
         </aside>
         <div className="main-shell">
           <header className="topbar">
+            <div className="mobile-brand">
+              <Brand compact />
+            </div>
             <div className="breadcrumb">
-              <Sun size={16} />
-              <span>{tr("Workspace")}</span>
+              <Home size={16} />
+              <span>{tr("My home")}</span>
               <ChevronRight size={13} />
               <strong>{tr(section)}</strong>
             </div>
             <div className="topbar-status">
               <LanguageSwitch />
-              {data && <StatusBadge status={data.controller.mode} />}
               <span className="last-reading">
                 <span className="status-dot" />
                 {age(data?.latest?.at)}
@@ -643,10 +648,16 @@ function Dashboard({
           </header>
           <main className="main-content">
             <WorkspaceLifecycleNotice />
+            {(location.pathname.startsWith("/analytics") ||
+              location.pathname.startsWith("/activity")) && (
+              <HistoryNavigation />
+            )}
             <Routes>
-              <Route path="/" element={<Overview />} />
+              <Route path="/" element={<HomePage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
-              <Route path="/controls" element={<Controls />} />
+              <Route path="/controls" element={<AutomationsPage />} />
+              <Route path="/controls/setup" element={<ControlSetupPage />} />
+              <Route path="/controls/advanced" element={<AdvancedControls />} />
               <Route
                 path="/controls/observations"
                 element={
@@ -726,7 +737,7 @@ function Dashboard({
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
             <footer className="page-footer">
-              <span>{tr("Solarman workspace")}</span>
+              <span>{tr("Solarman · Your home energy")}</span>
               <span>
                 {tr("Times shown in")} {session.tenant.timezone}{" "}
                 {tr("· Private account data")}
@@ -846,7 +857,9 @@ export default function App(): ReactNode {
         <div className="activation-card">
           <h1>{tr("Unable to check your session")}</h1>
           <p>
-            {tr("Retry when the dashboard is available to open your workspace.")}
+            {tr(
+              "Retry when the dashboard is available to open your workspace.",
+            )}
           </p>
           {error && <Notice tone="danger">{error}</Notice>}
           <button

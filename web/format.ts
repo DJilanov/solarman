@@ -2,10 +2,10 @@ import { tr, locale } from "./i18n";
 import type { ControllerStatus } from "./types";
 
 export const COLORS = {
-  solar: "#e9bf70",
-  house: "#aaa4f1",
-  grid: "#77b8ed",
-  battery: "#9ddcc4",
+  solar: "#f4cc86",
+  house: "#d0c4f3",
+  grid: "#a7d2fb",
+  battery: "#bcf9d9",
   soc: "#d7e1e7",
 };
 
