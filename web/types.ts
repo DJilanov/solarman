@@ -563,10 +563,24 @@ export interface PolicyObservationData {
   }[];
 }
 
+export interface CommissioningRequirement {
+  code: "solar" | "discharge" | "gridCharge" | "gridStop" | "dayNight" | "recovery";
+  passed: boolean;
+}
 export interface CommissioningData {
   identity: ObservationIdentity | null;
   canPrepare: boolean;
   attendedMinutes: number;
+  availableObservation: {
+    id: string;
+    checkedAt: string | null;
+    requirements: CommissioningRequirement[];
+  } | null;
+  recoveryCommands: {
+    id: string;
+    action: "stop" | "pause" | "disable_controls";
+    completedAt: string;
+  }[];
   run: {
     id: string;
     state: "preparing" | "attending" | "approved";
@@ -585,16 +599,7 @@ export interface CommissioningData {
       };
       recovery?: { commandId: string; completedAt: string };
     };
-    requirements: {
-      code:
-        | "solar"
-        | "discharge"
-        | "gridCharge"
-        | "gridStop"
-        | "dayNight"
-        | "recovery";
-      passed: boolean;
-    }[];
+    requirements: CommissioningRequirement[];
     events: { action: string; revision: string; created_at: string }[];
   } | null;
   history: {

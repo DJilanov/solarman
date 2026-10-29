@@ -4,9 +4,9 @@ import { ArrowLeft, CheckCircle2, Clock, ShieldCheck } from "lucide-react";
 import { useWorkspace } from "./context";
 import { useData, request, isUnconfirmedResponse } from "./api";
 import { tr } from "./i18n";
-import { Heading, Loading, Notice, Panel, when } from "./components";
+import { Heading, Loading, Notice, Panel, commandLabel, when } from "./components";
 import { FirmwareEvidence } from "./firmware-evidence";
-import type { CommissioningData, PolicyObservationData } from "./types";
+import type { CommissioningData } from "./types";
 
 const requirements: Record<
   NonNullable<CommissioningData["run"]>["requirements"][number]["code"],
@@ -48,10 +48,6 @@ export default function CommissioningPage(): ReactNode {
     "/commissioning",
     5000,
   );
-  const observations = useData<PolicyObservationData>(
-    "/policy-observations",
-    15000,
-  );
   const [password, setPassword] = useState("");
   const [attending, setAttending] = useState(false);
   const [recoveryCommandId, setRecoveryCommandId] = useState("");
@@ -62,6 +58,9 @@ export default function CommissioningPage(): ReactNode {
   const timezone = session.tenant.timezone;
   const run = data?.run;
   const control = overview?.controller.control;
+  const selectedRecovery = data?.recoveryCommands.find(
+    (command) => command.id === recoveryCommandId,
+  );
   const change = async (action: string): Promise<void> => {
     setPending(true);
     setMessage(null);
@@ -78,8 +77,8 @@ export default function CommissioningPage(): ReactNode {
           id: run?.id,
           revision: run?.revision,
           attending,
-          observationRunId: observations.data?.run?.id,
-          recoveryCommandId: recoveryCommandId || undefined,
+          observationRunId: data?.availableObservation?.id,
+          recoveryCommandId: selectedRecovery?.id,
         }),
       });
       setMessage(tr("Commissioning status updated"));
@@ -220,7 +219,7 @@ export default function CommissioningPage(): ReactNode {
             {tr("Prepare commissioning")}
           </button>
         )}
-        {!data.canPrepare && !run && (
+        {!data.canPrepare && (!run || run.state === "preparing") && (
           <p className="fine-print">
             {tr("Pause automation and verify the device before commissioning")}
           </p>
@@ -234,39 +233,119 @@ export default function CommissioningPage(): ReactNode {
             subtitle={tr("Saved evidence remains distinct from approval")}
           >
             <ul className="commissioning-checklist">
-              {run.requirements.map((item) => (
-                <li key={item.code}>
-                  {item.passed ? (
-                    <CheckCircle2 size={19} />
-                  ) : (
-                    <Clock size={19} />
-                  )}
-                  <span>
-                    <strong>{tr(requirements[item.code])}</strong>
-                    <small>
-                      {tr(
-                        item.passed
-                          ? "Recorded evidence"
-                          : "Still requires commissioning",
-                      )}
-                    </small>
-                  </span>
-                </li>
-              ))}
+              {run.requirements.map((item): ReactNode => {
+                const available =
+                  item.code === "recovery"
+                    ? Boolean(selectedRecovery)
+                    : data.availableObservation?.requirements.some(
+                        (candidate) =>
+                          candidate.code === item.code && candidate.passed,
+                      );
+                return (
+                  <li key={item.code}>
+                    {item.passed ? (
+                      <CheckCircle2 size={19} />
+                    ) : (
+                      <Clock size={19} />
+                    )}
+                    <span>
+                      <strong>{tr(requirements[item.code])}</strong>
+                      <small>
+                        {tr(
+                          item.passed
+                            ? "Recorded evidence"
+                            : available
+                              ? "Available to save"
+                              : "Still requires commissioning",
+                        )}
+                      </small>
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
+            <p className="fine-print">
+              {tr(
+                "Available evidence is not part of the saved checklist. Save it with your dashboard password; approval remains a separate action.",
+              )}
+            </p>
+            {data.availableObservation?.checkedAt && (
+              <p className="fine-print">
+                {tr("Available observations checked {{time}}", {
+                  time: when(
+                    data.availableObservation.checkedAt,
+                    timezone,
+                    "medium",
+                  ),
+                })}
+              </p>
+            )}
+            {!data.availableObservation && (
+              <p className="fine-print">
+                {tr(
+                  "No valid observation run is available for this device. Open observations to record readings.",
+                )}
+              </p>
+            )}
             <Link className="text-link" to="/controls/observations">
               {tr("Observe the home policy")}
             </Link>
             <label className="field-label" htmlFor="recovery-command">
-              {tr("Verified recovery command ID (optional)")}
+              {tr("Verified recovery result (optional)")}
             </label>
-            <input
+            <select
               id="recovery-command"
               value={recoveryCommandId}
-              maxLength={36}
-              disabled={pending}
+              disabled={
+                pending ||
+                run.state === "approved" ||
+                run.currentBinding !== true ||
+                (!data.recoveryCommands.length && !recoveryCommandId)
+              }
               onChange={(event) => setRecoveryCommandId(event.target.value)}
-            />
+            >
+              <option value="">
+                {tr(
+                  run.evidence.recovery
+                    ? "Keep saved recovery evidence"
+                    : "Choose a verified recovery result",
+                )}
+              </option>
+              {recoveryCommandId && !selectedRecovery && (
+                <option value={recoveryCommandId} disabled>
+                  {tr("Selected recovery result is unavailable")}
+                </option>
+              )}
+              {data.recoveryCommands.map((command) => (
+                <option key={command.id} value={command.id}>
+                  {commandLabel(command.action)} ·{" "}
+                  {when(command.completedAt, timezone, "medium")}
+                </option>
+              ))}
+            </select>
+            {!data.recoveryCommands.length && (
+              <p className="fine-print">
+                {tr(
+                  "No verified recovery result is available from this commissioning run yet. A Stop that only confirms charging was already off does not qualify.",
+                )}
+              </p>
+            )}
+            {selectedRecovery && (
+              <Link className="text-link" to={`/activity/${selectedRecovery.id}`}>
+                {tr("Review selected recovery result")}
+              </Link>
+            )}
+            {run.evidence.recovery && (
+              <p className="fine-print">
+                <Link
+                  className="text-link"
+                  to={`/activity/${run.evidence.recovery.commandId}`}
+                >
+                  {tr("Review saved recovery result")}
+                </Link>{" "}
+                {when(run.evidence.recovery.completedAt, timezone, "medium")}
+              </p>
+            )}
             <p className="fine-print">
               {tr(
                 "Recovery evidence requires a successful Stop command with a verified disable write from this commissioning run.",
@@ -277,8 +356,10 @@ export default function CommissioningPage(): ReactNode {
                 className="button secondary"
                 disabled={
                   locked ||
-                  !observations.data?.run ||
-                  run.currentBinding !== true
+                  !data.availableObservation ||
+                  run.currentBinding !== true ||
+                  run.state === "approved" ||
+                  Boolean(recoveryCommandId && !selectedRecovery)
                 }
                 onClick={() => {
                   void change("evidence");
@@ -290,6 +371,8 @@ export default function CommissioningPage(): ReactNode {
                 className="button primary"
                 disabled={
                   locked ||
+                  !data.canPrepare ||
+                  run.currentBinding !== true ||
                   run.state !== "preparing" ||
                   run.requirements.some((item) => !item.passed)
                 }

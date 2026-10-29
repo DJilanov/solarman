@@ -1235,7 +1235,6 @@
   "Complete day and night observation": "Пълно наблюдение през деня и нощта",
   "Verified scheduled-charge recovery": "Потвърдено изключване на зареждането по график",
   "Recorded evidence": "Записани доказателства",
-  "Verified recovery command ID (optional)": "Идентификатор на потвърдена команда за изключване (незадължително)",
   "Recovery evidence requires a successful Stop command with a verified disable write from this commissioning run.": "Доказателството изисква успешна команда за спиране с потвърден запис за изключване в рамките на това изпитване.",
   "Save current observation evidence": "Запиши текущите доказателства от наблюдението",
   "Approve unattended control": "Одобри автоматичното управление",
@@ -1415,5 +1414,16 @@
   "Download diagnostic report": "Изтегли диагностичния отчет",
   "Diagnostic report copied": "Диагностичният отчет е копиран",
   "Clipboard access is unavailable. Download the diagnostic report instead.": "Няма достъп до клипборда. Изтеглете диагностичния отчет като файл.",
-  "Physical policy and recovery evidence are required before approval": "Преди одобрение са необходими доказателства за реалното поведение и изключването на планираното зареждане."
+  "Physical policy and recovery evidence are required before approval": "Преди одобрение са необходими доказателства за реалното поведение и изключването на планираното зареждане.",
+  "Available to save": "Готово за записване",
+  "Available evidence is not part of the saved checklist. Save it with your dashboard password; approval remains a separate action.": "Наличните доказателства още не са в запазения списък. Запишете ги с паролата си за таблото; одобрението е отделно действие.",
+  "Available observations checked {{time}}": "Наличните наблюдения са проверени на {{time}}",
+  "No valid observation run is available for this device. Open observations to record readings.": "Няма валидно наблюдение за това устройство. Отворете наблюденията, за да записвате измервания.",
+  "Verified recovery result (optional)": "Потвърден резултат от изключване (незадължително)",
+  "Keep saved recovery evidence": "Запази вече записаното доказателство за изключване",
+  "Choose a verified recovery result": "Изберете потвърден резултат от изключване",
+  "Selected recovery result is unavailable": "Избраният резултат от изключване не е наличен",
+  "No verified recovery result is available from this commissioning run yet. A Stop that only confirms charging was already off does not qualify.": "Още няма потвърден резултат от изключване за това изпитване. Команда „Спри“, която само потвърждава, че зареждането вече е било изключено, не е достатъчна.",
+  "Review selected recovery result": "Преглед на избрания резултат от изключване",
+  "Review saved recovery result": "Преглед на запазения резултат от изключване"
 }

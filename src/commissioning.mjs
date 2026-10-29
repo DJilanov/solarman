@@ -30,6 +30,23 @@ export function commissioningRequirements(evidence) {
   ];
 }
 
+/** @param {import('pg').Pool|import('pg').PoolClient} client @param {object} run @param {string|null} [commandId] @returns {Promise<{id:string,action:string,completed_at:Date}[]>} */
+async function verifiedRecoveryCommands(client, run, commandId = null) {
+  return (
+    await client.query(
+      `SELECT c.id,c.action,c.completed_at FROM command_executions c
+      WHERE c.tenant_id=$1 AND c.account_id=$2 AND c.device=$3 AND c.created_at>=$4
+      AND ($5::uuid IS NULL OR c.id=$5) AND c.action IN('stop','pause','disable_controls')
+      AND c.status='succeeded' AND c.completed_at IS NOT NULL
+      AND EXISTS(SELECT 1 FROM inverter_write_intents w WHERE w.tenant_id=c.tenant_id
+        AND w.execution_id=c.id AND w.account_id=c.account_id AND w.device=c.device
+        AND w.operation='disable' AND w.status='verified')
+      ORDER BY c.completed_at DESC,c.id DESC LIMIT 20`,
+      [run.tenant_id, run.account_id, run.device, run.created_at, commandId],
+    )
+  ).rows;
+}
+
 /** @param {import('pg').PoolClient} client @param {object} run @param {string} action @param {object} [detail] @returns {Promise<void>} */
 async function event(client, run, action, detail = {}) {
   await client.query(
@@ -84,24 +101,56 @@ export class Commissioning {
   async status(tenantId, runtime) {
     const run = await currentCommissioning(this.pool, tenantId);
     const identity = this.identity(runtime);
-    const history = (
-      await this.pool.query(
-        "SELECT id,state,reason,created_at,ended_at FROM control_commissioning WHERE tenant_id=$1 ORDER BY created_at DESC,id DESC LIMIT 20",
-        [tenantId],
-      )
-    ).rows;
-    const events = run
-      ? (
-          await this.pool.query(
-            "SELECT action,revision::text,detail,created_at FROM commissioning_events WHERE tenant_id=$1 AND run_id=$2 ORDER BY revision DESC LIMIT 25",
-            [tenantId, run.id],
-          )
-        ).rows
-      : [];
+    const matching = Boolean(
+      run && identity && run.binding === observationBinding(identity),
+    );
+    const [history, events, recoveryCommands, observation] = await Promise.all([
+      this.pool
+        .query(
+          "SELECT id,state,reason,created_at,ended_at FROM control_commissioning WHERE tenant_id=$1 ORDER BY created_at DESC,id DESC LIMIT 20",
+          [tenantId],
+        )
+        .then((result) => result.rows),
+      run
+        ? this.pool
+            .query(
+              "SELECT action,revision::text,detail,created_at FROM commissioning_events WHERE tenant_id=$1 AND run_id=$2 ORDER BY revision DESC LIMIT 25",
+              [tenantId, run.id],
+            )
+            .then((result) => result.rows)
+        : [],
+      matching ? verifiedRecoveryCommands(this.pool, run) : [],
+      matching
+        ? this.pool
+            .query(
+              "SELECT id,binding,state,failed_at,checked_at,progress FROM policy_observation_runs WHERE tenant_id=$1 ORDER BY started_at DESC,id DESC LIMIT 1",
+              [tenantId],
+            )
+            .then((result) => result.rows[0])
+        : null,
+    ]);
     return {
       identity,
       canPrepare: this.canPrepare(runtime),
       attendedMinutes: ATTENDED_MINUTES,
+      availableObservation: observation &&
+        observation.binding === run.binding &&
+        observation.state !== "invalidated" && !observation.failed_at
+          ? {
+              id: observation.id,
+              checkedAt: observation.checked_at,
+              requirements: commissioningRequirements({
+                observation: {
+                  progress: parseObservationProgress(observation.progress),
+                },
+              }),
+            }
+          : null,
+      recoveryCommands: recoveryCommands.map((command) => ({
+        id: command.id,
+        action: command.action,
+        completedAt: command.completed_at,
+      })),
       run: run
         ? {
             id: run.id,
@@ -319,20 +368,7 @@ export class Commissioning {
             !UUID.test(body.recoveryCommandId)
           )
             throw new SecurityError(400, "Choose a verified recovery command");
-          const recovery = (
-            await client.query(
-              `SELECT c.id,c.completed_at FROM command_executions c WHERE c.tenant_id=$1 AND c.id=$2 AND c.account_id=$3 AND c.device=$4
-            AND c.action IN('stop','pause','disable_controls') AND c.status='succeeded' AND c.created_at>=$5
-            AND EXISTS(SELECT 1 FROM inverter_write_intents w WHERE w.tenant_id=c.tenant_id AND w.execution_id=c.id AND w.operation='disable' AND w.status='verified')`,
-              [
-                session.tenant_id,
-                body.recoveryCommandId,
-                run.account_id,
-                run.device,
-                run.created_at,
-              ],
-            )
-          ).rows[0];
+          const [recovery] = await verifiedRecoveryCommands(client, run, body.recoveryCommandId);
           if (!recovery)
             throw new SecurityError(409, "Choose a verified recovery command");
           evidence.recovery = {

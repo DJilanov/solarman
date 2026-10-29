@@ -7076,6 +7076,8 @@ test("native solar approval requires physical evidence and leaves activation and
       return device.reply(raw);
     };
     assert.equal((await f.change("create")).status, 200);
+    assert.deepEqual((await f.state()).recoveryCommands, []);
+    assert.equal((await f.state()).availableObservation, null);
     assert.equal((await f.change("approve")).status, 409);
     assert.equal((await f.change("attend", { attending: true })).status, 200);
     await completeCommand(f.runtime, "commission_controls", f.user);
@@ -7088,6 +7090,10 @@ test("native solar approval requires physical evidence and leaves activation and
     assert.ok(device.writes.some(
       (write) => write.address === 206 && write.values[1] === 9,
     ));
+    const recoveryChoices = (await f.state()).recoveryCommands;
+    assert.deepEqual(recoveryChoices.map((command) => command.id), [recovery.id]);
+    assert.equal(recoveryChoices[0].action, "stop");
+    assert.equal(new Date(recoveryChoices[0].completedAt).toISOString(), new Date(recovery.completed_at).toISOString());
     assert.equal((await f.change("end")).status, 200);
 
     const startedAt = new Date(Date.now() - 25 * 3600000).toISOString();
@@ -7150,6 +7156,38 @@ test("native solar approval requires physical evidence and leaves activation and
         startedAt,
       ],
     );
+    const callsBeforePreview = f.calls.length;
+    const preview = await f.state();
+    assert.equal(f.calls.length, callsBeforePreview);
+    assert.equal(preview.availableObservation.id, observationId);
+    assert.equal(preview.availableObservation.requirements.filter((item) => item.passed).length, 5);
+    assert.equal(preview.run.requirements.some((item) => item.passed), false);
+    await pool.query("UPDATE policy_observation_runs SET failed_at=clock_timestamp() WHERE id=$1", [observationId]);
+    assert.equal((await f.state()).availableObservation, null);
+    await pool.query("UPDATE policy_observation_runs SET failed_at=null WHERE id=$1", [observationId]);
+    await pool.query("UPDATE policy_observation_runs SET binding=$2 WHERE id=$1", [observationId, "b".repeat(64)]);
+    assert.equal((await f.state()).availableObservation, null);
+    await pool.query("UPDATE policy_observation_runs SET binding=$2 WHERE id=$1", [observationId, f.runtime.controlBinding()]);
+
+    await pool.query("UPDATE inverter_write_intents SET status='acknowledged',verified_at=null WHERE execution_id=$1 AND operation='disable'", [recovery.id]);
+    assert.deepEqual((await f.state()).recoveryCommands, []);
+    assert.equal((await f.change("evidence", {
+      observationRunId: observationId,
+      recoveryCommandId: recovery.id,
+    })).status, 409);
+    await pool.query("UPDATE inverter_write_intents SET status='verified',verified_at=clock_timestamp() WHERE execution_id=$1 AND operation='disable'", [recovery.id]);
+
+    await pool.query("UPDATE command_executions SET status='failed' WHERE id=$1", [recovery.id]);
+    assert.deepEqual((await f.state()).recoveryCommands, []);
+    await pool.query("UPDATE command_executions SET status='succeeded' WHERE id=$1", [recovery.id]);
+    await pool.query("UPDATE command_executions SET completed_at=null WHERE id=$1", [recovery.id]);
+    assert.deepEqual((await f.state()).recoveryCommands, []);
+    await pool.query("UPDATE command_executions SET completed_at=$2 WHERE id=$1", [recovery.id, recovery.completed_at]);
+    await pool.query("UPDATE command_executions SET created_at=$2::timestamptz-interval '1 second' WHERE id=$1", [recovery.id, state.run.createdAt]);
+    assert.deepEqual((await f.state()).recoveryCommands, []);
+    await pool.query("UPDATE command_executions SET created_at=$2 WHERE id=$1", [recovery.id, recovery.created_at]);
+    const otherChoices = await (await fetchApi("/commissioning", { auth: f.admin })).json();
+    assert.equal(otherChoices.recoveryCommands.some((command) => command.id === recovery.id), false);
     assert.equal((await f.change("evidence", { observationRunId: observationId })).status, 200);
     assert.equal((await f.change("approve")).status, 409);
     assert.equal((await f.change("evidence", {

@@ -1235,7 +1235,6 @@
   "Complete day and night observation": "Complete day and night observation",
   "Verified scheduled-charge recovery": "Verified scheduled-charge recovery",
   "Recorded evidence": "Recorded evidence",
-  "Verified recovery command ID (optional)": "Verified recovery command ID (optional)",
   "Recovery evidence requires a successful Stop command with a verified disable write from this commissioning run.": "Recovery evidence requires a successful Stop command with a verified disable write from this commissioning run.",
   "Save current observation evidence": "Save current observation evidence",
   "Approve unattended control": "Approve unattended control",
@@ -1415,5 +1414,16 @@
   "Download diagnostic report": "Download diagnostic report",
   "Diagnostic report copied": "Diagnostic report copied",
   "Clipboard access is unavailable. Download the diagnostic report instead.": "Clipboard access is unavailable. Download the diagnostic report instead.",
-  "Physical policy and recovery evidence are required before approval": "Physical policy and recovery evidence are required before approval"
+  "Physical policy and recovery evidence are required before approval": "Physical policy and recovery evidence are required before approval",
+  "Available to save": "Available to save",
+  "Available evidence is not part of the saved checklist. Save it with your dashboard password; approval remains a separate action.": "Available evidence is not part of the saved checklist. Save it with your dashboard password; approval remains a separate action.",
+  "Available observations checked {{time}}": "Available observations checked {{time}}",
+  "No valid observation run is available for this device. Open observations to record readings.": "No valid observation run is available for this device. Open observations to record readings.",
+  "Verified recovery result (optional)": "Verified recovery result (optional)",
+  "Keep saved recovery evidence": "Keep saved recovery evidence",
+  "Choose a verified recovery result": "Choose a verified recovery result",
+  "Selected recovery result is unavailable": "Selected recovery result is unavailable",
+  "No verified recovery result is available from this commissioning run yet. A Stop that only confirms charging was already off does not qualify.": "No verified recovery result is available from this commissioning run yet. A Stop that only confirms charging was already off does not qualify.",
+  "Review selected recovery result": "Review selected recovery result",
+  "Review saved recovery result": "Review saved recovery result"
 }

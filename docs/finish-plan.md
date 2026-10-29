@@ -88,6 +88,14 @@ Approval still requires all four physical signals, a complete day/night cycle an
 
 Verification passed type/syntax checks, the production build, 176 local unit tests with three Linux-only skips, all 168 PostgreSQL integration tests and all 41 browser tests. The focused commissioning regression failed against the previous permanent gate. The browser suite covers consistent EN/BG policy text across Controls, Settings and observations, diagnostic exports without outreach questions, missing evidence, clipboard recovery and the inspected 320 px Bulgarian layout. Source/build scanning found no configured secret values.
 
+## Commissioning evidence selection
+
+The commissioning checklist now distinguishes newly available observations from evidence explicitly saved by the owner. Its password-confirmed form offers the latest 20 eligible recovery commands by action and completion time, with links to their Activity details. Both listing and saving use the same tenant/account/inverter/run-scoped verification query. Failed commands, missing completion times, older commands and unverified disable writes do not qualify. A disappeared selection blocks saving until the owner selects another result or keeps the existing saved evidence. Approval still requires fresh settings, the complete saved checklist and a separate action.
+
+The combined commissioning response supplies the current valid observation preview, replacing the page's separate observation polling. Missing, failed or mismatched observations are unavailable for saving. Previewing, choosing and language switching send no inverter command; password and selection drafts survive translation changes. No production evidence, recovery result or approval is fabricated.
+
+Verification passed type/syntax checks, the production build, 176 local unit tests with three Linux-only skips, all 168 PostgreSQL integration tests and all 42 browser tests. The database regression failed against the previous response contract and now covers available-versus-saved evidence, failed collectors, mismatched bindings, tenant isolation, missing completion times, older commands and unverified recovery. The browser case covers explicit selection and saving, retained EN/BG drafts, stale selections, missing observations, disabled approval, no separate observation request and an inspected 320 px layout. Source/build scanning found no configured secret values.
+
 ## 1. Complete commissioning and activation
 
 The commissioning lifecycle, attended-control path, dispatch gates, translated states, persistence/export and restore quarantine are implemented in the increment above. Physical acceptance remains separate.

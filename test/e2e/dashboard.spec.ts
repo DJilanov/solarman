@@ -3823,6 +3823,8 @@ test("commissioning separates preparation from attended controls, keeps Stop ava
   const data: CommissioningData = {
     canPrepare: true,
     attendedMinutes: 30,
+    availableObservation: null,
+    recoveryCommands: [],
     identity,
     run: null,
     history: [],
@@ -4008,6 +4010,110 @@ test("commissioning separates preparation from attended controls, keeps Stop ava
   expect(pageErrors).toEqual([]);
   expect(mutations).toEqual(["create", "attend"]);
   expect(commands).toEqual(["commission_controls", "commission_topup", "stop"]);
+});
+
+test("commissioning previews unsaved evidence and selects verified recovery without copying command IDs", async ({ page }) => {
+  await signIn(page);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const now = new Date().toISOString();
+  const recoveryId = randomUUID();
+  const observationId = randomUUID();
+  const codes = ["solar", "discharge", "gridCharge", "gridStop", "dayNight", "recovery"] as const;
+  const identity = {
+    accountId: randomUUID(), device: "evidence-browser-inverter",
+    profile: "bluesun-bse20kh3", model: "BSE20KH3", timezone: "Europe/Sofia",
+    mapping: "browser-fixture", policy: "browser-fixture",
+    firmware: { protocol: "2.02", dsp: "1.57", hmi: "1.45" },
+  };
+  const progress: PolicyObservationRun["progress"] = {
+    version: 1, accepted: 2, rejected: 0, firstAt: now, last: null,
+    coveredSeconds: 300, solarSeen: false, nightSeen: true, approach: null,
+    solar: { count: 0, first: null, last: null, observedAt: null },
+    discharge: { count: 0, first: null, last: null, observedAt: null },
+    gridCharge: { count: 2, first: null, last: null, observedAt: now },
+    gridStop: { count: 0, first: null, last: null, observedAt: null },
+  };
+  const run: NonNullable<CommissioningData["run"]> = {
+    id: randomUUID(), state: "preparing", revision: "1", createdAt: now,
+    updatedAt: now, attendedUntil: null, currentBinding: true, identity,
+    verification: { checkedAt: now, passed: true, checks: [], firmware: identity.firmware },
+    evidence: {}, requirements: codes.map((code) => ({ code, passed: false })), events: [],
+  };
+  const data: CommissioningData = {
+    identity, canPrepare: true, attendedMinutes: 30, run, history: [],
+    availableObservation: {
+      id: observationId, checkedAt: now,
+      requirements: codes.map((code) => ({ code, passed: code === "gridCharge" })),
+    },
+    recoveryCommands: [{ id: recoveryId, action: "stop", completedAt: now }],
+  };
+  const saved: string[] = [];
+  const commands: string[] = [];
+  let separateObservationRequests = 0;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/commands" && request.method() === "POST") commands.push(path);
+    if (path === "/api/policy-observations") separateObservationRequests++;
+  });
+  await page.route("**/api/commissioning", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as {
+        action: string; currentPassword: string; observationRunId: string; recoveryCommandId: string;
+      };
+      expect(body.action).toBe("evidence");
+      expect(body.currentPassword).toBe("evidence-browser-fixture");
+      expect(body.observationRunId).toBe(observationId);
+      expect(body.recoveryCommandId).toBe(recoveryId);
+      expect(route.request().headers()["x-csrf-token"]).toBeTruthy();
+      saved.push(body.action);
+      run.requirements = codes.map((code) => ({ code, passed: code === "gridCharge" || code === "recovery" }));
+      run.evidence = {
+        observation: { id: observationId, checkedAt: now, progress },
+        recovery: { commandId: recoveryId, completedAt: now },
+      };
+      run.revision = "2";
+    }
+    return route.fulfill({ json: data });
+  });
+  await page.goto("/controls/commissioning");
+  const checklist = page.locator(".commissioning-checklist");
+  await expect(checklist.getByText("Available to save", { exact: true })).toHaveCount(1);
+  await expect(checklist.getByText("Recorded evidence", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Approve unattended control", exact: true })).toBeDisabled();
+  const recovery = page.getByLabel("Verified recovery result (optional)", { exact: true });
+  await recovery.selectOption(recoveryId);
+  await expect(page.getByRole("link", { name: "Review selected recovery result", exact: true })).toHaveAttribute("href", `/activity/${recoveryId}`);
+  await expect(checklist.getByText("Available to save", { exact: true })).toHaveCount(2);
+  await page.getByLabel("Current dashboard password", { exact: true }).fill("evidence-browser-fixture");
+  await page.locator(".language-switch select").selectOption("bg");
+  const translatedRecovery = page.getByLabel("Потвърден резултат от изключване (незадължително)", { exact: true });
+  await expect(translatedRecovery).toHaveValue(recoveryId);
+  await expect(page.getByLabel("Текуща парола за таблото", { exact: true })).toHaveValue("evidence-browser-fixture");
+  await expect(checklist.getByText("Готово за записване", { exact: true })).toHaveCount(2);
+  const save = page.getByRole("button", { name: "Запиши текущите доказателства от наблюдението", exact: true });
+  await save.click();
+  await expect(checklist.getByText("Записани доказателства", { exact: true })).toHaveCount(2);
+  await expect(page.getByLabel("Текуща парола за таблото", { exact: true })).toHaveValue("");
+  await expect(page.getByRole("link", { name: "Преглед на запазения резултат от изключване", exact: true })).toHaveAttribute("href", `/activity/${recoveryId}`);
+  await expect(page.getByRole("button", { name: "Одобри автоматичното управление", exact: true })).toBeDisabled();
+  await page.setViewportSize({ width: 320, height: 1100 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: "test-results/commissioning-evidence-mobile-bg.png", fullPage: true });
+
+  data.recoveryCommands = [];
+  await expect(translatedRecovery.locator("option:checked")).toHaveText("Избраният резултат от изключване не е наличен");
+  await page.getByLabel("Текуща парола за таблото", { exact: true }).fill("evidence-browser-fixture");
+  await expect(save).toBeDisabled();
+  await translatedRecovery.selectOption("");
+  await expect(save).toBeEnabled();
+  data.availableObservation = null;
+  await expect(page.getByText("Няма валидно наблюдение за това устройство. Отворете наблюденията, за да записвате измервания.", { exact: true })).toBeVisible();
+  await expect(save).toBeDisabled();
+  expect(saved).toEqual(["evidence"]);
+  expect(commands).toEqual([]);
+  expect(separateObservationRequests).toBe(0);
+  expect(errors).toEqual([]);
 });
 
 test("notifications explain the real empty state and never infer a destination from the login email", async ({
@@ -4505,6 +4611,8 @@ async function firmwareEvidenceFixture(page: Page): Promise<OverviewData> {
     identity: null,
     canPrepare: false,
     attendedMinutes: 30,
+    availableObservation: null,
+    recoveryCommands: [],
     run: null,
     history: [],
   };
