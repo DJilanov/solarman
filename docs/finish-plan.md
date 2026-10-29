@@ -78,6 +78,7 @@ Primary files: `src/control-readiness.mjs`, `src/tenant-runtime.mjs`, `src/contr
 
 - Refresh explicit verification when preparing an actual attended session; do not repeatedly renew an unused report.
 - Resolve the independent source-limit contract before claiming full-policy approval. The pre-commissioning support report now makes that next action available without host writes or a prepared run; see [firmware-evidence.md](firmware-evidence.md).
+- The owner requested minimal vendor interaction and cancelled the proposed firmware-clarification message before sending. Use existing documentation and collected evidence for further investigation; contact the manufacturer only for a case explicitly requested by the owner.
 - Complete the physical checklist below through the implemented attended path, preserving readbacks and recovery evidence. Verify the operator can follow monitoring → verified settings → attended commissioning → approved policy → enabled but paused → resumed supervision.
 - Retain the implemented separation between observations and permission. A passing report or observed low charging power cannot replace physical acceptance or the missing source-limit contract.
 

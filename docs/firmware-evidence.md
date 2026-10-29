@@ -44,4 +44,4 @@ The requested clarification must establish:
 
 The existing physical-commissioning gate stays blocked on independent source limits. This evidence collection does not approve control, enable host writes, or change the 100% overall SOC / 50% grid target / 50% reserve policy. See [finish-plan.md](finish-plan.md) for the remaining physical and operational acceptance work.
 
-The [English manufacturer request](bluesun-firmware-request.txt) uses the October 29 attended check's final saved readings. It includes the model, firmware, numeric settings and questions, with no account credentials or device serial. Bluesun's [official contact page](https://new.bluesunpv.com/contact/) supplied the contact route checked on October 29. The request has been prepared for review; it has not been sent.
+The owner cancelled the proposed manufacturer outreach on October 29, before any message was sent. The prepared draft was removed. Continue investigation using existing documentation, saved diagnostics and collected observations; reserve vendor contact for a case the owner explicitly requests. The independent source limits remain unverified.
