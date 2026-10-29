@@ -69,6 +69,38 @@ Success prints one nonsecret report and saves mode 0600 local recovery metadata:
 
 This records bucket/region, public recipient, exact object-version/checksum references and restore proof. It contains no private key, passwords or decrypted configuration. Retain it independently of the server. Failure prints a fixed stage code; subprocess diagnostics and plaintext are never logged.
 
+## Independent operator kit
+
+The normal restore drill downloads through the application host. Its local metadata record deliberately contains no storage credential. Keep a separate encrypted operator kit so a known checkpoint remains retrievable when that host cannot be reached.
+
+From the trusted Mac with the original age identity available, export to a new absolute filename in a private directory:
+
+```sh
+node scripts/recovery-kit.mjs export "$HOME/.local/share/solarman-backup/operator/offsite.age"
+```
+
+The root operational capsule selects only the existing backup S3 access-key pair, bucket/region, public recipient, latest verified checkpoint and fresh erasure-receipt baseline. It encrypts that material for the existing owner recipient before transmitting it through SSH. The local command downloads the checkpoint directly from S3, checks exact object versions, encryption metadata and hashes, authenticates all three age decryptions and verifies the current erasure prefix against the baseline. Only after those checks does it create the owner-only encrypted file. It never overwrites an earlier kit, and it rejects public directories and linked or group-readable input files. Plaintext credentials, configuration and database bytes remain in bounded process memory.
+
+Verify an existing kit independently of SSH, the application host and local AWS profiles:
+
+```sh
+node scripts/recovery-kit.mjs verify "$HOME/.local/share/solarman-backup/operator/offsite.age"
+```
+
+An optional final argument supplies a newer private `recovery-pack.json` from the regular restore drill. Its location/recipient must match the kit, and its checkpoint must have exact verified object references. The command verifies that specified checkpoint; it does not discover or promote newer backups automatically. Backup objects still follow the existing retention policy.
+
+```sh
+node scripts/recovery-kit.mjs verify \
+  "$HOME/.local/share/solarman-backup/operator/offsite.age" \
+  "$HOME/.local/share/solarman-backup/recovery-pack.json"
+```
+
+The command uses `BACKUP_AGE_BINARY` and `BACKUP_RECOVERY_IDENTITY` process-environment overrides, with the same installed Mac defaults as the regular drill. Export additionally accepts `BACKUP_SSH_TARGET` and `BACKUP_REMOTE_SCRIPT`; verify does not consult either SSH option. It reads no project `.env`. No AWS policy or permission is changed: the encrypted kit carries the existing credential's permissions, and verification uses only read operations. Export a new kit after storage-credential or recipient rotation. Keep the original private identity independently recoverable; it is never uploaded or included in the kit.
+
+A successful report says `retrieval: "direct_s3"`, confirms authenticated decryption and current erasure receipts, and explicitly records `postgresRestorePerformed: false`. This proves independent retrieval, not a restored PostgreSQL inventory, applied erasure fences or a rebuilt production host. Continue with the isolated restore drill and lost-host procedure before promotion. No provider client, scheduler or notification transport starts.
+
+Failures use fixed codes. `recovery_offsite_access_denied` means the credential or storage policy refused access; `recovery_checkpoint_unavailable` means the selected object version is absent. Missing or changed known erasure receipts fail with `recovery_erasure_baseline_missing`. Do not replace the baseline with an empty one. Private-file and directory errors require ownership and permissions to be corrected; raw storage or subprocess diagnostics are not printed.
+
 ## Health and failures
 
 Platform administrators see Backup and recovery under Settings → System health and an Overview attention notice. Other tenants receive no platform backup details. The application reads a sanitized root-owned receipt, never AWS credentials or the recovery identity. `BACKUP_STATUS_FILE` can select another absolute path for a controlled installation.
@@ -81,7 +113,7 @@ Migration 021 adds encrypted notification tokens, channels, outbox records, atte
 
 The drill verifies data recovery and deletes its database. It does not overwrite production. A full rebuild also needs PostgreSQL roles, the application release, private configuration, HTTPS/proxy and PM2 setup from [deployment instructions](deployment.md).
 
-1. Recover the local metadata record, original age identity and independent AWS read credentials. Recorded bucket/version IDs allow retrieval without the lost host's `latest.json` or private receipts. Check encrypted hashes and authenticate every decryption.
+1. Recover the local metadata record, original age identity and encrypted operator kit (or independently available AWS read credentials). Recorded bucket/version IDs allow retrieval without the lost host's `latest.json` or private receipts. Check encrypted hashes and authenticate every decryption.
 2. Provision an isolated PostgreSQL 15+ database and non-superuser owner, assigning ownership of its public schema. Restore the custom archive without original ownership/ACLs. Use dump/configuration from the same manifest. Keep recovered configuration private and set `WRITES_ENABLED=false` before starting any application process.
 3. Before starting a scheduler, pause controllers, cancel manual requests/expiry, disable controls, clear saved verification, advance cancellation epochs, preserve non-clear device ownership as cleanup-required and revoke sessions and unused recovery credentials. Disable all restored retention policies and increment their revisions before allowing data maintenance. Compare inventory and decrypt provider links before promotion. Install the matching root operational capsule, synchronize the complete current `erasures/` prefix and replay its receipts after schema upgrade, before accepting any customer authentication or provider work. Do not promote an old dump using only its own offboarding table: it may predate an authorized erasure. Use server-operator account recovery if needed, then prepare a new saved key. Restored acknowledgments are historical records, not the inverter's current state.
 4. Reconcile device ownership using fresh diagnostics. Resume writes only through commissioning and separate activation. Reinstall backup tooling and repeat an isolated offsite recovery test on the rebuilt host.

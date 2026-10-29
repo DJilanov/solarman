@@ -19,6 +19,7 @@ import {
 import { restoreDrill } from "../src/restore-drill.mjs";
 import { syncErasures } from "../src/erasure-sync.mjs";
 import { readErasureGuard } from "../src/erasure-guard.mjs";
+import { exportRecoveryKit } from "../src/recovery-kit.mjs";
 
 async function main() {
   const [action, id, kind] = process.argv.slice(2);
@@ -32,11 +33,16 @@ async function main() {
       "receive-drill",
       "failed-drill",
       "recovery-info",
+      "recovery-kit",
       "check",
     ].includes(action)
   )
     throw new BackupError("action_invalid");
   const config = await sealedConfig("/etc/solarman-backup/config.json");
+  if (action === "recovery-kit") {
+    process.stdout.write(await exportRecoveryKit(config));
+    return;
+  }
   if (action === "recovery-info") {
     const recipient = (await readFile(config.recipientFile, "utf8")).trim();
     if (!/^ssh-ed25519 [A-Za-z0-9+/]+=*$/.test(recipient))

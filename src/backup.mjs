@@ -34,8 +34,8 @@ import {
   UUID,
 } from "./backup-io.mjs";
 
-/** @param {object} config @returns {Promise<S3Client>} */
-export async function backupClient(config) {
+/** @param {{awsEnv:string}} config @returns {Promise<{accessKeyId:string,secretAccessKey:string}>} */
+export async function backupCredentials(config) {
   const env = parseEnv(await readFile(config.awsEnv, "utf8"));
   if (
     !/^[a-z0-9.-]+\.amazonaws\.com$/.test(env.MINIO_ENDPOINT ?? "") ||
@@ -43,12 +43,17 @@ export async function backupClient(config) {
     !env.MINIO_ROOT_PASSWORD
   )
     throw new BackupError("offsite_credentials_invalid");
+  return {
+    accessKeyId: env.MINIO_ROOT_USER,
+    secretAccessKey: env.MINIO_ROOT_PASSWORD,
+  };
+}
+
+/** @param {object} config @returns {Promise<S3Client>} */
+export async function backupClient(config) {
   return new S3Client({
     region: config.region,
-    credentials: {
-      accessKeyId: env.MINIO_ROOT_USER,
-      secretAccessKey: env.MINIO_ROOT_PASSWORD,
-    },
+    credentials: await backupCredentials(config),
     maxAttempts: 3,
   });
 }
