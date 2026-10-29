@@ -564,7 +564,8 @@ export interface PolicyObservationData {
 }
 
 export interface CommissioningRequirement {
-  code: "solar" | "discharge" | "gridCharge" | "gridStop" | "dayNight" | "recovery";
+  code:
+    "solar" | "discharge" | "gridCharge" | "gridStop" | "dayNight" | "recovery";
   passed: boolean;
 }
 export interface CommissioningData {
@@ -623,6 +624,33 @@ export interface NotificationChannel {
   lastTestAt: string | null;
   configured: boolean;
   blockedCode: string | null;
+}
+
+export interface BrowserPushDevice {
+  id: string;
+  label: string;
+  endpointHash: string;
+  language: "en" | "bg";
+  enabled: boolean;
+  pending: boolean;
+  quarantined: boolean;
+  revision: string;
+  verifiedAt: string | null;
+  lastTestAt: string | null;
+  blockedCode: string | null;
+  createdAt: string;
+  lastDelivery: {
+    id: string;
+    state: NotificationDelivery["state"];
+    code: string | null;
+    displayedAt: string | null;
+  } | null;
+}
+export interface BrowserPushSettingsData {
+  configured: boolean;
+  publicKey: string | null;
+  lifecycle: NotificationSettingsData["lifecycle"];
+  devices: BrowserPushDevice[];
 }
 export interface NotificationAttempt {
   number: number;

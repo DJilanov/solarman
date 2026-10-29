@@ -4347,7 +4347,7 @@ test("notifications preserve configuration drafts across language changes, disti
     .getByRole("button", { name: "Включи известията", exact: true })
     .click();
   await expect(
-    page.getByRole("heading", { name: "Известията са включени", exact: true }),
+    page.getByRole("heading", { name: "Известията в Telegram са включени", exact: true }),
   ).toBeVisible();
   const incident: NotificationDelivery = {
     ...job,
@@ -4412,7 +4412,7 @@ test("notifications preserve configuration drafts across language changes, disti
     })
     .click();
   await expect(
-    page.getByRole("heading", { name: "Известията са изключени", exact: true }),
+    page.getByRole("heading", { name: "Известията в Telegram са изключени", exact: true }),
   ).toBeVisible();
   await page.setViewportSize({ width: 320, height: 1100 });
   expect(

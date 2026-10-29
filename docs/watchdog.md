@@ -2,7 +2,7 @@
 
 The watchdog checks the public dashboard from a separate Linux server. It needs Node 22+, systemd and util-linux `flock`. It has no npm dependencies, database access, SOLARMAN credentials or inverter commands. The main application does not start it.
 
-No independent service or real recipient has been installed. Only the application host is currently accessible with the available SSH keys. A separate, always-on host and an owner-selected bot/chat remain prerequisites for operational acceptance.
+No independent service or real recipient has been installed. Only the application host is currently accessible with the available SSH keys. A separate, always-on host and a verified destination remain prerequisites for operational acceptance. The owner selected iPhone Web Push for dashboard alerts. The watchdog transport described here is currently Telegram; pairing the independent monitor with that browser recipient remains separate work when its host is available. The main app's iPhone subscription does not by itself monitor an offline server.
 
 ## Checks and durable evidence
 

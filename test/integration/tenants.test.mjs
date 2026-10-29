@@ -1,10 +1,11 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { randomBytes, randomUUID, createHash } from "node:crypto";
+import { randomBytes, randomUUID, createHash, createECDH } from "node:crypto";
 import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import webpush from "web-push";
 import { createPool, migrate } from "../../src/database.mjs";
 import { dashboardConfig } from "../../src/dashboard-config.mjs";
 import { hashPassword, tokenHash } from "../../src/auth.mjs";
@@ -25,6 +26,7 @@ import { ApiBudget, ApiBudgetError, apiAppKey } from "../../src/api-budget.mjs";
 import { ApiCapacityError } from "../../src/api-capacity.mjs";
 import { quarantineControlsForRollback } from "../../src/control-quarantine.mjs";
 import { Notifications } from "../../src/notifications.mjs";
+import { webPushConfiguration } from "../../src/web-push.mjs";
 import { quarantineNotifications } from "../../src/notification-lifecycle.mjs";
 import { verifyStoredNotificationSecrets } from "../../src/notification-secrets.mjs";
 import { ControlJournal } from "../../src/control-journal.mjs";
@@ -194,6 +196,7 @@ test("all data routes require a session", async () => {
     "/policy-observations",
     "/commissioning",
     "/notifications",
+    "/notifications/push",
     "/analytics",
     "/activity",
     "/settings",
@@ -7583,6 +7586,178 @@ async function notificationFixture(base) {
     },
   };
 }
+
+async function browserPushFixture() {
+  const f = await notificationFixture();
+  const serverKey = webpush.generateVAPIDKeys();
+  f.service.push.configuration = webPushConfiguration({ PUBLIC_URL: "https://solarman.example.test", WEB_PUSH_PUBLIC_KEY: serverKey.publicKey, WEB_PUSH_PRIVATE_KEY: serverKey.privateKey });
+  const pushed = [];
+  f.service.sendPush = async (input) => { pushed.push(input); return { state: "delivered", code: "push_accepted", messageId: null }; };
+  const subscription = () => {
+    const device = createECDH("prime256v1"); device.generateKeys();
+    return { endpoint: `https://web.push.apple.com/test-${randomUUID()}`, keys: { p256dh: device.getPublicKey().toString("base64url"), auth: randomBytes(16).toString("base64url") } };
+  };
+  const pushState = async () => (await fetchApi("/notifications/push", { auth: f.member })).json();
+  const pushChange = (body, auth = f.member) => fetchApi("/notifications/push", { auth, method: "POST", body: { currentPassword: password, ...body } });
+  const subscribe = (value = subscription(), patch = {}) => pushChange({ action: "subscribe", subscription: value, requestId: randomUUID(), label: "Test iPhone", language: "bg", revision: "0", ...patch });
+  const acknowledge = (receipt, patch = {}) => fetchApi("/notifications/push/receipt", { method: "POST", body: { ...receipt, ...patch }, csrf: false });
+  return { ...f, pushed, subscription, pushState, pushChange, subscribe, acknowledge };
+}
+
+test("browser push requires account proof, isolates subscriptions and enables only after a device display receipt", async () => {
+  const f = await browserPushFixture();
+  try {
+    const subscription = f.subscription();
+    const body = { action: "subscribe", subscription, requestId: randomUUID(), label: "Owner iPhone", language: "bg", revision: "0" };
+    assert.equal((await fetchApi("/notifications/push", { auth: f.member, method: "POST", csrf: false, body: { ...body, currentPassword: password } })).status, 403);
+    assert.equal((await f.pushChange({ ...body, currentPassword: "wrong-password" })).status, 400);
+    assert.equal((await f.subscribe({ ...subscription, endpoint: "https://127.0.0.1/private" })).status, 400);
+    assert.equal((await f.pushChange(body)).status, 200);
+    assert.equal((await f.pushChange(body)).status, 200);
+    assert.equal((await f.pushChange({ ...body, label: "changed" })).status, 409);
+    assert.equal((await f.pushChange(body, alpha)).status, 409);
+    const initial = await f.pushState();
+    assert.equal(initial.devices.length, 1);
+    assert.equal(initial.devices[0].pending, true);
+    assert.equal(initial.devices[0].enabled, false);
+    assert.equal(initial.devices[0].verifiedAt, null);
+    for (const secret of [subscription.endpoint, subscription.keys.auth, subscription.keys.p256dh, f.service.push.configuration.privateKey]) assert.equal(JSON.stringify(initial).includes(secret), false);
+    assert.equal((await f.state()).channel, null);
+    await f.service.runOnce();
+    assert.equal(f.pushed.length, 1);
+    assert.equal((await f.pushState()).devices[0].lastDelivery.code, "push_accepted");
+    assert.equal((await f.pushState()).devices[0].enabled, false);
+    assert.equal(f.pushed[0].payload.body.includes(f.target.device), false);
+    const receipt = f.pushed[0].payload.receipt;
+    assert.equal((await f.acknowledge(receipt, { token: "f".repeat(64) })).status, 202);
+    assert.equal((await f.pushState()).devices[0].enabled, false);
+    assert.equal((await f.acknowledge(receipt)).status, 202);
+    const displayed = (await f.pushState()).devices[0];
+    assert.equal(displayed.enabled, true);
+    assert.equal(displayed.pending, false);
+    assert.ok(displayed.verifiedAt);
+    assert.equal(displayed.lastDelivery.code, "push_displayed");
+    const eventsBefore = (await f.state()).events.length;
+    await f.acknowledge(receipt);
+    assert.equal((await f.state()).events.length, eventsBefore);
+    const outsiders = await (await fetchApi("/notifications/push", { auth: alpha })).json();
+    assert.equal(outsiders.devices.some((d) => d.id === displayed.id), false);
+    assert.equal((await f.pushChange({ action: "revoke", id: displayed.id, revision: displayed.revision }, alpha)).status, 409);
+    await verifyStoredNotificationSecrets(pool, key);
+    const archive = await fetchApi("/workspace/archive", { auth: f.member, method: "POST", body: { currentPassword: password } });
+    assert.equal(archive.status, 200);
+    const exported = await archive.text();
+    for (const secret of [subscription.endpoint, subscription.keys.auth, subscription.keys.p256dh, receipt.token, "push_receipt_hash", "push_request_hash"])
+      assert.equal(exported.includes(secret), false);
+    await f.issue();
+    await f.service.runOnce();
+    assert.equal(f.pushed.length, 2);
+    assert.equal(f.pushed[1].payload.url, "/settings/health");
+    assert.equal(f.pushed[1].payload.body.includes(f.target.device), false);
+    assert.equal((await f.pushChange({ action: "revoke", id: displayed.id, revision: displayed.revision })).status, 200);
+    assert.equal((await f.pushState()).devices.length, 0);
+    await f.acknowledge(f.pushed[1].payload.receipt);
+    const removed = (await pool.query("SELECT enabled,push_enable_pending,secret,revoked_at FROM notification_channels WHERE id=$1", [displayed.id])).rows[0];
+    assert.equal(removed.enabled, false); assert.equal(removed.secret, null); assert.ok(removed.revoked_at);
+    await verifyStoredNotificationSecrets(pool, key);
+    await pool.query("UPDATE notification_channels SET last_test_at=clock_timestamp()-interval '2 minutes' WHERE id=$1", [displayed.id]);
+    assert.equal((await f.subscribe(subscription)).status, 200);
+    await f.acknowledge(f.pushed[1].payload.receipt);
+    const renewed = (await f.pushState()).devices[0];
+    assert.equal(renewed.enabled, false); assert.equal(renewed.pending, true);
+  } finally { await f.dispose(); }
+});
+
+test("browser push display receipts survive an early callback, stay separate from other devices and are quarantined on restore", async () => {
+  const f = await browserPushFixture();
+  try {
+    await f.subscribe();
+    f.service.sendPush = async (input) => {
+      f.pushed.push(input);
+      assert.equal((await f.acknowledge(input.payload.receipt)).status, 202);
+      return { state: "unconfirmed", code: "transport_unconfirmed" };
+    };
+    await f.service.runOnce();
+    const first = (await f.pushState()).devices[0];
+    assert.equal(first.enabled, true);
+    assert.equal(first.lastDelivery.state, "delivered");
+    assert.equal(first.lastDelivery.code, "push_displayed");
+    const attempt = (await pool.query("SELECT state,code,push_receipt_hash,push_displayed_at FROM notification_attempts WHERE id=$1", [f.pushed[0].payload.receipt.attempt])).rows[0];
+    assert.equal(attempt.state, "delivered"); assert.equal(attempt.code, "push_displayed"); assert.equal(attempt.push_receipt_hash, null); assert.ok(attempt.push_displayed_at);
+    f.service.sendPush = async (input) => { f.pushed.push(input); return { state: "delivered", code: "push_accepted", messageId: null }; };
+    await f.subscribe();
+    await f.service.runOnce();
+    const secondReceipt = f.pushed.at(-1).payload.receipt;
+    await f.acknowledge(secondReceipt);
+    const second = (await f.pushState()).devices.find((d) => d.id !== first.id);
+    assert.equal(second.enabled, true);
+    assert.equal((await f.pushChange({ action: "revoke", id: first.id, revision: first.revision })).status, 200);
+    assert.equal((await f.pushState()).devices[0].id, second.id);
+    assert.equal((await f.pushState()).devices[0].enabled, true);
+    await f.subscribe();
+    await f.service.runOnce();
+    const unconfirmedReceipt = f.pushed.at(-1).payload.receipt;
+    await quarantineNotifications(pool, f.target.tenant, "restore");
+    await f.acknowledge(unconfirmedReceipt);
+    const restored = (await f.pushState()).devices;
+    assert.ok(restored.every((device) => !device.enabled && !device.pending && device.quarantined && device.verifiedAt === null));
+    const count = f.pushed.length; await f.service.runOnce(); assert.equal(f.pushed.length, count);
+    assert.equal((await fetchApi("/notifications/push/receipt", { method: "POST", originHeader: false, body: secondReceipt })).status, 403);
+  } finally { await f.dispose(); }
+});
+
+test("browser push expiry blocks the subscription and device limits allow removal without touching Telegram", async () => {
+  const f = await browserPushFixture();
+  try {
+    await f.configure();
+    const telegramId = (await f.state()).channel.id;
+    for (let index = 0; index < 10; index++) assert.equal((await f.subscribe()).status, 200);
+    assert.equal((await f.subscribe()).status, 409);
+    const device = (await f.pushState()).devices[0];
+    assert.equal((await f.pushChange({ action: "revoke", id: device.id, revision: device.revision })).status, 200);
+    assert.equal((await f.subscribe()).status, 200);
+    f.service.sendPush = async (input) => { f.pushed.push(input); return { state: "rejected", code: "push_expired" }; };
+    await f.service.runOnce();
+    const blocked = (await f.pushState()).devices.find((d) => d.blockedCode === "push_expired");
+    assert.ok(blocked); assert.equal(blocked.enabled, false); assert.equal(blocked.pending, false);
+    assert.equal((await f.state()).channel.id, telegramId);
+    assert.equal((await f.state()).channel.enabled, true);
+    assert.equal((await f.pushChange({ action: "revoke", id: blocked.id, revision: blocked.revision })).status, 200);
+    await pool.query(
+      `INSERT INTO notification_channels(id,tenant_id,kind,user_id,endpoint_hash,chat_id,language,quarantined,revoked_at)
+      SELECT gen_random_uuid(),$1::uuid,'webpush',$2::uuid,repeat(md5($1::uuid::text||g::text),2),'Revoked fixture','bg',true,clock_timestamp() FROM generate_series(1,50)g`,
+      [f.target.tenant, f.target.user],
+    );
+    assert.equal((await f.subscribe()).status, 429);
+  } finally { await f.dispose(); }
+});
+
+test("browser push removal does not abort another device's in-flight delivery", async () => {
+  const f = await browserPushFixture();
+  let release;
+  let worker;
+  try {
+    await f.subscribe(); await f.service.runOnce(); await f.acknowledge(f.pushed[0].payload.receipt);
+    const first = (await f.pushState()).devices[0];
+    await f.subscribe();
+    let entered;
+    const started = new Promise((resolve) => { entered = resolve; });
+    const gate = new Promise((resolve) => { release = resolve; });
+    f.service.sendPush = async (input) => {
+      f.pushed.push(input); entered();
+      await Promise.race([gate, new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }))]);
+      return input.signal.aborted ? { state: "unconfirmed", code: "transport_unconfirmed" } : { state: "delivered", code: "push_accepted", messageId: null };
+    };
+    worker = f.service.runOnce();
+    await started;
+    assert.equal((await f.pushChange({ action: "revoke", id: first.id, revision: first.revision })).status, 200);
+    assert.equal(f.pushed[1].signal.aborted, false);
+    release(); await worker;
+    await f.acknowledge(f.pushed[1].payload.receipt);
+    const remaining = (await f.pushState()).devices;
+    assert.equal(remaining.length, 1); assert.equal(remaining[0].enabled, true);
+  } finally { release?.(); await worker; await f.dispose(); }
+});
 
 test("notification settings require reauthentication, CSRF and tenant ownership and never return the bot credential", async () => {
   const f = await notificationFixture();

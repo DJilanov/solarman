@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import {
   encryptNotificationSecret,
@@ -13,43 +13,15 @@ import {
 } from "./notification-messages.mjs";
 import { readBackupStatus } from "./backup-status.mjs";
 
+import {
+  enqueueNotification as enqueue,
+  recordNotificationChange as recordChange,
+} from "./notification-store.mjs";
+import { PushSubscriptions } from "./push-subscriptions.mjs";
+import { decryptPushSubscription, sendWebPush } from "./web-push.mjs";
+
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const RETRY_SECONDS = [60, 300, 900];
-
-/** @param {import('pg').PoolClient} client @param {object} channel @param {string} actor @param {'saved'|'enabled'|'disabled'|'test'|'blocked'} action @returns {Promise<void>} */
-async function recordChange(client, channel, actor, action) {
-  await client.query(
-    "INSERT INTO notification_events(id,tenant_id,channel_id,revision,actor,action) VALUES($1,$2,$3,$4,$5,$6)",
-    [
-      randomUUID(),
-      channel.tenant_id,
-      channel.id,
-      channel.revision,
-      actor,
-      action,
-    ],
-  );
-}
-
-/** @param {import('pg').PoolClient} client @param {object} channel @param {{id:string,eventKey:string,kind:string,payload:object,incidentId?:string}} job @returns {Promise<void>} */
-async function enqueue(client, channel, job) {
-  await client.query(
-    `INSERT INTO notification_outbox(id,tenant_id,channel_id,channel_revision,event_key,incident_id,kind,payload,state,last_code,completed_at)
-    SELECT $1,$2,$3,$4,$5,$6,$7,$8,CASE WHEN busy THEN 'failed' ELSE 'queued' END,CASE WHEN busy THEN 'queue_limit' ELSE null END,CASE WHEN busy THEN clock_timestamp() ELSE null END
-    FROM(SELECT count(*)>=100 AS busy FROM notification_outbox WHERE tenant_id=$2 AND state IN('queued','retry','sending'))q
-    ON CONFLICT(channel_id,channel_revision,event_key) DO NOTHING`,
-    [
-      job.id,
-      channel.tenant_id,
-      channel.id,
-      channel.revision,
-      job.eventKey,
-      job.incidentId ?? null,
-      job.kind,
-      job.payload,
-    ],
-  );
-}
 
 export class Notifications {
   /** @param {import('pg').Pool} pool @param {object} hub @param {{send?:typeof sendTelegram}} [options] */
@@ -58,6 +30,8 @@ export class Notifications {
     this.hub = hub;
     this.security = new AccountSecurity(pool);
     this.send = options.send ?? sendTelegram;
+    this.sendPush = options.sendPush ?? sendWebPush;
+    this.push = new PushSubscriptions(pool, hub, this);
     this.origin = new URL(hub.env.PUBLIC_URL ?? "http://localhost").origin;
     this.startedAt = null;
     this.checkedAt = null;
@@ -88,7 +62,7 @@ export class Notifications {
       throw new SecurityError(400, "Choose a valid notification history page");
     const [channel, jobs, events, tenant] = await Promise.all([
       this.pool.query(
-        'SELECT id,kind,chat_id AS "chatId",language,enabled,quarantined,revision::text,verified_at AS "verifiedAt",last_test_at AS "lastTestAt",blocked_code AS "blockedCode",secret IS NOT NULL AS configured FROM notification_channels WHERE tenant_id=$1',
+        `SELECT id,kind,chat_id AS "chatId",language,enabled,quarantined,revision::text,verified_at AS "verifiedAt",last_test_at AS "lastTestAt",blocked_code AS "blockedCode",secret IS NOT NULL AS configured FROM notification_channels WHERE tenant_id=$1 AND kind='telegram'`,
         [tenantId],
       ),
       this.pool.query(
@@ -149,6 +123,7 @@ export class Notifications {
       body.currentPassword,
     );
     let cancelled = false;
+    let changedChannel;
     await this.security.withUser(session.id, async (client, user) => {
       await this.security.activeSession(client, session);
       if (user.tenant_id !== session.tenant_id || user.password_hash !== hash)
@@ -169,7 +144,7 @@ export class Notifications {
         );
       let channel = (
         await client.query(
-          "SELECT * FROM notification_channels WHERE tenant_id=$1 FOR UPDATE",
+          "SELECT * FROM notification_channels WHERE tenant_id=$1 AND kind='telegram' FOR UPDATE",
           [session.tenant_id],
         )
       ).rows[0];
@@ -208,7 +183,7 @@ export class Notifications {
         channel = (
           await client.query(
             `INSERT INTO notification_channels(id,tenant_id,chat_id,secret,language) VALUES($1,$2,$3,$4,$5)
-          ON CONFLICT(tenant_id) DO UPDATE SET chat_id=EXCLUDED.chat_id,secret=EXCLUDED.secret,language=EXCLUDED.language,enabled=false,quarantined=false,
+          ON CONFLICT(tenant_id) WHERE kind='telegram' DO UPDATE SET chat_id=EXCLUDED.chat_id,secret=EXCLUDED.secret,language=EXCLUDED.language,enabled=false,quarantined=false,
           verified_at=null,blocked_code=null,platform_state=null,revision=notification_channels.revision+1,updated_at=clock_timestamp() RETURNING *`,
             [id, session.tenant_id, body.chatId, secret, body.language],
           )
@@ -280,11 +255,12 @@ export class Notifications {
         cancelled = true;
       }
       if (cancelled) {
+        changedChannel = channel;
         await client.query(
           `UPDATE notification_outbox SET cancel_requested_at=COALESCE(cancel_requested_at,clock_timestamp()),state=CASE WHEN state='sending' THEN state ELSE 'cancelled' END,
           completed_at=CASE WHEN state='sending' THEN completed_at ELSE clock_timestamp() END,last_code='settings_changed'
-          WHERE tenant_id=$1 AND state IN('queued','retry','sending')`,
-          [session.tenant_id],
+          WHERE channel_id=$1 AND channel_revision<>$2 AND state IN('queued','retry','sending')`,
+          [channel.id, channel.revision],
         );
       }
       if (channel.enabled) {
@@ -298,18 +274,28 @@ export class Notifications {
           await this.capture(client, incident, "opened");
       }
     });
-    if (cancelled) await this.cancelTenant(session.tenant_id);
+    if (cancelled)
+      await this.cancelChannel(
+        session.tenant_id,
+        changedChannel.id,
+        String(changedChannel.revision),
+      );
   }
 
   /** @param {import('pg').PoolClient} client @param {object} incident @param {'opened'|'escalated'|'resolved'} kind @returns {Promise<void>} */
   async capture(client, incident, kind) {
-    const channel = (
+    const channels = (
       await client.query(
-        "SELECT c.*,t.name FROM notification_channels c JOIN tenants t ON t.id=c.tenant_id WHERE c.tenant_id=$1 AND c.enabled AND NOT c.quarantined AND t.lifecycle IN('active','suspended') FOR UPDATE OF c",
+        "SELECT c.*,t.name FROM notification_channels c JOIN tenants t ON t.id=c.tenant_id WHERE c.tenant_id=$1 AND c.enabled AND NOT c.quarantined AND t.lifecycle IN('active','suspended') ORDER BY c.id FOR UPDATE OF c",
         [incident.tenant_id],
       )
-    ).rows[0];
-    if (!channel) return;
+    ).rows;
+    for (const channel of channels)
+      await this.captureForChannel(client, channel, incident, kind);
+  }
+
+  /** @param {import('pg').PoolClient} client @param {object} channel @param {object} incident @param {'opened'|'escalated'|'resolved'} kind @returns {Promise<void>} */
+  async captureForChannel(client, channel, incident, kind) {
     const id = randomUUID();
     const payload = incidentNotification(incident, kind, {
       language: channel.language,
@@ -426,19 +412,30 @@ export class Notifications {
         return null;
       }
       const attempt = randomUUID();
+      const receiptToken =
+        channel.kind === "webpush" ? randomBytes(32).toString("hex") : null;
       await client.query(
         "UPDATE notification_outbox SET state='sending',attempts=attempts+1 WHERE id=$1",
         [job.id],
       );
       await client.query(
-        "INSERT INTO notification_attempts(id,tenant_id,job_id,number) VALUES($1,$2,$3,$4)",
-        [attempt, job.tenant_id, job.id, job.attempts + 1],
+        "INSERT INTO notification_attempts(id,tenant_id,job_id,number,push_receipt_hash) VALUES($1,$2,$3,$4,$5)",
+        [
+          attempt,
+          job.tenant_id,
+          job.id,
+          job.attempts + 1,
+          receiptToken
+            ? createHash("sha256").update(receiptToken).digest("hex")
+            : null,
+        ],
       );
       await client.query("COMMIT");
       return {
         ...job,
         attempts: job.attempts + 1,
         attemptId: attempt,
+        receiptToken,
         channel,
       };
     } catch (error) {
@@ -474,7 +471,8 @@ export class Notifications {
         await client.query("ROLLBACK");
         return;
       }
-      const delivered = result.state === "delivered";
+      const delivered =
+        result.state === "delivered" || Boolean(row.push_displayed_at);
       const uncertain = result.state === "unconfirmed";
       const cancelled =
         result.state === "cancelled" ||
@@ -497,8 +495,9 @@ export class Notifications {
         ["retry", "unconfirmed"].includes(result.state) &&
         job.attempts < 4;
       const retry = retryCandidate && withinDeadline;
-      const code =
-        retryCandidate && !withinDeadline
+      const code = row.push_displayed_at
+        ? "push_displayed"
+        : retryCandidate && !withinDeadline
           ? "retry_after_deadline"
           : result.code;
       const state = delivered
@@ -510,12 +509,12 @@ export class Notifications {
             : uncertain || row.had_unconfirmed
               ? "unconfirmed"
               : "failed";
-      const messageId = delivered ? result.messageId : null;
+      const messageId = result.state === "delivered" ? result.messageId : null;
       await client.query(
         "UPDATE notification_attempts SET state=$2,code=$3,completed_at=clock_timestamp(),message_id=$4 WHERE id=$1 AND state='sending'",
         [
           job.attemptId,
-          delivered
+          result.state === "delivered"
             ? "delivered"
             : uncertain
               ? "unconfirmed"
@@ -530,7 +529,12 @@ export class Notifications {
         "UPDATE notification_outbox SET state=$2,last_code=$3,had_unconfirmed=had_unconfirmed OR $4,next_attempt_at=clock_timestamp()+$5*interval '1 second',completed_at=CASE WHEN $2='retry' THEN null ELSE clock_timestamp() END,message_id=$6 WHERE id=$1",
         [job.id, state, code, uncertain, seconds, messageId],
       );
-      if (delivered && job.kind === "test" && !cancelled)
+      if (
+        delivered &&
+        job.kind === "test" &&
+        !cancelled &&
+        channel.kind === "telegram"
+      )
         await client.query(
           "UPDATE notification_channels SET verified_at=clock_timestamp(),blocked_code=null WHERE id=$1 AND revision=$2 AND NOT quarantined",
           [job.channel_id, job.channel_revision],
@@ -543,11 +547,13 @@ export class Notifications {
           "destination_rejected",
           "credentials_unavailable",
           "invalid_configuration",
+          "push_expired",
+          "push_authorization_rejected",
         ].includes(result.code)
       ) {
         const blocked = (
           await client.query(
-            "UPDATE notification_channels SET enabled=false,verified_at=null,blocked_code=$2,revision=revision+1,platform_state=null,updated_at=clock_timestamp() WHERE id=$1 AND revision=$3 RETURNING *",
+            "UPDATE notification_channels SET enabled=false,push_enable_pending=false,verified_at=null,blocked_code=$2,revision=revision+1,platform_state=null,updated_at=clock_timestamp() WHERE id=$1 AND revision=$3 RETURNING *",
             [job.channel_id, result.code, job.channel_revision],
           )
         ).rows[0];
@@ -581,7 +587,12 @@ export class Notifications {
       const job = await this.claim();
       if (job) {
         const abort = new AbortController();
-        this.inFlight = { tenantId: job.tenant_id, abort };
+        this.inFlight = {
+          tenantId: job.tenant_id,
+          channelId: job.channel_id,
+          channelRevision: String(job.channel_revision),
+          abort,
+        };
         /** @type {import('./telegram.mjs').DeliveryResult} */
         let result = { state: "retry", code: "dispatch_check_failed" };
         let dispatched = false;
@@ -601,25 +612,74 @@ export class Notifications {
           )
             result = { state: "cancelled", code: "cancelled_before_dispatch" };
           else {
-            let secret = null;
-            try {
-              secret = decryptNotificationSecret(
-                job.channel.secret,
-                this.hub.key,
-                job.tenant_id,
-                job.channel_id,
-              );
-            } catch {
-              result = { state: "rejected", code: "credentials_unavailable" };
-            }
-            if (secret) {
-              dispatched = true;
-              result = await this.send({
-                botToken: secret.botToken,
-                chatId: job.channel.chat_id,
-                text: job.payload.text,
-                signal: abort.signal,
-              });
+            if (job.channel.kind === "webpush") {
+              let subscription;
+              try {
+                subscription = decryptPushSubscription(
+                  job.channel.secret,
+                  this.hub.key,
+                  job.tenant_id,
+                  job.channel_id,
+                );
+              } catch {
+                result = { state: "rejected", code: "credentials_unavailable" };
+              }
+              if (subscription) {
+                if (!this.push.configuration)
+                  result = { state: "rejected", code: "invalid_configuration" };
+                else {
+                  dispatched = true;
+                  const bg = job.channel.language === "bg";
+                  result = await this.sendPush({
+                    subscription,
+                    vapid: this.push.configuration,
+                    signal: abort.signal,
+                    payload: {
+                      title: job.payload.title,
+                      body:
+                        job.kind === "test"
+                          ? bg
+                            ? "Проверка на известията. Настройките на инвертора не са променени."
+                            : "Notification test. Inverter settings have not changed."
+                          : bg
+                            ? "Отворете таблото за подробности за събитието."
+                            : "Open the dashboard for event details.",
+                      url:
+                        job.kind === "test"
+                          ? "/settings/notifications"
+                          : "/settings/health",
+                      language: job.channel.language,
+                      reference: job.id,
+                      receipt: {
+                        id: job.id,
+                        attempt: job.attemptId,
+                        token: job.receiptToken,
+                      },
+                    },
+                  });
+                }
+              }
+            } else {
+              let secret = null;
+              try {
+                secret = decryptNotificationSecret(
+                  job.channel.secret,
+                  this.hub.key,
+                  job.tenant_id,
+                  job.channel_id,
+                );
+              } catch {
+                result = { state: "rejected", code: "credentials_unavailable" };
+              }
+              if (secret) {
+                dispatched = true;
+                result = await this.send({
+                  botToken: secret.botToken,
+                  chatId: job.channel.chat_id,
+                  text: job.payload.text,
+                  signal: abort.signal,
+                });
+              }
             }
           }
         } catch {
@@ -636,6 +696,19 @@ export class Notifications {
       this.inFlight = null;
     });
     return this.pending;
+  }
+
+  /** @param {string} tenantId @param {string} channelId @param {string|null} [currentRevision] @returns {Promise<void>} */
+  async cancelChannel(tenantId, channelId, currentRevision = null) {
+    if (
+      this.inFlight?.tenantId !== tenantId ||
+      this.inFlight.channelId !== channelId ||
+      (currentRevision !== null &&
+        this.inFlight.channelRevision === currentRevision)
+    )
+      return;
+    this.inFlight.abort.abort();
+    await this.pending?.catch(() => {});
   }
 
   /** @param {string} tenantId @returns {Promise<void>} */

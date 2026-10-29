@@ -46,7 +46,7 @@ if [[ "$healthy" != true ]]; then
   if pm2 describe solarman >/dev/null 2>&1; then
     pm2 delete solarman
   fi
-  node --env-file=/home/mitko/.config/solarman/app.env scripts/quarantine-rollback.mjs
+  node --env-file=/home/mitko/.config/solarman/app.env scripts/quarantine-rollback.mjs "$previous_path"
   if [[ -n "$previous_path" ]]; then
     RELEASE_SHA=$(basename "$previous_path") pm2 start "$previous_path/ecosystem.config.cjs" --only solarman --update-env
   fi

@@ -1,12 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { verifyRelease } from "../scripts/release.mjs";
+import { verifyRelease, assertRollbackCompatibility } from "../scripts/release.mjs";
 
 const expected = {
   directory: "/releases/new",
   sha: "b".repeat(40),
   index: '<script src="/assets/new.js"></script>',
 };
+
+test("a rollback cannot run a release that cannot read Web Push storage", () => {
+  assert.throws(() => assertRollbackCompatibility(["021_notifications.sql", "022_web_push.sql"], ["021_notifications.sql"]), /supports Web Push/);
+  assert.doesNotThrow(() => assertRollbackCompatibility(["021_notifications.sql"], ["021_notifications.sql"]));
+  assert.doesNotThrow(() => assertRollbackCompatibility(["021_notifications.sql", "022_web_push.sql"], ["021_notifications.sql", "022_web_push.sql"]));
+});
 const running = {
   cwd: "/releases/new",
   script: "/releases/new/src/server.mjs",

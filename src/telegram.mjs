@@ -3,7 +3,7 @@ import {
   validTelegramChat,
 } from "./notification-secrets.mjs";
 
-/** @typedef {{state:'delivered',code:'delivered',messageId:number}|{state:'rejected'|'unconfirmed'|'retry'|'cancelled',code:string,retryAfter?:number}} DeliveryResult */
+/** @typedef {{state:'delivered',code:string,messageId:number|null}|{state:'rejected'|'unconfirmed'|'retry'|'cancelled',code:string,retryAfter?:number}} DeliveryResult */
 
 /** @param {unknown} value @returns {value is Record<string,unknown>} */
 function record(value) {

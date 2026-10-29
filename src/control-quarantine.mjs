@@ -1,4 +1,5 @@
 import { quarantineWorkspace } from "./tenant-lifecycle.mjs";
+import { quarantineNotifications } from "./notification-lifecycle.mjs";
 
 /** @param {import('pg').Pool} pool @returns {Promise<number>} */
 export async function quarantineControlsForRollback(pool) {
@@ -19,6 +20,7 @@ export async function quarantineControlsForRollback(pool) {
         control.control_enabled,
         "rollback",
       );
+    await quarantineNotifications(client, null, "rollback");
     await client.query("COMMIT");
     return controls.length;
   } catch (error) {

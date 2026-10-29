@@ -90,7 +90,7 @@ Retention preserves the latest reading and provider parameters for the selected 
 
 An [independent outage watchdog](docs/watchdog.md) can run on a separate Linux host, using fresh health challenges, durable attempts and its own verified recipient. It does not depend on the application database. The separate host and real delivery acceptance remain to be configured.
 
-Settings → Notifications stores each workspace's encrypted Telegram bot token and numeric destination. Confirm a test and explicitly enable delivery. Delivery attempts, retries and uncertain outcomes remain visible; changing the destination or restoring a backup disables delivery. See [notification setup and operational limits](docs/notifications.md).
+**Settings → Notifications → Notifications on this device** supports iPhone Home Screen web apps and compatible desktop browsers. On iPhone with iOS 16.4 or later, add the dashboard to the Home Screen, open it from its icon, sign in and select **Enable device notifications**. The permission prompt runs only from that tap. A displayed test is reported by the device before the requested alerts become enabled. Each account can manage its encrypted device subscriptions; the server's persistent Web Push keys stay in the private environment. Telegram remains optional. See [notification setup and operational limits](docs/notifications.md).
 
 ## Account security
 

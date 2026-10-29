@@ -1,4 +1,6 @@
-import { randomBytes, randomUUID, createHash } from "node:crypto";
+import { randomBytes, randomUUID, createHash, createECDH } from "node:crypto";
+import webpush from "web-push";
+import { encryptPushSubscription, pushEndpointHash } from "./web-push.mjs";
 import { createServer } from "node:http";
 import assert from "node:assert/strict";
 import { createPool, migrate } from "./database.mjs";
@@ -112,7 +114,7 @@ export function validateDrill(header, dump) {
       throw new BackupError("drill_inventory_invalid");
 }
 
-/** @typedef {{password:string,user:string,email:string}} AuthenticationFixture */
+/** @typedef {{password:string,user:string,email:string,pushReceipt:{id:string,attempt:string,token:string}}} AuthenticationFixture */
 /** @param {import('pg').Pool} pool @param {Buffer} key @param {'attending'|'approved'} [commissioningState] @returns {Promise<AuthenticationFixture>} */
 async function createAuthenticationFixture(
   pool,
@@ -224,19 +226,82 @@ async function createAuthenticationFixture(
         [randomUUID(), tenant, id],
       );
   }
-  return { password, user, email };
+  let pushReceipt;
+  for (const enabled of [true, false]) {
+    const deviceKey = createECDH("prime256v1");
+    deviceKey.generateKeys();
+    const subscription = {
+      endpoint: `https://web.push.apple.com/restore-${randomUUID()}`,
+      keys: {
+        p256dh: deviceKey.getPublicKey().toString("base64url"),
+        auth: randomBytes(16).toString("base64url"),
+      },
+    };
+    const pushChannel = randomUUID();
+    await pool.query(
+      "INSERT INTO notification_channels(id,tenant_id,kind,user_id,endpoint_hash,chat_id,secret,language,enabled,verified_at,push_enable_pending) VALUES($1,$2,'webpush',$3,$4,'Isolated browser fixture',$5,'bg',$6,CASE WHEN $6 THEN clock_timestamp() ELSE null END,$7)",
+      [
+        pushChannel,
+        tenant,
+        user,
+        pushEndpointHash(subscription),
+        encryptPushSubscription(subscription, key, tenant, pushChannel),
+        enabled,
+        !enabled,
+      ],
+    );
+    for (const state of ["queued", "sending"]) {
+      const id = randomUUID();
+      await pool.query(
+        "INSERT INTO notification_outbox(id,tenant_id,channel_id,channel_revision,event_key,kind,payload,state,attempts) VALUES($1,$2,$3,1,$4,'test',$5,$6,$7)",
+        [
+          id,
+          tenant,
+          pushChannel,
+          `restore:${state}`,
+          {
+            title: "Isolated browser fixture",
+            text: "Restore must never send this fixture.",
+          },
+          state,
+          state === "sending" ? 1 : 0,
+        ],
+      );
+      if (state === "sending") {
+        const attempt = randomUUID();
+        const token = randomBytes(32).toString("hex");
+        await pool.query(
+          "INSERT INTO notification_attempts(id,tenant_id,job_id,number,push_receipt_hash) VALUES($1,$2,$3,1,$4)",
+          [
+            attempt,
+            tenant,
+            id,
+            createHash("sha256").update(token).digest("hex"),
+          ],
+        );
+        if (!enabled) pushReceipt = { id, attempt, token };
+      }
+    }
+  }
+  if (!pushReceipt) throw new BackupError("restore_fixture_invalid");
+  return { password, user, email, pushReceipt };
 }
 
 /** @param {import('pg').Pool} pool @param {AuthenticationFixture} fixture @param {{user:string,email:string,password:string,token:string,recoveryKey:string}} erased @param {Buffer} key @returns {Promise<void>} */
 async function verifyAuthentication(
   pool,
-  { password, user, email },
+  { password, user, email, pushReceipt },
   erased,
   key,
 ) {
   let accessAttempts = 0;
+  const vapid = webpush.generateVAPIDKeys();
   const hub = {
-    env: { PUBLIC_URL: "http://localhost" },
+    env: {
+      PUBLIC_URL: "http://localhost",
+      WEB_PUSH_PUBLIC_KEY: vapid.publicKey,
+      WEB_PUSH_PRIVATE_KEY: vapid.privateKey,
+    },
     key,
     operations: { status: () => ({ state: "current" }) },
     offboarding: { serviceStatus: async () => ({ state: "not-configured" }) },
@@ -248,6 +313,10 @@ async function verifyAuthentication(
   let notificationAttempts = 0;
   hub.notifications = new Notifications(pool, hub, {
     send: async () => {
+      notificationAttempts++;
+      throw new BackupError("notification_access_forbidden");
+    },
+    sendPush: async () => {
       notificationAttempts++;
       throw new BackupError("notification_access_forbidden");
     },
@@ -341,9 +410,44 @@ async function verifyAuthentication(
     assert.equal(notifications.channel.enabled, false);
     assert.equal(notifications.channel.quarantined, true);
     assert.equal(notifications.channel.verifiedAt, null);
-    assert.equal(notifications.deliveries.length, 2);
+    assert.equal(notifications.deliveries.length, 6);
     assert.ok(
       notifications.deliveries.every((job) => job.state === "cancelled"),
+    );
+    const pushSettings = await fetch(origin + "/api/notifications/push", {
+      headers: { cookie },
+    });
+    assert.equal(pushSettings.status, 200);
+    const pushDevices = (await pushSettings.json()).devices;
+    assert.equal(pushDevices.length, 2);
+    assert.ok(
+      pushDevices.every(
+        (device) =>
+          !device.enabled &&
+          !device.pending &&
+          device.quarantined &&
+          device.verifiedAt === null,
+      ),
+    );
+    const lateReceipt = await fetch(
+      origin + "/api/notifications/push/receipt",
+      {
+        method: "POST",
+        headers: {
+          origin: "http://localhost",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(pushReceipt),
+      },
+    );
+    assert.equal(lateReceipt.status, 202);
+    const afterReceipt = await fetch(origin + "/api/notifications/push", {
+      headers: { cookie },
+    });
+    assert.ok(
+      (await afterReceipt.json()).devices.every(
+        (device) => !device.enabled && !device.pending && device.quarantined,
+      ),
     );
     const second = await fetch(origin + "/api/auth/login", {
       method: "POST",
@@ -481,9 +585,9 @@ async function verifyAuthentication(
     assert.equal(observation.data.state, "invalidated");
     assert.equal(observation.data.reason, "restore");
     assert.equal(complete.counts.commissioning, 1);
-    assert.equal(complete.counts.notificationChannels, 1);
-    assert.equal(complete.counts.notifications, 2);
-    assert.equal(complete.counts.notificationAttempts, 1);
+    assert.equal(complete.counts.notificationChannels, 3);
+    assert.equal(complete.counts.notifications, 6);
+    assert.equal(complete.counts.notificationAttempts, 3);
     const commissioning = lines
       .map((line) => JSON.parse(line))
       .find(
@@ -745,7 +849,7 @@ export async function restoreDrill(header, dump) {
     assert.equal(
       (
         await pool.query(
-          "SELECT count(*)::int AS n FROM notification_channels WHERE enabled OR NOT quarantined OR verified_at IS NOT NULL",
+          "SELECT count(*)::int AS n FROM notification_channels WHERE enabled OR push_enable_pending OR NOT quarantined OR verified_at IS NOT NULL",
         )
       ).rows[0].n,
       0,

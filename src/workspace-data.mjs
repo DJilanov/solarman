@@ -36,11 +36,11 @@ const EXPORT_SECTIONS = {
   observations:
     "SELECT id,account_id,device,identity,verification,state,reason,started_at,ended_at,checked_at,failed_at,progress FROM policy_observation_runs WHERE tenant_id=$1 ORDER BY started_at,id",
   notificationChannels:
-    "SELECT id,kind,chat_id,language,enabled,quarantined,revision::text,verified_at,last_test_at,created_at,updated_at FROM notification_channels WHERE tenant_id=$1",
+    "SELECT id,kind,user_id,chat_id,language,enabled,quarantined,push_enable_pending,revoked_at,revision::text,verified_at,last_test_at,created_at,updated_at FROM notification_channels WHERE tenant_id=$1",
   notifications:
-    "SELECT id,channel_id,channel_revision::text,event_key,incident_id,kind,payload,state,attempts,had_unconfirmed,next_attempt_at,created_at,completed_at,cancel_requested_at,last_code,message_id::text FROM notification_outbox WHERE tenant_id=$1 ORDER BY created_at,id",
+    "SELECT id,channel_id,channel_revision::text,event_key,incident_id,kind,payload,state,attempts,had_unconfirmed,next_attempt_at,created_at,completed_at,cancel_requested_at,last_code,message_id::text,push_displayed_at FROM notification_outbox WHERE tenant_id=$1 ORDER BY created_at,id",
   notificationAttempts:
-    "SELECT id,job_id,number,state,code,started_at,completed_at,message_id::text FROM notification_attempts WHERE tenant_id=$1 ORDER BY started_at,id",
+    "SELECT id,job_id,number,state,code,started_at,completed_at,message_id::text,push_displayed_at FROM notification_attempts WHERE tenant_id=$1 ORDER BY started_at,id",
   notificationChanges:
     "SELECT id,channel_id,revision::text,actor,action,created_at FROM notification_events WHERE tenant_id=$1 ORDER BY created_at,id",
   commissioning:

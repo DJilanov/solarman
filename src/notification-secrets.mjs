@@ -1,4 +1,5 @@
 import { sealSecret, openSecret } from "./stored-secret.mjs";
+import { decryptPushSubscription } from "./web-push.mjs";
 
 /** @param {unknown} token @returns {token is string} */
 export function validTelegramToken(token) {
@@ -60,12 +61,19 @@ export async function verifyStoredNotificationSecrets(client, key) {
     ).rows[0].name
   )
     return;
-  const { rows } = await client.query(
-    "SELECT tenant_id,id,secret FROM notification_channels",
-  );
+  const { rows } = await client.query("SELECT * FROM notification_channels");
   for (const row of rows) {
-    if (row.secret !== null)
-      decryptNotificationSecret(row.secret, key, row.tenant_id, row.id);
+    if (row.secret !== null) {
+      if (row.kind === "webpush")
+        decryptPushSubscription(row.secret, key, row.tenant_id, row.id);
+      else decryptNotificationSecret(row.secret, key, row.tenant_id, row.id);
+    } else if (
+      row.kind === "webpush" &&
+      row.revoked_at &&
+      !row.enabled &&
+      !row.push_enable_pending
+    )
+      continue;
     else if (
       !(
         await client.query(

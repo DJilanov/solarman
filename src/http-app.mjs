@@ -209,7 +209,7 @@ export function createApp({ pool, hub, config }) {
     response.setHeader("referrer-policy", "same-origin");
     response.setHeader(
       "content-security-policy",
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+      "default-src 'self'; script-src 'self'; worker-src 'self'; manifest-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
     );
     if (config.secure)
       response.setHeader("strict-transport-security", "max-age=31536000");
@@ -271,6 +271,7 @@ export function createApp({ pool, hub, config }) {
           ".ico": "image/x-icon",
           ".woff2": "font/woff2",
           ".json": "application/json",
+          ".webmanifest": "application/manifest+json",
           ".html": "text/html",
         };
         let bytes;
@@ -292,6 +293,14 @@ export function createApp({ pool, hub, config }) {
       }
       if (request.method === "POST" && request.headers.origin !== config.origin)
         throw new HttpError(403, "Request origin is not allowed");
+      if (pathname === "/api/notifications/push/receipt" && request.method === "POST") {
+        // The encrypted push carries a one-use receipt token, including when the browser session has expired.
+        const limitKey = limitPublic(request, response, "push-receipt");
+        const consumed = await hub.notifications.push.receipt(await bodyJson(request));
+        if (consumed) limiter.clear(limitKey);
+        json(response, 202, { accepted: true });
+        return;
+      }
       if (pathname === "/api/auth/login" && request.method === "POST") {
         const body = await bodyJson(request);
         if (
@@ -648,6 +657,15 @@ export function createApp({ pool, hub, config }) {
               }
             : result,
         );
+        return;
+      }
+      if (pathname === "/api/notifications/push" && ["GET", "POST"].includes(request.method)) {
+        if (request.method === "POST") {
+          limitSecurity(response, session);
+          await hub.notifications.push.change(session, await bodyJson(request));
+          securityLimiter.clear(session.id);
+        }
+        json(response, 200, await hub.notifications.push.settings(session));
         return;
       }
       if (

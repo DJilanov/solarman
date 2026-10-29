@@ -1,7 +1,7 @@
-/** @param {import('pg').Pool|import('pg').PoolClient} client @param {string|null} tenantId @param {'closed'|'restore'} reason @returns {Promise<void>} */
+/** @param {import('pg').Pool|import('pg').PoolClient} client @param {string|null} tenantId @param {'closed'|'restore'|'rollback'} reason @returns {Promise<void>} */
 export async function quarantineNotifications(client, tenantId, reason) {
   await client.query(
-    `WITH changed AS (UPDATE notification_channels SET enabled=false,quarantined=true,revision=revision+1,verified_at=null,updated_at=clock_timestamp()
+    `WITH changed AS (UPDATE notification_channels SET enabled=false,push_enable_pending=false,quarantined=true,revision=revision+1,verified_at=null,updated_at=clock_timestamp()
     WHERE($1::uuid IS NULL OR tenant_id=$1) AND NOT quarantined RETURNING tenant_id,id,revision)
     INSERT INTO notification_events(id,tenant_id,channel_id,revision,actor,action)
       SELECT gen_random_uuid(),tenant_id,id,revision,'System',$2 FROM changed`,
@@ -14,14 +14,14 @@ export async function quarantineNotifications(client, tenantId, reason) {
     WHERE($1::uuid IS NULL OR tenant_id=$1) AND state IN('queued','retry','sending')`,
     [tenantId, reason],
   );
-  if (reason === "restore") {
+  if (reason === "restore" || reason === "rollback") {
     await client.query(
-      "UPDATE notification_attempts SET state='unconfirmed',code='restore',completed_at=clock_timestamp() WHERE state='sending' AND($1::uuid IS NULL OR tenant_id=$1)",
-      [tenantId],
+      "UPDATE notification_attempts SET state='unconfirmed',code=$2,completed_at=clock_timestamp() WHERE state='sending' AND($1::uuid IS NULL OR tenant_id=$1)",
+      [tenantId, reason],
     );
     await client.query(
-      "UPDATE notification_outbox SET state='cancelled',had_unconfirmed=true,last_code='restore',completed_at=clock_timestamp() WHERE state='sending' AND($1::uuid IS NULL OR tenant_id=$1)",
-      [tenantId],
+      "UPDATE notification_outbox SET state='cancelled',had_unconfirmed=true,last_code=$2,completed_at=clock_timestamp() WHERE state='sending' AND($1::uuid IS NULL OR tenant_id=$1)",
+      [tenantId, reason],
     );
   }
 }

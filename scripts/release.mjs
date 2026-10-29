@@ -1,5 +1,16 @@
 import path from "node:path";
 
+/** @param {string[]} applied @param {string[]} supported @returns {void} */
+export function assertRollbackCompatibility(applied, supported) {
+  if (
+    applied.includes("022_web_push.sql") &&
+    !supported.includes("022_web_push.sql")
+  )
+    throw new Error(
+      "Rollback requires a release that supports Web Push storage; use a compatible release or restore a pre-upgrade backup",
+    );
+}
+
 /**
  * @param {{ directory: string, sha: string, index: string }} expected
  * @param {{ cwd: string, script: string, status: string, health: { status: string, release: string }, index: string }} running

@@ -17,6 +17,8 @@ import type {
   NotificationDelivery,
 } from "./types";
 
+import { BrowserPushSettings } from "./browser-push";
+
 interface Draft {
   revision: string;
   chatId: string;
@@ -73,6 +75,7 @@ const codes: Record<string, string> = {
   settings_changed: "Settings changed; future delivery was cancelled.",
   closed: "Workspace closure cancelled future delivery.",
   restore: "Delivery was disabled by a database restore.",
+  rollback: "Delivery was disabled by an application rollback.",
   service_restarted:
     "The service restarted before the delivery result was saved.",
   result_not_saved:
@@ -80,6 +83,13 @@ const codes: Record<string, string> = {
   retry_after_deadline:
     "The next permitted retry would exceed the message deadline. No retry is scheduled.",
   delivery_expired: "The delivery deadline or retry limit was reached.",
+  push_accepted:
+    "The push service accepted the message; confirmation from the device is still pending.",
+  push_displayed: "The device reported that the notification was displayed.",
+  push_expired:
+    "This browser subscription has expired. Enable notifications again on that device.",
+  push_authorization_rejected:
+    "The push service rejected authorization. Review the server push configuration.",
   queue_limit:
     "The pending delivery limit was reached. No message was sent for this request.",
 };
@@ -90,10 +100,11 @@ const eventLabels: Record<string, string> = {
   test: "Destination test requested",
   closed: "Notifications disabled for closure",
   restore: "Notifications quarantined after restore",
+  rollback: "Notifications disabled for rollback",
   blocked: "Notification delivery disabled after rejection",
 };
 
-export default function NotificationsPage(): ReactNode {
+function TelegramNotifications(): ReactNode {
   const { session } = useWorkspace();
   const [offset, setOffset] = useState(0);
   const { data, error, loading, reload } = useData<NotificationSettingsData>(
@@ -217,22 +228,6 @@ export default function NotificationsPage(): ReactNode {
     value ? when(value, timezone, "medium") : tr("Not recorded");
   return (
     <>
-      <Heading
-        eyebrow={tr("RELIABLE NOTIFICATIONS")}
-        title={tr("External notifications")}
-        description={tr(
-          "Private incident and recovery alerts for this workspace, with delivery history.",
-        )}
-        action={
-          <Link
-            className="button secondary"
-            to="/settings"
-            aria-label={tr("Back to settings")}
-          >
-            <ArrowLeft size={16} /> {tr("Back to settings")}
-          </Link>
-        }
-      />
       {error && <Notice tone="danger">{error}</Notice>}
       {message && (
         <Notice tone={failed ? "danger" : undefined}>{tr(message)}</Notice>
@@ -400,7 +395,9 @@ export default function NotificationsPage(): ReactNode {
       </Panel>
       <Panel
         title={tr(
-          channel?.enabled ? "Notifications enabled" : "Notifications disabled",
+          channel?.enabled
+            ? "Telegram notifications enabled"
+            : "Telegram notifications disabled",
         )}
         subtitle={tr("A queued request is distinct from confirmed delivery")}
       >
@@ -492,7 +489,13 @@ export default function NotificationsPage(): ReactNode {
                   <small>{tr(kindLabels[job.kind])}</small>
                   <h3>{job.payload.title}</h3>
                 </div>
-                <strong>{tr(stateLabels[job.state])}</strong>
+                <strong>
+                  {tr(
+                    job.lastCode === "push_accepted"
+                      ? "Accepted by push service"
+                      : stateLabels[job.state],
+                  )}
+                </strong>
               </div>
               <p>
                 {date(job.createdAt)} ·{" "}
@@ -544,7 +547,13 @@ export default function NotificationsPage(): ReactNode {
                         <tr key={attempt.number}>
                           <td>{attempt.number}</td>
                           <td>{date(attempt.startedAt)}</td>
-                          <td>{tr(stateLabels[attempt.state])}</td>
+                          <td>
+                            {tr(
+                              attempt.code === "push_accepted"
+                                ? "Accepted by push service"
+                                : stateLabels[attempt.state],
+                            )}
+                          </td>
                           <td>
                             {attempt.code
                               ? tr(
@@ -591,6 +600,32 @@ export default function NotificationsPage(): ReactNode {
           ))}
         </ul>
       </Panel>
+    </>
+  );
+}
+
+export default function NotificationsPage(): ReactNode {
+  return (
+    <>
+      <Heading
+        eyebrow={tr("RELIABLE NOTIFICATIONS")}
+        title={tr("External notifications")}
+        description={tr(
+          "Private incident and recovery alerts for this workspace, with delivery history.",
+        )}
+        action={
+          <Link
+            className="button secondary"
+            to="/settings"
+            aria-label={tr("Back to settings")}
+          >
+            <ArrowLeft size={16} /> {tr("Back to settings")}
+          </Link>
+        }
+      />
+      <BrowserPushSettings />
+      <h2>{tr("Optional Telegram alerts")}</h2>
+      <TelegramNotifications />
     </>
   );
 }
