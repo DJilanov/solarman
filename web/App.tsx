@@ -767,35 +767,38 @@ function Dashboard({
 export default function App(): ReactNode {
   useTranslation();
   const [session, setSession] = useState<Session | null>(null);
-  const [checking, setChecking] = useState(true);
+  const [sessionCheck, setSessionCheck] = useState<
+    "checking" | "complete" | "failed"
+  >("checking");
+  const [sessionCheckAttempt, setSessionCheckAttempt] = useState(0);
   const authenticationVersion = useRef(0);
   const identify = (next: Session | null): void => {
     authenticationVersion.current++;
     setSession(next);
-    setChecking(false);
+    setSessionCheck("complete");
   };
   const [error, setError] = useState<string | null>(null);
   const location = useLocation();
   useEffect(() => {
     let active = true;
+    const abort = new AbortController();
     const version = authenticationVersion.current;
-    request<Session>("/auth/session")
+    request<Session>("/auth/session", { signal: abort.signal })
       .then((result) => {
-        if (active && version === authenticationVersion.current)
+        if (active && version === authenticationVersion.current) {
           setSession(result);
+          setError(null);
+          setSessionCheck("complete");
+        }
       })
       .catch((cause: unknown) => {
-        if (
-          active &&
-          version === authenticationVersion.current &&
-          !(cause instanceof ApiError && cause.status === 401)
-        )
-          setError(
-            cause instanceof Error ? cause.message : "Unable to connect",
-          );
-      })
-      .finally(() => {
-        if (active) setChecking(false);
+        if (!active || version !== authenticationVersion.current) return;
+        if (cause instanceof ApiError && cause.status === 401) {
+          setSessionCheck("complete");
+          return;
+        }
+        setError(cause instanceof Error ? cause.message : "Unable to connect");
+        setSessionCheck("failed");
       });
     const expired = (): void => {
       identify(null);
@@ -804,12 +807,13 @@ export default function App(): ReactNode {
     window.addEventListener("solarman-session-expired", expired);
     return () => {
       active = false;
+      abort.abort();
       window.removeEventListener("solarman-session-expired", expired);
     };
-  }, []);
+  }, [sessionCheckAttempt]);
   if (location.pathname === "/activate")
     return <Activate onSignedIn={identify} />;
-  if (checking)
+  if (sessionCheck === "checking")
     return (
       <main className="app-starting">
         <Brand />
@@ -822,6 +826,8 @@ export default function App(): ReactNode {
         <RecoverAccountPage
           currentSession={session}
           onRecovered={(email) => {
+            authenticationVersion.current++;
+            setSessionCheck("complete");
             setSession((current) =>
               current?.user.email.toLowerCase() === email.trim().toLowerCase()
                 ? null
@@ -831,6 +837,33 @@ export default function App(): ReactNode {
           }}
         />
       </Suspense>
+    );
+  if (sessionCheck === "failed")
+    return (
+      <main className="activation-page">
+        <LanguageSwitch />
+        <Brand />
+        <div className="activation-card">
+          <h1>{tr("Unable to check your session")}</h1>
+          <p>
+            {tr("Retry when the dashboard is available to open your workspace.")}
+          </p>
+          {error && <Notice tone="danger">{error}</Notice>}
+          <button
+            className="button primary"
+            onClick={() => {
+              setError(null);
+              setSessionCheck("checking");
+              setSessionCheckAttempt((attempt) => attempt + 1);
+            }}
+          >
+            {tr("Retry")}
+          </button>
+          <Link className="button secondary" to="/recover">
+            {tr("Forgot your dashboard password?")}
+          </Link>
+        </div>
+      </main>
     );
   if (!session) return <SignIn onSignedIn={identify} initialError={error} />;
   return (

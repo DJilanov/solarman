@@ -1487,5 +1487,7 @@
   "Original charging flags were not restored after the recovery test": "Original charging flags were not restored after the recovery test",
   "Pause automation and stop the current top-up before testing recovery": "Pause automation and stop the current top-up before testing recovery",
   "Scheduled permission recovery verified; automation remains paused": "Scheduled permission recovery verified; automation remains paused",
-  "The attended permission-recovery test is running. Stop scheduled top-ups remains available; unattended automation stays paused.": "The attended permission-recovery test is running. Stop scheduled top-ups remains available; unattended automation stays paused."
+  "The attended permission-recovery test is running. Stop scheduled top-ups remains available; unattended automation stays paused.": "The attended permission-recovery test is running. Stop scheduled top-ups remains available; unattended automation stays paused.",
+  "Unable to check your session": "Unable to check your session",
+  "Retry when the dashboard is available to open your workspace.": "Retry when the dashboard is available to open your workspace."
 }

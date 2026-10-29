@@ -1487,5 +1487,7 @@
   "Original charging flags were not restored after the recovery test": "Първоначалните флагове за зареждане не са възстановени след проверката",
   "Pause automation and stop the current top-up before testing recovery": "Постави автоматизацията на пауза и спри текущото дозареждане преди проверката на изключването",
   "Scheduled permission recovery verified; automation remains paused": "Изключването на разрешението за планирано зареждане е потвърдено; автоматизацията остава на пауза",
-  "The attended permission-recovery test is running. Stop scheduled top-ups remains available; unattended automation stays paused.": "Изпълнява се проверка на разрешението за зареждане с присъстващ оператор. Можеш да спреш планираните дозареждания; автоматизацията остава на пауза."
+  "The attended permission-recovery test is running. Stop scheduled top-ups remains available; unattended automation stays paused.": "Изпълнява се проверка на разрешението за зареждане с присъстващ оператор. Можеш да спреш планираните дозареждания; автоматизацията остава на пауза.",
+  "Unable to check your session": "Сесията не може да бъде проверена",
+  "Retry when the dashboard is available to open your workspace.": "Опитай отново, когато таблото е достъпно, за да отвориш работното си пространство."
 }

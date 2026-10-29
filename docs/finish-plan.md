@@ -10,13 +10,13 @@ The quoted Bulgarian monitoring-only notice is an unused translation entry. The 
 
 | Area | Verified state | Remaining work |
 | --- | --- | --- |
-| Native diagnostics | All nine checks last passed at 05:10:38 UTC on October 29 after the attended check's restart. Reports expire after 30 minutes while control is inactive. | Refresh before activation; retain explicit failure/late-response states. The initial 530 recurred before subsequent successful reads; its cause remains undiagnosed. |
-| Activation | Host writes and workspace control are off. Automation is paused; manual top-up is off. Device-bound commissioning is also required. | Commissioning software is deployed; the remaining six physical acceptance checks must pass. |
-| Physical changes | An attended at-target API check, Stop and real restart revocation passed on October 29; permission was freshly observed off. Zero application inverter-write intents and zero unresolved bindings. | Below-target charging writes and recovery from actual scheduled permission remain untested. |
-| Policy observations | The continuing bound run had 166 accepted samples and no collector failure at 10:09 UTC on October 29. Above-50% solar charging was observed at 09:55; the 10:05 reading showed SOC 54%, PV 1,676 W, house 610 W and battery charging 1,013 W. Earlier grid charging near 2 kW remains recorded. | Discharge above 50%, a newly qualifying grid-stop transition, attended recovery and a full day/night cycle remain open. The saved commissioning checklist still requires the owner's explicit action. |
+| Native diagnostics | All nine checks last passed at 11:04:52 UTC on October 29 after the actual permission-recovery test and restart. Reports expire after 30 minutes while control is inactive. | Refresh before activation; retain explicit failure/late-response states. The initial 530 recurred before subsequent successful reads; its cause remains undiagnosed. |
+| Activation | Host writes are permitted for guarded commissioning; workspace control and manual top-up are off, and automation is paused. No unattended approval has been granted. Device-bound commissioning is also required. | Commissioning software is deployed; the remaining physical acceptance checks and explicit evidence save/approval must pass. |
+| Physical changes | The October 29 attended test at 57% SOC verified permission 9→25→9 with two verified application writes, preserving charging windows and limits. Restart revoked attendance and control; zero unresolved bindings. | Below-target application charging and physical recovery during an interrupted or lost write remain untested. |
+| Policy observations | The continuing bound run had 176 accepted samples at 11:03 UTC on October 29. Above-50% solar charging was observed at 09:55; the 10:05 reading showed SOC 54%, PV 1,676 W, house 610 W and battery charging 1,013 W. Earlier grid charging near 2 kW remains recorded. | Discharge above 50%, a newly qualifying grid-stop transition and a full day/night cycle remain open. The successful attended recovery command is available for explicit evidence saving. The saved commissioning checklist still requires the owner's explicit action. |
 | Alerts | Durable in-app incidents, browser Web Push and optional Telegram delivery are implemented. The owner selected iPhone subscriptions; server keys are configured privately. | iPhone `push_displayed` confirmed at 09:27:54 UTC on October 29; alerts enabled. Independent monitor installed on `root@89.167.46.193`; its test was confirmed and both outage/recovery pairs were accepted by Apple. Remaining device confirmations and operator handover stay explicit. |
 | Hosted tenants | The connected test-database rehearsal covers attended commands and notifications. The native Chrome production audit also verified signup, actual provider discovery, duplicate protection, 22 translated page checks and real closure/removal. Production has migrations 001–022. | Complete the browser journey with a different bound home, confirm provider entitlement and perform operator handover; physical acceptance remains separate. |
-| Recovery | Web Push release `b1de6e3` passed the schema-021→022 upgrade and fresh schema-022 restore, with zero device or delivery calls. Backup healthy; erasure-receipt service verified. | Maintain recurring recovery drills and perform an actual operator handover. |
+| Recovery | The post-physical-test backup passed isolated restore on October 29 at 11:06:26 UTC, retaining the real write journal while quarantining controls, commissioning and notifications. Zero device or delivery calls; actual erasure receipt verified. | Maintain recurring recovery drills and perform an actual operator handover. |
 
 **Baseline audit finding:** the inspected release gated starts on settings, firmware, clock, capacity and permissions without a physical-commissioning approval gate. Observation runs deliberately grant no control permission. The implementation below adds the missing gate; hardware acceptance remains open.
 
@@ -122,6 +122,12 @@ The EN/BG page includes explicit per-test consent and a running-test notice. It 
 
 Verification passed type/syntax checks, production build, 199 local unit tests with three Linux-only skips, all 178 PostgreSQL integration tests and all 47 browser tests. Focused cases exercise unchanged limits/windows, paired readbacks, ambiguous enable, Stop priority, suspended queued work, expired dispatch, native SOC preflight and unconfirmed cleanup. The browser case verifies the 52% boundary, separate consent, EN/BG draft retention and a visually reviewed 320 px layout. Its discovered checkbox sizing issue was corrected and verified with a focused rerun. Source/build scanning found no configured secret values.
 
+## Startup session recovery
+
+A native Chrome reload during a real restart exposed a temporary session-check failure that rendered the sign-in form despite the existing cookie remaining valid. The startup flow now distinguishes an unavailable check from a confirmed 401, offers a translated Retry action and retains account recovery access. Requests are cancelled on cleanup, and identity generations prevent a delayed response from replacing activation, expiry or completed recovery. A successful password reset also exits the failed-check state.
+
+The new regression reproduced the previous behavior. Focused browser checks cover HTTP 503, transport failure, malformed responses, HTTP 401, successful password recovery with revoked cookies, delayed identity, language switching and a reviewed 320 px Bulgarian layout. Final checks passed: type/syntax, production build, 199 local unit tests with three Linux-only skips, all 178 PostgreSQL integration tests and all 50 browser tests. Source/build scanning found no configured secret values.
+
 ## 1. Complete commissioning and activation
 
 The commissioning lifecycle, attended-control path, dispatch gates, translated states, persistence/export and restore quarantine are implemented in the increment above. Physical acceptance remains separate.
@@ -186,7 +192,7 @@ For each independently reviewable release:
 
 ## Execution order and dependencies
 
-The commissioning and notification software is implemented. The remaining critical path is **physical observations and attended recovery → approved activation → continued day/night observation**. Passive observations may continue while waiting for suitable SOC/daylight conditions.
+The commissioning and notification software is implemented. The remaining critical path is **remaining physical observations → explicit evidence saving and approved activation → continued day/night observation**. Passive observations may continue while waiting for suitable SOC/daylight conditions.
 
 The selected iPhone channel and independent monitoring host are installed and tested. Complete the remaining different-home journey, device confirmations and operator handover alongside physical commissioning. Confirm the provider entitlement before admitting another controlled home. Independent outage monitoring and operator handover must pass before unattended completion.
 

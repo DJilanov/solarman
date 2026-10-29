@@ -47,6 +47,185 @@ function inverterClockTime(at: string, differenceSeconds: number): string {
   }).format(Date.parse(at) + differenceSeconds * 1000);
 }
 
+test("startup session failures can be retried without signing in again", async ({
+  page,
+}) => {
+  await signIn(page);
+  let logins = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/auth/login") logins++;
+  });
+  for (const failure of ["unavailable", "transport", "invalid-response"]) {
+    let checks = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/auth/session", async (route) => {
+      checks++;
+      if (checks > 1) {
+        await gate;
+        await route.continue();
+      } else if (failure === "transport") await route.abort("failed");
+      else if (failure === "invalid-response")
+        await route.fulfill({ status: 200, body: "temporarily unavailable" });
+      else
+        await route.fulfill({
+          status: 503,
+          json: { error: "Unable to connect" },
+        });
+    });
+    try {
+      await page.reload();
+      await expect(
+        page.getByRole("heading", { name: "Unable to check your session" }),
+      ).toBeVisible();
+      await expect(page.getByLabel("Password", { exact: true })).toHaveCount(0);
+      await page.setViewportSize({ width: 320, height: 850 });
+      await page.getByLabel("Language").selectOption("bg");
+      await expect(
+        page.getByRole("heading", { name: "Сесията не може да бъде проверена" }),
+      ).toBeVisible();
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
+      if (failure === "unavailable")
+        await page.screenshot({ path: "test-results/session-retry-mobile-bg.png" });
+      await page.getByRole("button", { name: "Опитай отново", exact: true }).click();
+      await expect(
+        page.getByText("Пространството се зарежда…", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Опитай отново", exact: true }),
+      ).toHaveCount(0);
+      release();
+      await expect(
+        page.getByRole("heading", { name: "Преглед на енергията", exact: true }),
+      ).toBeVisible();
+      expect(checks).toBe(2);
+      await page.getByLabel("Език").selectOption("en");
+      await page.setViewportSize({ width: 1440, height: 1100 });
+    } finally {
+      release();
+      await page.unroute("**/api/auth/session");
+    }
+  }
+  expect(logins).toBe(0);
+});
+
+test("a retried expired session shows sign-in and failed checks keep account recovery accessible", async ({
+  page,
+}) => {
+  await signIn(page);
+  let checks = 0;
+  await page.route("**/api/auth/session", async (route) => {
+    checks++;
+    await route.fulfill({
+      status: checks === 1 ? 503 : 401,
+      json: { error: "Unable to connect" },
+    });
+  });
+  await page.reload();
+  await page
+    .getByRole("link", { name: "Forgot your dashboard password?" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Recover dashboard access", exact: true }),
+  ).toBeVisible();
+  await page.goBack();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Welcome back", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Password", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Retry", exact: true }),
+  ).toHaveCount(0);
+  expect(checks).toBe(2);
+});
+
+test("successful account recovery clears a failed startup check and permits signing in with the new password", async ({
+  page,
+  browser,
+}) => {
+  await signIn(page);
+  const email = `startup-recovery-${randomUUID()}@example.test`;
+  const initial = "startup-recovery-fixture-password";
+  const replacement = "startup-recovery-replacement-password";
+  const invitation = await privateInvitation(
+    page,
+    email,
+    "Startup recovery fixture",
+  );
+  const context = await browser.newContext({ baseURL: "http://localhost:3000" });
+  try {
+    const activated = await context.request.post("/api/auth/activate", {
+      headers: { origin: "http://localhost:3000" },
+      data: {
+        token: new URLSearchParams(new URL(invitation.url).hash.slice(1)).get(
+          "token",
+        ),
+        password: initial,
+      },
+    });
+    expect(activated.status()).toBe(200);
+    const session = (await activated.json()) as Session;
+    const generated = await context.request.post("/api/security/recovery/key", {
+      headers: {
+        origin: "http://localhost:3000",
+        "x-csrf-token": session.csrfToken,
+      },
+      data: { currentPassword: initial },
+    });
+    expect(generated.status()).toBe(200);
+    const saved = (await generated.json()) as { key: string };
+    await context.route("**/api/auth/session", (route) =>
+      route.fulfill({ status: 503, json: { error: "Unable to connect" } }),
+    );
+    const user = await context.newPage();
+    await user.goto(
+      "/recover#" + new URLSearchParams({ email, key: saved.key }).toString(),
+    );
+    await user.getByLabel("New password", { exact: true }).fill(replacement);
+    await user
+      .getByLabel("Confirm new password", { exact: true })
+      .fill(replacement);
+    await user
+      .getByRole("button", { name: "Reset dashboard password", exact: true })
+      .click();
+    await expect(
+      user.getByText(
+        "Password reset completed. All previous browser sessions and recovery credentials are invalid.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      user.getByRole("link", { name: "Back to sign in", exact: true }),
+    ).toBeVisible();
+    expect((await context.request.get("/api/auth/session")).status()).toBe(401);
+    await user
+      .getByRole("link", { name: "Back to sign in", exact: true })
+      .click();
+    await expect(
+      user.getByRole("heading", { name: "Welcome back", exact: true }),
+    ).toBeVisible();
+    await context.unroute("**/api/auth/session");
+    await user.getByLabel("Email address", { exact: true }).fill(email);
+    await user.getByLabel("Password", { exact: true }).fill(replacement);
+    await user.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(
+      user.getByRole("heading", { name: "Energy overview", exact: true }),
+    ).toBeVisible();
+    const remaining = await context.request.get("/api/auth/session");
+    expect(remaining.status()).toBe(200);
+    expect(((await remaining.json()) as Session).user.id).toBe(session.user.id);
+  } finally {
+    await context.close();
+  }
+});
+
 test("account security renews the current browser and revokes other browsers with real cookies in Bulgarian", async ({
   page,
   browser,
