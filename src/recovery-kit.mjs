@@ -176,9 +176,10 @@ export async function readPrivateRecoveryFile(
       info.size > maximum
     )
       throw new BackupError("recovery_file_permissions");
-    const body = await handle.readFile();
-    if (body.length > maximum) throw new BackupError("recovery_kit_too_large");
-    return body;
+    return await boundedBuffer(
+      handle.createReadStream({ autoClose: false }),
+      maximum,
+    );
   } catch (error) {
     if (error instanceof BackupError) throw error;
     throw new BackupError("recovery_file_unavailable");
