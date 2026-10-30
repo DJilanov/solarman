@@ -9,6 +9,7 @@ import {
   parseObservationProgress,
 } from "./policy-observations.mjs";
 import { currentCommissioning } from "./commissioning-state.mjs";
+import { reviewCommissioningHistory } from "./commissioning-history.mjs";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export const ATTENDED_MINUTES = 30;
@@ -198,6 +199,19 @@ export class Commissioning {
     );
   }
 
+  /** @param {string} tenantId @param {object} runtime @returns {Promise<object>} */
+  async reviewHistory(tenantId, runtime) {
+    const run = await currentCommissioning(this.pool, tenantId);
+    const identity = this.identity(runtime);
+    if (!run || !identity || run.binding !== observationBinding(identity))
+      throw new SecurityError(409, "The commissioning device binding is no longer current");
+    const review = await reviewCommissioningHistory(this.pool, run);
+    return {
+      ...review,
+      requirements: commissioningRequirements({ observation: review }),
+    };
+  }
+
   /** @param {{id:string,tenant_id:string,token_hash:string}} session @param {object} runtime @param {object} body @returns {Promise<void>} */
   async change(session, runtime, body) {
     if (
@@ -311,7 +325,8 @@ export class Commissioning {
         );
       let state = run.state,
         until = run.attended_until,
-        evidence = run.evidence;
+        evidence = run.evidence,
+        detail = {};
       let action = body.action;
       if (action === "attend") {
         if (
@@ -341,39 +356,51 @@ export class Commissioning {
         stopped = true;
         action = action === "end" ? "ended" : "invalidated";
       } else if (action === "evidence") {
-        if (
-          typeof body.observationRunId !== "string" ||
-          !UUID.test(body.observationRunId)
-        )
-          throw new SecurityError(
-            400,
-            "Choose an observation run for commissioning evidence",
-          );
-        const observation = (
-          await client.query(
-            "SELECT id,binding,state,failed_at,progress,started_at,checked_at FROM policy_observation_runs WHERE tenant_id=$1 AND id=$2 FOR SHARE",
-            [session.tenant_id, body.observationRunId],
+        if (body.observationSource === "stored-measurements") {
+          if (typeof body.historyThroughId !== "string" || typeof body.historyHash !== "string")
+            throw new SecurityError(400, "Review stored measurements before saving their evidence");
+          const review = await reviewCommissioningHistory(client, run, body.historyThroughId);
+          if (review.hash !== body.historyHash)
+            throw new SecurityError(409, "Historical readings changed. Review them again before saving");
+          evidence = { ...evidence, observation: { id: randomUUID(), ...review } };
+          detail = { observationSource: review.source, historyHash: review.hash, sampleCount: review.sampleCount };
+        } else {
+          if (body.observationSource !== undefined)
+            throw new SecurityError(400, "Choose a valid observation evidence source");
+          if (
+            typeof body.observationRunId !== "string" ||
+            !UUID.test(body.observationRunId)
           )
-        ).rows[0];
-        if (
-          !observation ||
-          observation.binding !== run.binding ||
-          observation.state === "invalidated" ||
-          observation.failed_at
-        )
-          throw new SecurityError(
-            409,
-            "Use valid observations from the current device binding",
-          );
-        evidence = {
-          ...evidence,
-          observation: {
-            id: observation.id,
-            startedAt: observation.started_at,
-            checkedAt: observation.checked_at,
-            progress: parseObservationProgress(observation.progress),
-          },
-        };
+            throw new SecurityError(
+              400,
+              "Choose an observation run for commissioning evidence",
+            );
+          const observation = (
+            await client.query(
+              "SELECT id,binding,state,failed_at,progress,started_at,checked_at FROM policy_observation_runs WHERE tenant_id=$1 AND id=$2 FOR SHARE",
+              [session.tenant_id, body.observationRunId],
+            )
+          ).rows[0];
+          if (
+            !observation ||
+            observation.binding !== run.binding ||
+            observation.state === "invalidated" ||
+            observation.failed_at
+          )
+            throw new SecurityError(
+              409,
+              "Use valid observations from the current device binding",
+            );
+          evidence = {
+            ...evidence,
+            observation: {
+              id: observation.id,
+              startedAt: observation.started_at,
+              checkedAt: observation.checked_at,
+              progress: parseObservationProgress(observation.progress),
+            },
+          };
+        }
         if (body.recoveryCommandId) {
           if (
             typeof body.recoveryCommandId !== "string" ||
@@ -411,7 +438,7 @@ export class Commissioning {
           [session.tenant_id, run.id, state, until, evidence],
         )
       ).rows[0];
-      await event(client, run, action);
+      await event(client, run, action, detail);
     });
     if (stopped) await this.reconcile(runtime);
     else await runtime.initialize();

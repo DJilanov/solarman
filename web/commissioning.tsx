@@ -13,7 +13,8 @@ import {
   when,
 } from "./components";
 import { FirmwareEvidence } from "./firmware-evidence";
-import type { CommissioningData, CommissioningRequirement } from "./types";
+import type { CommissioningData, CommissioningHistoryReview, CommissioningRequirement } from "./types";
+import { formatNumber } from "./format";
 
 const requirements: Record<
   NonNullable<CommissioningData["run"]>["requirements"][number]["code"],
@@ -77,6 +78,7 @@ export default function CommissioningPage(): ReactNode {
   const [message, setMessage] = useState<string | null>(null);
   const [unconfirmed, setUnconfirmed] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [historyReview, setHistoryReview] = useState<CommissioningHistoryReview | null>(null);
   const timezone = session.tenant.timezone;
   const run = data?.run;
   const control = overview?.controller.control;
@@ -84,7 +86,7 @@ export default function CommissioningPage(): ReactNode {
     (command) => command.id === recoveryCommandId,
   );
   const availableCodes = new Set(
-    data?.availableObservation?.requirements
+    (historyReview?.requirements ?? data?.availableObservation?.requirements ?? [])
       .filter((item) => item.passed && item.code !== "recovery")
       .map((item) => item.code),
   );
@@ -100,6 +102,9 @@ export default function CommissioningPage(): ReactNode {
   useEffect(() => {
     setRecoveryConfirmed(false);
   }, [run?.id, run?.state]);
+  useEffect(() => {
+    setHistoryReview(null);
+  }, [run?.id, run?.currentBinding]);
   const change = async (action: string): Promise<void> => {
     setPending(true);
     setMessage(null);
@@ -117,6 +122,11 @@ export default function CommissioningPage(): ReactNode {
           revision: run?.revision,
           attending,
           observationRunId: data?.availableObservation?.id,
+          ...(historyReview ? {
+            observationSource: historyReview.source,
+            historyThroughId: historyReview.throughId,
+            historyHash: historyReview.hash,
+          } : {}),
           recoveryCommandId: selectedRecovery?.id,
         }),
       });
@@ -160,6 +170,20 @@ export default function CommissioningPage(): ReactNode {
           ? tr(cause.message)
           : tr("Unable to update commissioning"),
       );
+    } finally {
+      setPending(false);
+    }
+  };
+  const reviewHistory = async (): Promise<void> => {
+    setPending(true);
+    setMessage(null);
+    setHistoryReview(null);
+    try {
+      setHistoryReview(await request<CommissioningHistoryReview>("/commissioning/history"));
+      setFailed(false);
+    } catch (cause: unknown) {
+      setFailed(true);
+      setMessage(cause instanceof Error ? tr(cause.message) : tr("Unable to review stored measurements"));
     } finally {
       setPending(false);
     }
@@ -362,7 +386,7 @@ export default function CommissioningPage(): ReactNode {
                 })}
               </p>
             )}
-            {!data.availableObservation && (
+            {!data.availableObservation && !historyReview && (
               <p className="fine-print">
                 {tr(
                   "No valid observation run is available for this device. Open observations to record readings.",
@@ -372,6 +396,24 @@ export default function CommissioningPage(): ReactNode {
             <Link className="text-link" to="/controls/observations">
               {tr("Observe the home policy")}
             </Link>
+            <button
+              className="button secondary"
+              disabled={pending || run.currentBinding !== true || run.state === "approved"}
+              onClick={() => { void reviewHistory(); }}
+            >
+              {tr("Review stored measurements")}
+            </button>
+            {historyReview && (
+              <Notice>
+                <p>{tr("Reviewed {{count}} saved readings with {{coverage}}% coverage. {{excluded}} readings outside the normal policy were excluded.", {
+                  count: historyReview.sampleCount,
+                  coverage: formatNumber(historyReview.window.coverage * 100, 1),
+                  excluded: historyReview.excluded,
+                })}</p>
+                <p>{when(historyReview.startedAt, timezone, "medium")} → {when(historyReview.progress.last?.at ?? historyReview.checkedAt, timezone, "medium")}</p>
+                <p>{tr("This review uses measured values and the existing acceptance thresholds. It sends no inverter commands. Saving evidence and approving controls remain separate actions.")}</p>
+              </Notice>
+            )}
             <label className="field-label" htmlFor="recovery-command">
               {tr("Verified recovery result (optional)")}
             </label>
@@ -441,7 +483,7 @@ export default function CommissioningPage(): ReactNode {
                 className="button secondary"
                 disabled={
                   locked ||
-                  !data.availableObservation ||
+                  (!data.availableObservation && !historyReview) ||
                   run.currentBinding !== true ||
                   run.state === "approved" ||
                   Boolean(recoveryCommandId && !selectedRecovery)

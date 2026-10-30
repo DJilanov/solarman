@@ -7376,6 +7376,76 @@ test("native solar approval requires physical evidence and leaves activation and
   }
 });
 
+test("commissioning reviews retained measurements with tenant isolation, immutable boundaries and separate approval", async () => {
+  const f = await recoveryTestFixture();
+  try {
+    await f.attend();
+    const recovery = await completeCommand(f.runtime, "commission_recovery", f.user);
+    assert.equal(recovery.status, "succeeded");
+    assert.equal((await f.change("end")).status, 200);
+    const current = await f.state(), anchorId = randomUUID();
+    const startedAt = new Date(Date.now() - 25 * 3600000);
+    await pool.query(
+      "INSERT INTO policy_observation_runs(id,tenant_id,account_id,device,binding,identity,verification,cursor_id,progress,started_at,state,reason,ended_at) VALUES($1,$2,$3,$4,$5,$6,$7,0,$8,$9,'invalidated','binding_changed',clock_timestamp())",
+      [anchorId, f.target.tenant, f.target.account, f.target.device,
+        f.runtime.controlBinding(), current.identity, f.runtime.verification,
+        emptyObservationProgress(), new Date(Date.now() - 8 * 86400000)],
+    );
+    for (let minute = 0; minute <= 1500; minute += 5) {
+      const at = new Date(startedAt.getTime() + minute * 60000);
+      let values = [50, 0, 1000, 1100, 0];
+      if (minute < 10) values = [49, 0, 1000, 3000, -1930];
+      if (minute === 20 || minute === 25) values = [minute === 20 ? 53 : 54, 2500, 1000, 0, -1400];
+      if (minute === 30 || minute === 35) values = [minute === 30 ? 54 : 53, 0, 1000, 0, 1000];
+      await pool.query(
+        "INSERT INTO measurements(tenant_id,account_id,device,observed_at,received_at,reading_source,sampling_seconds,soc,pv_w,load_w,grid_w,battery_w,temperature_c,ac_enabled,snapshot,control_binding) VALUES($1,$2,$3,$4,$5,'provider',300,$6,$7,$8,$9,$10,20,false,'{}',$11) ON CONFLICT DO NOTHING",
+        [f.target.tenant, f.target.account, f.target.device, at, new Date(at.getTime() + 1000),
+          ...values, minute === 60 ? null : f.runtime.controlBinding()],
+      );
+    }
+    assert.equal((await fetchApi("/commissioning/history")).status, 401);
+    const beforeCalls = f.calls.length;
+    const response = await fetchApi("/commissioning/history", { auth: f.member });
+    assert.equal(response.status, 200, await response.clone().text());
+    const review = await response.json();
+    assert.equal(review.source, "stored-measurements");
+    assert.equal(review.requirements.filter((item) => item.passed).length, 5);
+    assert.equal(review.window.cycleObserved, true);
+    assert.equal(review.excluded, 1);
+    assert.equal((await f.state()).run.requirements.some((item) => item.passed), false);
+    assert.equal(f.calls.length, beforeCalls);
+    assert.equal((await fetchApi("/commissioning/history", { auth: f.admin })).status, 409);
+    const body = { observationSource: review.source, historyThroughId: review.throughId,
+      historyHash: review.hash, recoveryCommandId: recovery.id };
+    assert.equal((await f.change("evidence", { ...body, historyHash: "0".repeat(64) })).status, 409);
+    assert.equal((await f.change("evidence", { ...body, historyThroughId: "99999999999999999999" })).status, 400);
+    assert.equal((await f.change("evidence", { ...body, currentPassword: "wrong-password" })).status, 400);
+    const first = (await pool.query(
+      "SELECT id,battery_w FROM measurements WHERE tenant_id=$1 AND observed_at=$2",
+      [f.target.tenant, startedAt],
+    )).rows[0];
+    await pool.query("UPDATE measurements SET battery_w=battery_w-1 WHERE id=$1", [first.id]);
+    assert.equal((await f.change("evidence", body)).status, 409);
+    await pool.query("UPDATE measurements SET battery_w=$2 WHERE id=$1", [first.id, first.battery_w]);
+    assert.equal((await f.change("evidence", body)).status, 200);
+    const saved = await f.state();
+    assert.equal(saved.run.requirements.every((item) => item.passed), true);
+    assert.equal(saved.run.state, "preparing");
+    assert.equal(saved.run.evidence.observation.hash, review.hash);
+    assert.equal(saved.run.evidence.observation.source, "stored-measurements");
+    assert.equal((await pool.query("SELECT state FROM policy_observation_runs WHERE id=$1", [anchorId])).rows[0].state, "invalidated");
+    assert.equal((await f.change("approve")).status, 200);
+    assert.equal(f.runtime.controlEnabled, false);
+    assert.equal(f.runtime.paused, true);
+    assert.equal(f.calls.length, beforeCalls);
+    assert.equal((await f.change("invalidate")).status, 200);
+    assert.equal((await f.change("create")).status, 200);
+    assert.equal((await fetchApi("/commissioning/history", { auth: f.member })).status, 409);
+  } finally {
+    await f.dispose();
+  }
+});
+
 test("commissioning revisions serialize concurrent changes and a lost old revision cannot reopen a session", async () => {
   const f = await commissioningFixture(true);
   try {

@@ -1,6 +1,6 @@
 # Solarman completion plan
 
-Updated 2026-10-29. Commissioning, tenant notifications, the independent-watchdog implementation, firmware evidence reporting and archive/erasure-receipt integrity checks are deployed. The owner selected an independent host and confirmed both dashboard and separate-host iPhone tests. The installed watchdog passed real stopped-app and isolated network-loss checks; physical inverter commissioning remains open. This is the current finish plan; [dashboard-plan.md](dashboard-plan.md) retains the original requirements and historical implementation notes.
+Updated 2026-10-30. Commissioning, tenant notifications, the independent-watchdog implementation, firmware evidence reporting and archive/erasure-receipt integrity checks are deployed. The owner selected an independent host and confirmed both dashboard and separate-host iPhone tests. The installed watchdog passed real stopped-app and isolated network-loss checks. Commissioning checkpoints below retain their dates; the dashboard records the current saved evidence, approval and activation separately. [dashboard-plan.md](dashboard-plan.md) retains the original requirements and historical implementation notes.
 
 Scope update, 2026-10-29: the owner withdrew the 5 kW solar-power-cap requirement. Solar charging follows native inverter and battery limits up to the existing 100% SOC target. The 2 kW grid setting, 50% grid target and 50% reserve remain required. This supersedes the older solar-cap requirements in the historical plan.
 
@@ -11,6 +11,10 @@ The owner accepted the smoked-glass / 1990s hi-fi direction on October 29. The i
 Redesign verification: type/syntax checks and the production build passed; 215 local unit tests passed with three Linux-only skips; all 178 PostgreSQL integration tests and all 54 browser tests passed. Browser coverage includes the new charging dialog, blocked starts, stale-reading stops, EN/BG layouts at 320–1440 px, existing commissioning/recovery controls, account security, notifications and tenant lifecycle flows.
 
 ## What is actually locked
+
+October 30 follow-up: the attended 56% test demonstrated house supply after returning to normal and discharge stopping at the 50% reserve. A read-only review of retained measurements also found all five physical observation signals across more than 24 hours with 93% coverage, including the previously missed grid-stop transition. The new stored-measurement review exposes these measured results for explicit password-confirmed evidence saving and approval. It excludes hold/unbound periods, preserves the existing thresholds, and does not relabel invalidated observation runs. A completed verified recovery command is separately available. See [controller.md](controller.md#commissioning) for the review and approval contract.
+
+The table below is the earlier October 29 checkpoint, before that review and the completed discharge test.
 
 The quoted Bulgarian monitoring-only notice is an unused translation entry. The current Controls page already shows individual blockers, their responsible actor and next action. The selected `bluesun-bse20kh3` profile is supported for the observed protocol 2.02 / DSP 1.57 / HMI 1.45.
 

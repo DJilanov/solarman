@@ -745,6 +745,10 @@ export function createApp({ pool, hub, config }) {
         })
       )
         return;
+      if (pathname === "/api/commissioning/history" && request.method === "GET") {
+        json(response, 200, await hub.commissioning.reviewHistory(session.tenant_id, runtime));
+        return;
+      }
       if (
         pathname === "/api/commissioning" &&
         ["GET", "POST"].includes(request.method)

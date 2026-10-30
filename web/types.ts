@@ -623,6 +623,19 @@ export interface CommissioningRequirement {
     "solar" | "discharge" | "gridCharge" | "gridStop" | "dayNight" | "recovery";
   passed: boolean;
 }
+export interface CommissioningHistoryReview {
+  source: "stored-measurements";
+  anchorRunId: string;
+  throughId: string;
+  hash: string;
+  startedAt: string;
+  checkedAt: string;
+  sampleCount: number;
+  excluded: number;
+  progress: ObservationProgress;
+  window: { spanSeconds: number; coverage: number; cycleObserved: boolean };
+  requirements: CommissioningRequirement[];
+}
 export interface CommissioningData {
   identity: ObservationIdentity | null;
   canPrepare: boolean;

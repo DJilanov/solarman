@@ -2012,5 +2012,15 @@
   "The selected target cannot be reached before the cheap period ends. Choose a lower target.": "The selected target cannot be reached before the cheap period ends. Choose a lower target.",
   "Completed days with enough readings will appear after the first saved forecast.": "Completed days with enough readings will appear after the first saved forecast.",
   "The forecast uses a conservative six-point discharge restart band above the reserve.": "The forecast uses a conservative six-point discharge restart band above the reserve.",
-  "Near the reserve, the inverter may wait for more charge before using the battery again. Grid import here supplies the home; the battery is idle.": "Near the reserve, the inverter may wait for more charge before using the battery again. Grid import here supplies the home; the battery is idle."
+  "Near the reserve, the inverter may wait for more charge before using the battery again. Grid import here supplies the home; the battery is idle.": "Near the reserve, the inverter may wait for more charge before using the battery again. Grid import here supplies the home; the battery is idle.",
+  "Review stored measurements": "Review stored measurements",
+  "Unable to review stored measurements": "Unable to review stored measurements",
+  "Reviewed {{count}} saved readings with {{coverage}}% coverage. {{excluded}} readings outside the normal policy were excluded.": "Reviewed {{count}} saved readings with {{coverage}}% coverage. {{excluded}} readings outside the normal policy were excluded.",
+  "This review uses measured values and the existing acceptance thresholds. It sends no inverter commands. Saving evidence and approving controls remain separate actions.": "This review uses measured values and the existing acceptance thresholds. It sends no inverter commands. Saving evidence and approving controls remain separate actions.",
+  "Choose a valid historical review boundary": "Choose a valid historical review boundary",
+  "No verified measurement history is available for this device": "No verified measurement history is available for this device",
+  "The historical review requires a bounded set of saved readings": "The historical review requires a bounded set of saved readings",
+  "Historical readings changed. Review them again before saving": "Historical readings changed. Review them again before saving",
+  "Review stored measurements before saving their evidence": "Review stored measurements before saving their evidence",
+  "Choose a valid observation evidence source": "Choose a valid observation evidence source"
 }

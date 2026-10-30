@@ -20,6 +20,7 @@ import type {
   PolicyObservationData,
   PolicyObservationRun,
   CommissioningData,
+  CommissioningHistoryReview,
   NotificationSettingsData,
   NotificationDelivery,
   OutageData,
@@ -4736,6 +4737,72 @@ test("commissioning previews unsaved evidence and selects verified recovery with
   expect(commands).toEqual([]);
   expect(separateObservationRequests).toBe(0);
   expect(errors).toEqual([]);
+});
+
+test("commissioning reviews stored history without commands and saves it separately from approval in Bulgarian", async ({ page }) => {
+  const overview = await homeConsoleFixture(page), now = new Date().toISOString();
+  const codes = ["solar", "discharge", "gridCharge", "gridStop", "dayNight", "recovery"] as const;
+  const identity = { accountId: randomUUID(), device: "history-browser-inverter", profile: "bluesun-bse20kh3",
+    model: "BSE20KH3", timezone: "Europe/Sofia", mapping: "browser-fixture", policy: "browser-fixture",
+    firmware: { protocol: "2.02", dsp: "1.57", hmi: "1.45" } };
+  const evidence = { count: 2, first: null, last: null, observedAt: now };
+  const progress: PolicyObservationRun["progress"] = {
+    version: 1, accepted: 417, rejected: 0, firstAt: new Date(Date.now() - 34 * 3600000).toISOString(),
+    last: { id: "616", at: now, receivedAt: now, source: "register", samplingSeconds: 300,
+      soc: 50, pvW: 0, loadW: 1000, gridW: 1100, batteryW: 0 },
+    coveredSeconds: 114076, solarSeen: true, nightSeen: true, approach: null,
+    solar: evidence, discharge: evidence, gridCharge: evidence, gridStop: evidence,
+  };
+  const review: CommissioningHistoryReview = { source: "stored-measurements", anchorRunId: randomUUID(),
+    throughId: "616", hash: "a".repeat(64), startedAt: progress.firstAt!, checkedAt: now,
+    sampleCount: 451, excluded: 34, progress, window: { spanSeconds: 122400, coverage: 0.932, cycleObserved: true },
+    requirements: codes.map(code => ({ code, passed: code !== "recovery" })) };
+  const recoveryId = randomUUID();
+  const run: NonNullable<CommissioningData["run"]> = {
+    id: randomUUID(), state: "preparing", revision: "1", createdAt: now, updatedAt: now,
+    attendedUntil: null, currentBinding: true, identity,
+    verification: { checkedAt: now, passed: true, checks: [], firmware: identity.firmware },
+    evidence: {}, requirements: codes.map(code => ({ code, passed: false })), events: [],
+  };
+  const data: CommissioningData = { identity, canPrepare: true, attendedMinutes: 30, run, history: [],
+    availableObservation: null, recoveryCommands: [{ id: recoveryId, action: "commission_recovery", completedAt: now }] };
+  const saved: unknown[] = [], commands: string[] = [];
+  page.on("request", request => { if(new URL(request.url()).pathname === "/api/commands" && request.method() === "POST") commands.push(request.url()); });
+  await page.route("**/api/overview", route => route.fulfill({ json: overview }));
+  await page.route("**/api/commissioning/history", route => route.fulfill({ json: review }));
+  await page.route("**/api/commissioning", async route => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as { action: string; observationSource: string; historyThroughId: string; historyHash: string; recoveryCommandId: string };
+      saved.push(body);
+      expect(body.action).toBe("evidence");
+      expect(body.observationSource).toBe(review.source);
+      expect(body.historyThroughId).toBe(review.throughId);
+      expect(body.historyHash).toBe(review.hash);
+      expect(body.recoveryCommandId).toBe(recoveryId);
+      run.requirements = codes.map(code => ({ code, passed: true }));
+      run.evidence = { observation: { id: randomUUID(), checkedAt: now, progress }, recovery: { commandId: recoveryId, completedAt: now } };
+      run.revision = "2";
+    }
+    await route.fulfill({ json: data });
+  });
+  await page.goto("/controls/commissioning");
+  await page.getByRole("button", { name: "Review stored measurements", exact: true }).click();
+  await expect(page.getByText("Reviewed 451 saved readings with 93.2% coverage. 34 readings outside the normal policy were excluded.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save current observation evidence", exact: true })).toBeDisabled();
+  expect(saved).toEqual([]);
+  await page.locator(".language-switch select").selectOption("bg");
+  await page.setViewportSize({ width: 320, height: 1000 });
+  await expect(page.getByText("Прегледани са 451 запазени измервания с 93,2% покритие. Изключени са 34 измервания извън нормалния режим.", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByLabel("Потвърден резултат от изключване (незадължително)", { exact: true }).selectOption(recoveryId);
+  await page.getByLabel("Текуща парола за таблото", { exact: true }).fill("history-browser-fixture");
+  await page.getByRole("button", { name: "Запиши текущите доказателства от наблюдението", exact: true }).click();
+  await expect(page.getByText("6 от 6 проверки са записани", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Текуща парола за таблото", { exact: true })).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Одобри автоматичното управление", exact: true })).toBeDisabled();
+  expect(run.state).toBe("preparing");
+  expect(saved).toHaveLength(1);
+  expect(commands).toEqual([]);
 });
 
 test("notifications explain the real empty state and never infer a destination from the login email", async ({
