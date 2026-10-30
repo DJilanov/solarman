@@ -12,11 +12,13 @@ SOLARMAN OpenAPI **App ID / App Secret** activation is required in addition to a
 
 ## Dashboard
 
-- **Home:** battery charge display, solar/home/grid/battery flow, **Prepare for an outage**, home policy and daily estimates. The reserve panel offers a 50–100% target slider, explicit review, saved state and **Return to normal**. A saved target remains distinct from current battery readings.
+- **Home:** live battery charge, solar/home/grid/battery flow and **Prepare for an outage** come first; energy planning, home policy and daily estimates follow. The reserve panel offers a 50–100% target slider, explicit review, saved state and **Return to normal**. A saved target remains distinct from current battery readings.
 - **Automations:** normal solar/reserve policy and a separate outage reserve. Ordinary automation pauses during an outage hold. Return to normal restores the saved native settings; regular app automation stays paused.
 - **Energy assistant:** outage estimates by duration, manual appliance reminders, morning/evening briefings, weekly costs and forecast/battery learning. See [the energy assistant guide](docs/energy-assistant.md).
 - **History:** energy charts, date ranges, daily estimates, coverage and full-resolution CSV export under **Energy history**; searchable commands and device write evidence under **Actions and events**.
 - **Settings:** provider connection, device discovery, compatibility profile, timezone, notifications, account security and data/privacy. API usage, lifecycle actions and raw provider readings are behind explicit disclosures. Platform administrators manage users and homes separately from the four everyday navigation items.
+
+The sidebar's **My account** shortcut opens account security; its separate **Sign out** button ends the session. Navigation labels stay complete in English and Bulgarian, including while the automation status dot is present. The phone header provides larger language and sign-out targets, and short desktop windows retain access to account controls.
 
 **Automations → Continue setup** guides connection, read-only device verification and physical commissioning/approval. Setup explains the next requirement and retains detailed checks under Advanced. Readiness, current-password confirmation, attendance, device-bound evidence and activation requirements remain enforced by the server. The redesign does not complete commissioning or enable hardware writes on its own.
 

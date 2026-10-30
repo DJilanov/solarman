@@ -569,7 +569,7 @@ function Dashboard({
               {session.tenant.name.slice(0, 1).toUpperCase()}
             </span>
             <div>
-              <strong>{session.tenant.name}</strong>
+              <strong title={session.tenant.name}>{session.tenant.name}</strong>
               <small>{tr("My home")}</small>
             </div>
           </div>
@@ -582,10 +582,10 @@ function Dashboard({
                 className={matchesSection(to) ? "nav-item active" : "nav-item"}
                 aria-current={matchesSection(to) ? "page" : undefined}
               >
-                <Icon size={18} strokeWidth={1.6} />
+                <Icon size={18} strokeWidth={1.6} aria-hidden="true" />
                 <span>{tr(label)}</span>
                 {to === "/controls" && data?.controller.mode === "active" && (
-                  <i className="nav-active-dot" />
+                  <i className="nav-active-dot" aria-hidden="true" />
                 )}
               </Link>
             ))}
@@ -603,22 +603,31 @@ function Dashboard({
                 {tr("Solar keeps charging when timed grid charging is off.")}
               </p>
             </div>
-            <button
-              className="user-profile"
-              onClick={() => {
-                void logout();
-              }}
-              title={tr("Sign out")}
-            >
-              <span className="user-avatar">
-                {session.user.email[0].toUpperCase()}
-              </span>
-              <span>
-                <strong>{tr("My account")}</strong>
-                <small>{session.user.email}</small>
-              </span>
-              <LogOut size={16} />
-            </button>
+            <div className="sidebar-account">
+              <Link
+                className="user-profile"
+                to="/settings/security"
+                title={tr("Account security")}
+              >
+                <span className="user-avatar" aria-hidden="true">
+                  {session.user.email[0].toUpperCase()}
+                </span>
+                <span>
+                  <strong>{tr("My account")}</strong>
+                  <small title={session.user.email}>{session.user.email}</small>
+                </span>
+              </Link>
+              <button
+                className="sidebar-logout"
+                aria-label={tr("Sign out")}
+                title={tr("Sign out")}
+                onClick={() => {
+                  void logout();
+                }}
+              >
+                <LogOut size={17} aria-hidden="true" />
+              </button>
+            </div>
           </div>
         </aside>
         <div className="main-shell">

@@ -468,9 +468,6 @@ strong {
   white-space: nowrap;
   margin-top: 4px;
 }
-.user-profile > svg {
-  color: #80929d;
-}
 .user-avatar {
   background: #29343c;
   color: #c3d1da;
@@ -2802,9 +2799,6 @@ html[lang="bg"] .button {
   line-height: 1.4;
   min-height: 40px;
   height: auto;
-}
-html[lang="bg"] .nav-item span {
-  overflow-wrap: anywhere;
 }
 html[lang="bg"] .automation-route {
   flex-wrap: wrap;

@@ -208,7 +208,6 @@ export default function HomePage(): ReactNode {
           timezone={session.tenant.timezone}
         />
       )}
-      <EnergySummary />
       <div className="home-console-grid">
         <section
           className={`panel console-battery ${stale ? "reading-stale" : ""}`}
@@ -306,6 +305,9 @@ export default function HomePage(): ReactNode {
             </span>
           </div>
         </Panel>
+      </div>
+      <EnergySummary />
+      <div className="home-console-grid">
         <Panel
           title={tr("Your home policy")}
           className="console-policy"
