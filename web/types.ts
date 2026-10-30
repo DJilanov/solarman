@@ -451,7 +451,17 @@ export interface CommandDetails extends Command, WriteHistoryData {
         | "ac_charge_changed"
         | "write_acknowledgement_audit_recovered"
         | "write_journal_unavailable"
-        | "firmware_verification_invalidated";
+        | "firmware_verification_invalidated"
+        | "inverter_clock_check_failed";
+      clock?: {
+        checkedAt: string;
+        collectedAt: string | null;
+        receivedAt: string | null;
+        timezone: string | null;
+        reportedTime: string | null;
+        skewSeconds: number | null;
+        maximumSkewSeconds: number | null;
+      } | null;
       enabled: boolean | null;
       reason:
         | "native_audit"

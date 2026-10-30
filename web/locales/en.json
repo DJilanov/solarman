@@ -2152,5 +2152,22 @@
   "Battery power is an unconfirmed planning assumption. Review the installation settings before relying on this estimate.": "Battery power is an unconfirmed planning assumption. Review the installation settings before relying on this estimate.",
   "Fresh battery readings are required before scheduling an appliance": "Fresh battery readings are required before scheduling an appliance",
   "Expected solar today": "Expected solar today",
-  "Plans are calculated individually. Avoid overlapping appliances when relying on the same solar surplus.": "Plans are calculated individually. Avoid overlapping appliances when relying on the same solar surplus."
+  "Plans are calculated individually. Avoid overlapping appliances when relying on the same solar surplus.": "Plans are calculated individually. Avoid overlapping appliances when relying on the same solar surplus.",
+  "PREVIEW": "PREVIEW",
+  "Decrease charge target": "Decrease charge target",
+  "Increase charge target": "Increase charge target",
+  "Your battery is already at this level. Saving will reserve the energy it already has.": "Your battery is already at this level. Saving will reserve the energy it already has.",
+  "This reading is old. The marker returns when fresh battery readings arrive.": "This reading is old. The marker returns when fresh battery readings arrive.",
+  "Normal settings are restored: grid target 50%, solar ceiling 100%. Home automation is running.": "Normal settings are restored: grid target 50%, solar ceiling 100%. Home automation is running.",
+  "Solar ceiling": "Solar ceiling",
+  "Reserve duration": "Reserve duration",
+  "Until you return to normal": "Until you return to normal",
+  "Inverter clock check failed": "Inverter clock check failed",
+  "These are the timestamps captured when the check failed. A later successful reading does not replace them.": "These are the timestamps captured when the check failed. A later successful reading does not replace them.",
+  "Check performed": "Check performed",
+  "Provider collection time": "Provider collection time",
+  "Received by the dashboard": "Received by the dashboard",
+  "Reported inverter time": "Reported inverter time",
+  "Measured clock difference": "Measured clock difference",
+  "Allowed clock difference": "Allowed clock difference"
 }

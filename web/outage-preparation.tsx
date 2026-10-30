@@ -8,8 +8,11 @@ import {
 import { Link } from "react-router-dom";
 import {
   ArrowLeft,
+  ArrowRight,
   BatteryCharging,
   Check,
+  Clock3,
+  LoaderCircle,
   PlugZap,
   ShieldCheck,
   Sun,
@@ -22,6 +25,7 @@ import { tr } from "./i18n";
 import type { Command, OutageData, OutagePreparation } from "./types";
 import { readingIsStale } from "./reading-freshness";
 import { OutageCalculator } from "./outage-calculator";
+import { ChargeTarget } from "./charge-target";
 
 const openStates = new Set([
   "queued",
@@ -357,61 +361,49 @@ export default function OutagePreparationPage(): ReactNode {
           className="outage-selector"
           action={<ShieldCheck size={24} />}
         >
-          <OutageCalculator onTarget={value => { setTarget(value); setConfirm(null); }} />
-          <div className="outage-dial" aria-hidden="true">
-            <div>
-              <strong>
-                {formatNumber(target)}
-                <small>%</small>
-              </strong>
-              <span>{tr("YOUR TARGET")}</span>
-            </div>
-          </div>
-          <label className="outage-range-label" htmlFor="outage-target">
-            {tr("Battery target")}:{" "}
-            <output htmlFor="outage-target">{formatNumber(target)}%</output>
-          </label>
-          <input
+          <ChargeTarget
             id="outage-target"
-            className="outage-range"
-            type="range"
+            label={tr("Battery target")}
+            value={target}
             min={data.minTarget}
             max={data.maxTarget}
-            step="1"
-            value={target}
-            disabled={pending}
-            onChange={(event) => {
-              setTarget(Number(event.target.value));
+            disabled={locked || busy}
+            dial
+            currentSoc={fresh ? sample?.soc : undefined}
+            onChange={(value) => {
+              setTarget(value);
               setConfirm(null);
             }}
-            aria-valuetext={`${target}%`}
           />
-          <div className="outage-range-limits">
-            <span>50%</span>
-            <span>100%</span>
-          </div>
-          <div className="outage-presets" aria-label={tr("Suggested targets")}>
-            {[80, 90, 100].map((value) => (
-              <button
-                key={value}
-                className={`button ${target === value ? "primary" : "secondary"}`}
-                aria-pressed={target === value}
-                disabled={pending}
-                onClick={() => {
-                  setTarget(value);
-                  setConfirm(null);
-                }}
-              >
-                {value}%
-              </button>
-            ))}
-          </div>
           <div className="outage-current">
-            <span>{tr("Last recorded level")}</span>
+            <span>
+              <span
+                className={`outage-reading-dot${fresh ? " fresh" : ""}`}
+                aria-hidden="true"
+              />
+              {tr("Last recorded level")}
+            </span>
             <strong>{sample ? `${formatNumber(sample.soc)}%` : "—"}</strong>
-            <small>{sample ? age(sample.at) : tr("No readings yet")}</small>
+            <small>
+              <Clock3 size={13} aria-hidden="true" />
+              {sample ? age(sample.at) : tr("No readings yet")}
+            </small>
           </div>
-          <p className="muted">
+          {fresh && sample.soc >= target && (
+            <p className="outage-target-hint">
+              {tr(
+                "Your battery is already at this level. Saving will reserve the energy it already has.",
+              )}
+            </p>
+          )}
+          {sample && !fresh && (
+            <p className="outage-target-hint">
+              {tr(
+                "This reading is old. The marker returns when fresh battery readings arrive.",
+              )}
+            </p>
+          )}
+          <p className="fine-print outage-preview-note">
             {tr(
               "Changing this slider does not send a command. Review and save to apply your target.",
             )}
@@ -422,7 +414,16 @@ export default function OutagePreparationPage(): ReactNode {
             onClick={() => setConfirm("prepare")}
           >
             {tr("Review and save")}
+            <ArrowRight size={16} aria-hidden="true" />
           </button>
+          <OutageCalculator
+            onTarget={(value) => {
+              setTarget(
+                Math.max(data.minTarget, Math.min(data.maxTarget, value)),
+              );
+              setConfirm(null);
+            }}
+          />
         </Panel>
       )}
       <div className="outage-explainer">
@@ -457,7 +458,9 @@ export default function OutagePreparationPage(): ReactNode {
       {!active && preparation?.state === "restored" && (
         <Notice tone="info">
           {tr(
-            "Normal settings are restored: grid target 50%, solar ceiling 100%. App automation remains paused.",
+            overview?.controller.paused === false
+              ? "Normal settings are restored: grid target 50%, solar ceiling 100%. Home automation is running."
+              : "Normal settings are restored: grid target 50%, solar ceiling 100%. App automation remains paused.",
           )}
         </Notice>
       )}
@@ -570,6 +573,22 @@ export default function OutagePreparationPage(): ReactNode {
                   : "This stays active until you return to normal. Reaching the target, midnight or a dashboard restart will not end the reserve.",
             )}
           </p>
+          {confirm !== "restore" && (
+            <div className="outage-review-summary">
+              <span>
+                {tr("Grid charging target")}
+                <strong>{formatNumber(target)}%</strong>
+              </span>
+              <span>
+                {tr("Solar ceiling")}
+                <strong>100%</strong>
+              </span>
+              <span>
+                {tr("Reserve duration")}
+                <strong>{tr("Until you return to normal")}</strong>
+              </span>
+            </div>
+          )}
           <div className="outage-confirm-actions">
             <button
               className="button secondary"
@@ -585,6 +604,13 @@ export default function OutagePreparationPage(): ReactNode {
                 void save();
               }}
             >
+              {pending && (
+                <LoaderCircle
+                  className="control-saving-icon"
+                  size={16}
+                  aria-hidden="true"
+                />
+              )}
               {tr(
                 pending
                   ? "Saving…"

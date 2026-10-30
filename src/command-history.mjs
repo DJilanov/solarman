@@ -19,6 +19,36 @@ function timestamp(value) {
     : null;
 }
 
+/** @param {Record<string,unknown>} event @returns {object|null} */
+function clockFailure(event) {
+  const checkedAt = timestamp(event.checkedAt);
+  if (!checkedAt) return null;
+  let timezone = null;
+  if (typeof event.timezone === "string" && event.timezone.length <= 100) {
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: event.timezone }).format();
+      timezone = event.timezone;
+    } catch {
+      /* An invalid saved zone stays unavailable. */
+    }
+  }
+  const skew = number(event.skewSeconds),
+    maximum = number(event.maximumSkewSeconds);
+  return {
+    checkedAt,
+    collectedAt: timestamp(event.collectedAt),
+    receivedAt: timestamp(event.receivedAt),
+    timezone,
+    reportedTime:
+      typeof event.reportedTime === "string" &&
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(event.reportedTime)
+        ? event.reportedTime
+        : null,
+    skewSeconds: skew !== null && skew >= 0 ? skew : null,
+    maximumSkewSeconds: maximum !== null && maximum >= 0 ? maximum : null,
+  };
+}
+
 /** @param {import('pg').Pool} pool @param {string} tenantId @param {{executionId?: string | null, offset: number}} options @returns {Promise<object>} */
 export async function writeHistory(
   pool,
@@ -130,10 +160,14 @@ export function historyEvidence(value) {
           "write_acknowledgement_audit_recovered",
           "write_journal_unavailable",
           "firmware_verification_invalidated",
+          "inverter_clock_check_failed",
         ].includes(event.event),
       )
       .map((event) => ({
         code: event.event,
+        ...(event.event === "inverter_clock_check_failed"
+          ? { clock: clockFailure(event) }
+          : {}),
         enabled: typeof event.enabled === "boolean" ? event.enabled : null,
         reason: [
           "native_audit",

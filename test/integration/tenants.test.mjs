@@ -1931,6 +1931,83 @@ test("a failed native policy audit pauses automation instead of repeatedly tryin
   }
 });
 
+test("a failed clock check preserves its original evidence through cleanup and later successful readings", async () => {
+  const { runtime, calls } = await armedFixture();
+  const collectedAt = Math.floor((Date.now() - 240000) / 1000) * 1000;
+  try {
+    runtime.client.api = async (path) =>
+      path === "/account/v1.0/balance"
+        ? { total: 200000 }
+        : providerPayload({
+            device: runtime.device,
+            collectedAt,
+            values: { SYSTIM1: "2000-01-01 00:00:00" },
+          });
+    const disable = runtime.controller.disable;
+    runtime.controller.disable = async () => {
+      const flags = await disable();
+      runtime.clock = {
+        passed: true,
+        skewSeconds: 10,
+        reportedTime: "2026-10-30 12:56:00",
+        collectedAt: new Date().toISOString(),
+      };
+      return flags;
+    };
+    await runtime.evaluate();
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.inhibitStarts, true);
+    assert.equal(runtime.status().control.canStart, false);
+    const job = (
+      await pool.query(
+        "SELECT id,status,detail FROM command_executions WHERE tenant_id=$1 AND action='evaluate' ORDER BY created_at DESC LIMIT 1",
+        [runtime.tenantId],
+      )
+    ).rows[0];
+    assert.equal(job.status, "failed");
+    const recorded = job.detail.events.find(
+      (event) => event.event === "inverter_clock_check_failed",
+    );
+    assert.equal(recorded.collectedAt, new Date(collectedAt).toISOString());
+    assert.equal(recorded.timezone, "Europe/Sofia");
+    assert.equal(recorded.reportedTime, "2000-01-01 00:00:00");
+    assert.ok(recorded.skewSeconds > 120);
+    assert.equal(recorded.maximumSkewSeconds, 120);
+    assert.ok(Date.parse(recorded.receivedAt) >= collectedAt);
+    assert.equal(
+      runtime.clock.passed,
+      true,
+      "cleanup can replace the latest in-memory clock observation",
+    );
+    const history = await (
+      await fetchApi(`/activity/${job.id}`, { auth: alpha })
+    ).json();
+    assert.equal(
+      history.evidence.events.find(
+        (event) => event.code === "inverter_clock_check_failed",
+      ).clock.skewSeconds,
+      recorded.skewSeconds,
+    );
+    assert.ok(calls.includes("disable"));
+    runtime.client.api = async () =>
+      providerPayload({ device: runtime.device });
+    await runtime.collect();
+    const retained = (
+      await pool.query("SELECT detail FROM command_executions WHERE id=$1", [
+        job.id,
+      ])
+    ).rows[0].detail;
+    assert.deepEqual(
+      retained.events.find(
+        (event) => event.event === "inverter_clock_check_failed",
+      ),
+      recorded,
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("supervision caches are rebuilt with native checks after restart", async () => {
   const { runtime, snapshot } = await armedFixture();
   let restarted;

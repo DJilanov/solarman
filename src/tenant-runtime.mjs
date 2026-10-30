@@ -706,6 +706,21 @@ export class TenantRuntime {
       collectedAt: reading.collectedAt.toISOString(),
     };
     this.telemetry.clock = this.clock;
+    if (!mapped.clock.passed)
+      this.events.push({
+        event: "inverter_clock_check_failed",
+        checkedAt: new Date().toISOString(),
+        collectedAt: reading.collectedAt.toISOString(),
+        receivedAt: this.telemetry.receivedAt,
+        timezone: this.timezone,
+        reportedTime: /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
+          mapped.clock.reportedTime ?? "",
+        )
+          ? mapped.clock.reportedTime
+          : null,
+        skewSeconds: mapped.clock.skewSeconds,
+        maximumSkewSeconds: INVERTER_CLOCK_MAX_SKEW_SECONDS,
+      });
     return { ...mapped, verificationInvalidated };
   }
 

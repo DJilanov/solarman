@@ -34,6 +34,7 @@ test("every literal translation used by the interface exists in both catalogues"
     "power-explanation.tsx",
     "grid-charge.tsx",
     "outage-preparation.tsx",
+    "charge-target.tsx",
     "automations.tsx",
     "history-navigation.tsx",
     "components.tsx",

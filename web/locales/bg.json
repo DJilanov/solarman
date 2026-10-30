@@ -2152,5 +2152,22 @@
   "Battery power is an unconfirmed planning assumption. Review the installation settings before relying on this estimate.": "Мощността на батерията е непотвърдено допускане за планиране. Прегледай настройките на инсталацията, преди да разчиташ на оценката.",
   "Fresh battery readings are required before scheduling an appliance": "Нужни са актуални данни за батерията, преди да планираш уред",
   "Expected solar today": "Очаквана слънчева енергия днес",
-  "Plans are calculated individually. Avoid overlapping appliances when relying on the same solar surplus.": "Всеки план се изчислява отделно. Избягвай едновременно включване на уреди, когато разчиташ на един и същ слънчев излишък."
+  "Plans are calculated individually. Avoid overlapping appliances when relying on the same solar surplus.": "Всеки план се изчислява отделно. Избягвай едновременно включване на уреди, когато разчиташ на един и същ слънчев излишък.",
+  "PREVIEW": "ПРЕГЛЕД",
+  "Decrease charge target": "Намали целта за зареждане",
+  "Increase charge target": "Увеличи целта за зареждане",
+  "Your battery is already at this level. Saving will reserve the energy it already has.": "Батерията вече е достигнала тази цел. При запис ще запазиш наличната ѝ енергия в резерв.",
+  "This reading is old. The marker returns when fresh battery readings arrive.": "Това отчитане е старо. Маркерът ще се появи отново при актуални данни за батерията.",
+  "Normal settings are restored: grid target 50%, solar ceiling 100%. Home automation is running.": "Нормалните настройки са възстановени: цел от мрежата 50%, соларен таван 100%. Автоматичното управление работи.",
+  "Solar ceiling": "Соларен таван",
+  "Reserve duration": "Продължителност на резерва",
+  "Until you return to normal": "Докато върнеш нормалния режим",
+  "Inverter clock check failed": "Проверката на часовника на инвертора е неуспешна",
+  "These are the timestamps captured when the check failed. A later successful reading does not replace them.": "Това са времевите данни, запазени при неуспешната проверка. По-късно успешно отчитане не ги заменя.",
+  "Check performed": "Извършена проверка",
+  "Provider collection time": "Час на отчитане от доставчика",
+  "Received by the dashboard": "Получено в таблото",
+  "Reported inverter time": "Час, отчетен от инвертора",
+  "Measured clock difference": "Измерена разлика в часовника",
+  "Allowed clock difference": "Допустима разлика в часовника"
 }

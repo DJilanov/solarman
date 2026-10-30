@@ -125,3 +125,51 @@ test("invalid numeric and boolean evidence is never coerced into a confirmed ass
   assert.equal(result.decision.batteryW, null);
   assert.equal(result.decision.dryRun, null);
 });
+
+test("failed clock evidence retains source timestamps and only exposes validated diagnostic fields", () => {
+  const event = {
+    event: "inverter_clock_check_failed",
+    checkedAt: "2026-10-30T10:55:34Z",
+    collectedAt: "2026-10-30T10:49:23Z",
+    receivedAt: "2026-10-30T10:55:33Z",
+    reportedTime: "2026-10-30 12:55:54",
+    timezone: "Europe/Sofia",
+    skewSeconds: 391,
+    maximumSkewSeconds: 120,
+    password: "must-stay-private",
+    rawProviderData: "must-stay-private",
+  };
+  const result = historyEvidence({ events: [event] });
+  assert.deepEqual(result.events[0].clock, {
+    checkedAt: "2026-10-30T10:55:34.000Z",
+    collectedAt: "2026-10-30T10:49:23.000Z",
+    receivedAt: "2026-10-30T10:55:33.000Z",
+    reportedTime: "2026-10-30 12:55:54",
+    timezone: "Europe/Sofia",
+    skewSeconds: 391,
+    maximumSkewSeconds: 120,
+  });
+  assert.ok(!JSON.stringify(result).includes("must-stay-private"));
+  const malformed = historyEvidence({
+    events: [
+      {
+        ...event,
+        timezone: "invalid-zone",
+        skewSeconds: "391",
+        maximumSkewSeconds: Infinity,
+        reportedTime: "must-stay-private",
+        collectedAt: "invalid",
+      },
+    ],
+  }).events[0].clock;
+  assert.equal(malformed.timezone, null);
+  assert.equal(malformed.skewSeconds, null);
+  assert.equal(malformed.maximumSkewSeconds, null);
+  assert.equal(malformed.reportedTime, null);
+  assert.equal(malformed.collectedAt, null);
+  assert.equal(
+    historyEvidence({ events: [{ ...event, checkedAt: "invalid" }] }).events[0]
+      .clock,
+    null,
+  );
+});

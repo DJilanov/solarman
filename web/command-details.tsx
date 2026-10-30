@@ -183,6 +183,7 @@ export default function CommandDetailsPage(): ReactNode {
     write_journal_unavailable: "Write journal was unavailable",
     firmware_verification_invalidated:
       "Firmware verification changed; workspace control was revoked",
+    inverter_clock_check_failed: "Inverter clock check failed",
   };
   const assessmentLabels = {
     native_audit: "Periodic or required native check",
@@ -394,6 +395,75 @@ export default function CommandDetailsPage(): ReactNode {
                     )}
                     {event.enabled !== null && (
                       <span>{tr(event.enabled ? "Enabled" : "Disabled")}</span>
+                    )}
+                    {event.clock && (
+                      <div className="command-clock-evidence">
+                        <p>
+                          {tr(
+                            "These are the timestamps captured when the check failed. A later successful reading does not replace them.",
+                          )}
+                        </p>
+                        <dl className="command-facts">
+                          <div>
+                            <dt>{tr("Check performed")}</dt>
+                            <dd>
+                              {when(event.clock.checkedAt, timezone, "medium")}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{tr("Provider collection time")}</dt>
+                            <dd>
+                              {event.clock.collectedAt
+                                ? when(
+                                    event.clock.collectedAt,
+                                    timezone,
+                                    "medium",
+                                  )
+                                : tr("Unavailable")}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{tr("Received by the dashboard")}</dt>
+                            <dd>
+                              {event.clock.receivedAt
+                                ? when(
+                                    event.clock.receivedAt,
+                                    timezone,
+                                    "medium",
+                                  )
+                                : tr("Unavailable")}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{tr("Reported inverter time")}</dt>
+                            <dd>
+                              {event.clock.reportedTime ?? tr("Unavailable")}
+                              {event.clock.timezone &&
+                                ` · ${event.clock.timezone}`}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{tr("Measured clock difference")}</dt>
+                            <dd>
+                              {event.clock.skewSeconds === null
+                                ? tr("Unavailable")
+                                : tr("{{count}} seconds", {
+                                    count: event.clock.skewSeconds,
+                                  })}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{tr("Allowed clock difference")}</dt>
+                            <dd>
+                              {event.clock.maximumSkewSeconds === null
+                                ? tr("Unavailable")
+                                : tr("{{count}} seconds", {
+                                    count: event.clock.maximumSkewSeconds,
+                                  })}
+                            </dd>
+                          </div>
+                        </dl>
+                      </div>
                     )}
                   </li>
                 ))}

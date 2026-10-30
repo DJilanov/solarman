@@ -24,6 +24,7 @@ import type {
   NotificationSettingsData,
   NotificationDelivery,
   OutageData,
+  CommandDetails,
 } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
@@ -116,6 +117,206 @@ async function outageConsoleFixture(
   await page.route("**/api/outage", (route) => route.fulfill({ json: outage }));
   return { overview, outage };
 }
+
+test("outage dial, slider and presets stay in sync with precise accessible controls and reduced motion", async ({
+  page,
+}) => {
+  const { overview } = await outageConsoleFixture(page);
+  const mutations: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/api\/(commands|outage\/(prepare|restore))$/.test(
+        new URL(request.url()).pathname,
+      )
+    )
+      mutations.push(request.url());
+  });
+  await page.goto("/controls/outage");
+  const range = page.getByRole("slider", { name: /Battery target/ });
+  const ring = page.locator(".charge-target-progress");
+  await expect(range).toHaveValue("90");
+  await expect(ring).toHaveAttribute("stroke-dashoffset", "10");
+  await expect(page.locator(".charge-target-marker")).toHaveCount(1);
+  const initialColour = await ring.evaluate(
+    (element) => getComputedStyle(element).stroke,
+  );
+  await page.getByRole("button", { name: "80%", exact: true }).click();
+  await expect(range).toHaveValue("80");
+  await expect(ring).toHaveAttribute("stroke-dashoffset", "20");
+  await expect(
+    page.getByRole("button", { name: "80%", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect
+    .poll(() => ring.evaluate((element) => getComputedStyle(element).stroke))
+    .not.toBe(initialColour);
+  await page
+    .getByRole("button", { name: "Increase charge target", exact: true })
+    .click();
+  await expect(range).toHaveValue("81");
+  await range.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(range).toHaveValue("82");
+  await page.keyboard.press("Home");
+  await expect(range).toHaveValue("50");
+  await expect(
+    page.getByRole("button", { name: "Decrease charge target", exact: true }),
+  ).toBeDisabled();
+  await page.keyboard.press("End");
+  await expect(range).toHaveValue("100");
+  await expect(ring).toHaveAttribute("stroke-dashoffset", "0");
+  await expect(
+    page.getByRole("button", { name: "Increase charge target", exact: true }),
+  ).toBeDisabled();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(
+    await ring.evaluate(
+      (element) => getComputedStyle(element).transitionDuration,
+    ),
+  ).toBe("0s");
+  await page.locator(".language-switch select").selectOption("bg");
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  }
+  await page.setViewportSize({ width: 390, height: 1000 });
+  await page.screenshot({
+    path: "test-results/outage-dial-mobile-bg.png",
+    fullPage: true,
+  });
+  if (!overview.latest) throw Error("Missing reading fixture");
+  overview.latest.at = new Date(Date.now() - 3600000).toISOString();
+  await page.reload();
+  await expect(page.locator(".charge-target-marker")).toHaveCount(0);
+  await expect(
+    page.getByText("Това отчитане е старо.", { exact: false }),
+  ).toBeVisible();
+  expect(mutations).toEqual([]);
+});
+
+test("a restored outage message follows actual automation state and preview review explains the chosen target", async ({
+  page,
+}) => {
+  const { overview, outage } = await outageConsoleFixture(page);
+  outage.preparation = {
+    id: randomUUID(),
+    state: "restored",
+    revision: "1",
+    targetSoc: 90,
+    normalTargetSoc: 50,
+    test: false,
+    attendedUntil: null,
+    lastVerifiedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    endedAt: new Date().toISOString(),
+    error: null,
+    proof: {},
+    approvedAt: null,
+    canApprove: false,
+  };
+  overview.controller.paused = false;
+  await page.goto("/controls/outage");
+  await expect(
+    page.getByText("Normal settings are restored:", { exact: false }),
+  ).toContainText("Home automation is running.");
+  await page
+    .getByRole("button", { name: "Review and save", exact: true })
+    .click();
+  const review = page.getByRole("region", {
+    name: "Confirm battery control",
+    exact: true,
+  });
+  await expect(review.locator(".outage-review-summary")).toContainText("90%");
+  await expect(review.locator(".outage-review-summary")).toContainText("100%");
+  await expect(review.locator(".outage-review-summary")).toContainText(
+    "Until you return to normal",
+  );
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  overview.controller.paused = true;
+  if (overview.latest) overview.latest.soc = 95;
+  await page.reload();
+  await expect(
+    page.getByText("Normal settings are restored:", { exact: false }),
+  ).toContainText("App automation remains paused.");
+  await expect(
+    page.getByText("Your battery is already at this level.", { exact: false }),
+  ).toBeVisible();
+});
+
+test("clock failure history shows the captured timestamps and tolerance in Bulgarian on a phone", async ({
+  page,
+}) => {
+  await signIn(page);
+  const id = randomUUID();
+  const detail: CommandDetails = {
+    id,
+    action: "evaluate",
+    actor: "Automation",
+    status: "failed",
+    message: "The inverter clock must match the workspace timezone",
+    device: "TEST-BLUESUN",
+    created_at: "2026-10-30T10:55:32Z",
+    completed_at: "2026-10-30T10:55:36Z",
+    writes: [],
+    hasMoreWrites: false,
+    offset: 0,
+    evidence: {
+      decision: null,
+      verification: null,
+      events: [
+        {
+          code: "inverter_clock_check_failed",
+          enabled: null,
+          reason: null,
+          clock: {
+            checkedAt: "2026-10-30T10:55:34Z",
+            collectedAt: "2026-10-30T10:49:23Z",
+            receivedAt: "2026-10-30T10:55:33Z",
+            timezone: "Europe/Sofia",
+            reportedTime: "2026-10-30 12:55:54",
+            skewSeconds: 391,
+            maximumSkewSeconds: 120,
+          },
+        },
+      ],
+    },
+  };
+  await page.route(`**/api/activity/${id}*`, (route) =>
+    route.fulfill({ json: detail }),
+  );
+  await page.goto(`/activity/${id}`);
+  await expect(
+    page.getByText("Inverter clock check failed", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".command-clock-evidence")).toContainText(
+    "391 seconds",
+  );
+  await page.locator(".language-switch select").selectOption("bg");
+  await page.setViewportSize({ width: 320, height: 950 });
+  await expect(
+    page.getByText("Проверката на часовника на инвертора е неуспешна", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.locator(".command-clock-evidence")).toContainText(
+    "391 секунди",
+  );
+  await expect(page.locator(".command-clock-evidence")).toContainText(
+    "120 секунди",
+  );
+  await expect(page.locator(".command-clock-evidence")).toContainText(
+    "Europe/Sofia",
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+});
 
 test("outage target slider needs review and explicit confirmation before sending the selected percentage", async ({
   page,

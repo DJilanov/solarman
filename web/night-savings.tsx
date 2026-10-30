@@ -19,6 +19,7 @@ import { tr, locale } from "./i18n";
 import { formatNumber, when } from "./format";
 import type { EnergyData, EnergyPlan } from "./energy-types";
 import { EnergySettings } from "./energy-settings";
+import { ChargeTarget } from "./charge-target";
 
 const reasons: Record<string, string> = {
   "night-not-cheaper":
@@ -476,21 +477,15 @@ export default function NightSavingsPage(): ReactNode {
                 )}
                 {adjust && (
                   <div className="energy-confirm">
-                    <label htmlFor="night-target">
-                      {tr("Choose the maximum grid target")}{" "}
-                      <strong>{formatNumber(target)}%</strong>
-                    </label>
-                    <input
+                    <ChargeTarget
                       id="night-target"
-                      ref={targetSlider}
-                      type="range"
+                      inputRef={targetSlider}
+                      label={tr("Choose the maximum grid target")}
+                      value={target}
                       min={profile.battery.reserveSoc}
                       max={profile.planning.maximumSoc}
-                      step={1}
-                      value={target}
-                      onChange={(event) =>
-                        setTarget(Number(event.target.value))
-                      }
+                      disabled={busy}
+                      onChange={setTarget}
                     />
                     <p className="fine-print">
                       {tr(
