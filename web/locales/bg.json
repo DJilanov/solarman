@@ -2010,5 +2010,7 @@
   "Night savings settings are being checked. Review the confirmed state.": "Настройките на нощната икономия се проверяват. Прегледайте потвърденото състояние.",
   "Shared command capacity cannot accept another night plan ending at this time": "Споделеният капацитет за команди не позволява още един нощен план, приключващ по това време",
   "The selected target cannot be reached before the cheap period ends. Choose a lower target.": "Избраната цел не може да бъде достигната преди края на евтината тарифа. Изберете по-ниска цел.",
-  "Completed days with enough readings will appear after the first saved forecast.": "Приключилите дни с достатъчно измервания ще се появят след първата запазена прогноза."
+  "Completed days with enough readings will appear after the first saved forecast.": "Приключилите дни с достатъчно измервания ще се появят след първата запазена прогноза.",
+  "The forecast uses a conservative six-point discharge restart band above the reserve.": "Прогнозата използва предпазно допускане за възобновяване на разреждането на шест процентни пункта над резерва.",
+  "Near the reserve, the inverter may wait for more charge before using the battery again. Grid import here supplies the home; the battery is idle.": "Близо до резерва инверторът може да изчаква по-висок заряд, преди отново да използва батерията. В този момент мрежата захранва дома, а батерията изчаква."
 }

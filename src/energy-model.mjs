@@ -10,8 +10,10 @@ import {
 } from "./energy-profile.mjs";
 
 export const NIGHT_RELEASE_MARGIN_MS = 5 * 60000;
+// This installed profile stayed idle at 53% and restarted after charging to 56%.
+const DISCHARGE_RESTART_MARGIN_SOC = 6;
 
-/** @param {object} profile @param {object[]} solar @param {object[]} demand @param {{from:number,to:number,soc:number,night?:{start:number,end:number},chargeStart?:number,targetSoc?:number,scenario?:'expected'|'conservative'}} options @returns {object} */
+/** @param {object} profile @param {object[]} solar @param {object[]} demand @param {{from:number,to:number,soc:number,initialDischarging?:boolean,night?:{start:number,end:number},chargeStart?:number,targetSoc?:number,scenario?:'expected'|'conservative',includeTimeline?:boolean}} options @returns {object} */
 export function simulateEnergyPlan(
   profile,
   solar,
@@ -20,6 +22,7 @@ export function simulateEnergyPlan(
     from,
     to,
     soc,
+    initialDischarging = false,
     night = null,
     chargeStart = null,
     targetSoc = null,
@@ -29,6 +32,8 @@ export function simulateEnergyPlan(
 ) {
   if (!Number.isFinite(soc) || soc < 0 || soc > 100)
     throw new Error("A valid current battery reading is required");
+  if (typeof initialDischarging !== "boolean")
+    throw new Error("A valid current battery discharge state is required");
   const capacity = profile.battery.capacityKwh,
     floor = (capacity * profile.battery.reserveSoc) / 100,
     chargeEfficiency = profile.battery.chargeEfficiency,
@@ -36,7 +41,12 @@ export function simulateEnergyPlan(
   if (!Number.isFinite(capacity) || capacity <= 0)
     throw new Error("Battery capacity is required");
   const target = (capacity * (targetSoc ?? profile.battery.reserveSoc)) / 100;
+  const restartSoc = Math.min(
+    100,
+    profile.battery.reserveSoc + DISCHARGE_RESTART_MARGIN_SOC,
+  );
   let energy = (capacity * soc) / 100,
+    dischargeEnabled = initialDischarging || soc >= restartSoc,
     importKwh = 0,
     exportKwh = 0,
     gridChargeKwh = 0,
@@ -111,7 +121,10 @@ export function simulateEnergyPlan(
       );
       energy += pvCharge * chargeEfficiency;
       surplus -= pvCharge;
-      const discharge = hold
+      if (hold) dischargeEnabled = false;
+      else if ((energy / capacity) * 100 >= restartSoc - 1e-9)
+        dischargeEnabled = true;
+      const discharge = hold || !dischargeEnabled
         ? 0
         : Math.min(
             deficit,
@@ -119,6 +132,7 @@ export function simulateEnergyPlan(
             Math.max(0, energy - floor) * dischargeEfficiency,
           );
       energy -= discharge / dischargeEfficiency;
+      if (energy <= floor + 1e-9) dischargeEnabled = false;
       deficit -= discharge;
       const gridTarget = hold && at >= chargeStart ? target : floor;
       const gridInput =
@@ -191,6 +205,7 @@ export function chooseEnergyPlan({
   demand,
   soc,
   now,
+  initialDischarging = false,
   targetOverride = null,
 }) {
   validateEnergyProfile(profile);
@@ -223,11 +238,13 @@ export function chooseEnergyPlan({
     from,
     to,
     soc,
+    initialDischarging,
   });
   const conservativeBaseline = simulateEnergyPlan(profile, solar, demand, {
     from,
     to,
     soc,
+    initialDischarging,
     scenario: "conservative",
   });
   const baselineObjective =
@@ -252,6 +269,7 @@ export function chooseEnergyPlan({
           from,
           to,
           soc,
+          initialDischarging,
           night,
           chargeStart: start,
           targetSoc: target,
@@ -267,6 +285,7 @@ export function chooseEnergyPlan({
           from,
           to,
           soc,
+          initialDischarging,
           night,
           chargeStart: start,
           targetSoc: target,
@@ -311,6 +330,7 @@ export function chooseEnergyPlan({
         from,
         to,
         soc,
+        initialDischarging,
         night,
         chargeStart: chosen.chargeStart,
         targetSoc: chosen.targetSoc,
@@ -321,6 +341,7 @@ export function chooseEnergyPlan({
         from,
         to,
         soc,
+        initialDischarging,
         night,
         chargeStart: chosen.chargeStart,
         targetSoc: chosen.targetSoc,
@@ -341,6 +362,7 @@ export function chooseEnergyPlan({
   if (profile.site.arrays.some((plane) => !plane.geometryConfirmed))
     reasons.push("assumed-roof-geometry");
   if (!profile.battery.powerConfirmed) reasons.push("assumed-battery-power");
+  reasons.push("assumed-discharge-restart");
   if (profile.tariff.cyclingCost === null) reasons.push("wear-not-priced");
   return {
     version: ENERGY_MODEL_VERSION,
@@ -382,6 +404,8 @@ export function chooseEnergyPlan({
       conservativeWeight: 0.35,
       releaseMarginMinutes: NIGHT_RELEASE_MARGIN_MS / 60000,
       savingsIncludeWear: profile.tariff.cyclingCost !== null,
+      dischargeRestartMarginSoc: DISCHARGE_RESTART_MARGIN_SOC,
+      initialDischarging,
     },
     estimated: true,
   };

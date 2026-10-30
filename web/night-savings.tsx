@@ -32,6 +32,8 @@ const reasons: Record<string, string> = {
     "The recommendation reaches your configured maximum target.",
   "assumed-roof-geometry": "Roof direction or tilt is still an assumption.",
   "assumed-battery-power": "Battery power limits are planning assumptions.",
+  "assumed-discharge-restart":
+    "The forecast uses a conservative six-point discharge restart band above the reserve.",
   "wear-not-priced":
     "The estimate excludes battery wear because no allowance is configured.",
   "manual-target":

@@ -2010,5 +2010,7 @@
   "Night savings settings are being checked. Review the confirmed state.": "Night savings settings are being checked. Review the confirmed state.",
   "Shared command capacity cannot accept another night plan ending at this time": "Shared command capacity cannot accept another night plan ending at this time",
   "The selected target cannot be reached before the cheap period ends. Choose a lower target.": "The selected target cannot be reached before the cheap period ends. Choose a lower target.",
-  "Completed days with enough readings will appear after the first saved forecast.": "Completed days with enough readings will appear after the first saved forecast."
+  "Completed days with enough readings will appear after the first saved forecast.": "Completed days with enough readings will appear after the first saved forecast.",
+  "The forecast uses a conservative six-point discharge restart band above the reserve.": "The forecast uses a conservative six-point discharge restart band above the reserve.",
+  "Near the reserve, the inverter may wait for more charge before using the battery again. Grid import here supplies the home; the battery is idle.": "Near the reserve, the inverter may wait for more charge before using the battery again. Grid import here supplies the home; the battery is idle."
 }

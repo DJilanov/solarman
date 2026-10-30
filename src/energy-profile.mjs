@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { energyMinute } from "./energy-time.mjs";
 
-export const ENERGY_MODEL_VERSION = "hourly-pv/load/tariff-battery/v1";
+export const ENERGY_MODEL_VERSION = "hourly-pv/load/tariff-battery/v2";
+// Battery dispatch revisions must preserve the identity of frozen PV forecasts.
+const SOLAR_SITE_VERSION = "hourly-pv/load/tariff-battery/v1";
 export const BULGARIAN_NIGHT_WINDOWS = Object.freeze([
   { months: [1, 2, 3, 11, 12], startMinute: 22 * 60, endMinute: 6 * 60 },
   { months: [4, 5, 6, 7, 8, 9, 10], startMinute: 23 * 60, endMinute: 7 * 60 },
@@ -353,7 +355,7 @@ function hashValue(value) {
 /** @param {object} profile @returns {string} */
 export function energySiteHash(profile) {
   return hashValue({
-    version: ENERGY_MODEL_VERSION,
+    version: SOLAR_SITE_VERSION,
     timezone: profile.timezone,
     site: profile.site,
   });

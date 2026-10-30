@@ -4,6 +4,7 @@ import { requireActiveTenant } from "./tenant-lifecycle.mjs";
 import { commissioningBinding } from "./commissioning-state.mjs";
 import {
   emptyEnergyProfile,
+  ENERGY_MODEL_VERSION,
   validateEnergyProfile,
   missingEnergyInputs,
   energyProfileHash,
@@ -453,6 +454,7 @@ export class EnergyPlanning {
             String(plan.settings_revision) !== String(settings.revision) ||
             plan.account_id !== runtime.account?.id ||
             plan.device !== runtime.device ||
+            plan.prediction.version !== ENERGY_MODEL_VERSION ||
             plan.binding !== binding ||
             !binding
           )
@@ -703,6 +705,7 @@ export class EnergyPlanning {
           solar: forecast.payload.slots,
           demand,
           soc: latest.soc,
+          initialDischarging: latest.battery_w >= 250,
           now,
           targetOverride: options.targetSoc ?? null,
         },

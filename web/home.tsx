@@ -293,6 +293,21 @@ export default function HomePage(): ReactNode {
           action={<span className="console-tag">{tr("Latest reading")}</span>}
         >
           <PowerFlow reading={latest} stale={stale} />
+          {latest &&
+            !stale &&
+            supported &&
+            !controller.outage?.active &&
+            latest.soc > 50 &&
+            latest.soc < 56 &&
+            Math.abs(latest.batteryW) <= 10 &&
+            latest.loadW - latest.pvW >= 250 &&
+            latest.gridW >= 250 && (
+              <p className="fine-print" role="status">
+                {tr(
+                  "Near the reserve, the inverter may wait for more charge before using the battery again. Grid import here supplies the home; the battery is idle.",
+                )}
+              </p>
+            )}
           <div className="console-reading-time">
             <Clock3 size={14} />
             <span>

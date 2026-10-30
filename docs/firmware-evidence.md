@@ -39,6 +39,12 @@ Older reports have no raw-word evidence. The interface labels those words as unr
 
 Verification also saves `diagnostics` with the battery state, grid voltages and exact native words already read from holding 206–207, 2500–2516 and 3005–3036, and input 507–554 and 2000–2008. This captures discharge-command settings and phase measurements for diagnosis without extra inverter requests or writes. Native measurement snapshots retain their existing raw holding/input ranges; provider-only samples have no fabricated native words. The six-word user-facing policy report remains unchanged. Raw values are diagnostic evidence, not confirmation that a generic register workbook applies to the installed firmware or that physical discharge has passed commissioning.
 
+## Attended discharge restart observation, 2026-10-30
+
+After an earlier 53% hold, this inverter remained idle above its 50% reserve with household demand and no solar. An attended temporary 56% charge at approximately 1.93 kW reached its target at 05:41:13 UTC. Normal settings were restored and verified at 05:42:09 UTC: SelfUse mode 0, flags 9, 2 kW AC setting, 50% grid target, 100% overall maximum and 50% on-grid reserve. At 05:43:28 UTC the native reading showed 55% SOC, 3,249 W battery discharge, 2,957 W house load, 4 W grid power and no solar. Discharge continued through 54%, 52% and 51%; the 06:01:23 UTC reading showed 3,750 W discharge with grid power near zero.
+
+At 06:03:26 UTC the battery reached 50% and stopped discharging: battery power was 0 W, house load 3,218 W and grid power 3,346 W, with no solar. These observations support a discharge restart band, but do not establish its exact threshold or prove every firmware/mode behaves identically. The forecast uses six percentage points above reserve as an explicitly disclosed conservative planning bound. No undocumented EMS mode or protection setting was written. This successful discharge observation does not replace the remaining normal-policy commissioning checks.
+
 ## Saved device report
 
 On **Controls → Commission the home policy**, the EN/BG saved-device-evidence panel is available before a commissioning run can be prepared. It previews, copies or downloads the native solar policy, validated version strings, selected numeric checks and available raw words from the existing report. Exporting it performs no provider request or inverter command. It excludes account identifiers, serial numbers and free-form diagnostic errors. It contains no manufacturer questions or outreach instructions.

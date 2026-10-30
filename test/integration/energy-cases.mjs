@@ -183,6 +183,8 @@ export function registerEnergyIntegration({
       assert.equal(value.plan.demandQuality, "limited");
       assert.ok(value.plan.demandCoveredHours >= 23);
       assert.equal(value.plan.forecast.provider, "fixture");
+      assert.equal(value.plan.prediction.assumptions.initialDischarging, false);
+      assert.equal(value.plan.prediction.assumptions.dischargeRestartMarginSoc, 6);
       const original = value.plan.id,
         frozen = JSON.stringify(value.plan.prediction);
       const again = await f.refresh();
@@ -248,6 +250,38 @@ export function registerEnergyIntegration({
       const stale = await f.refresh();
       assert.equal(stale.code, "readings-stale");
       assert.equal(f.device.writes.length, 0);
+    } finally {
+      await f.dispose();
+    }
+  });
+  test("energy planning uses measured discharge and refuses recommendations from an older battery model", async () => {
+    const f = await fixture();
+    try {
+      await f.approve();
+      await f.pool.query(
+        "UPDATE measurements SET battery_w=500 WHERE tenant_id=$1 AND observed_at=(SELECT max(observed_at) FROM measurements WHERE tenant_id=$1)",
+        [f.target.tenant],
+      );
+      const value = await f.refresh();
+      assert.equal(value.plan.prediction.assumptions.initialDischarging, true);
+      assert.equal(value.control.canActivate, true);
+      const writes = f.device.writes.length;
+      await f.pool.query(
+        "UPDATE energy_plans SET prediction=jsonb_set(prediction,'{version}',to_jsonb($2::text)) WHERE id=$1",
+        [value.plan.id, "hourly-pv/load/tariff-battery/v1"],
+      );
+      const rejected = await f.call("apply", {
+        revision: value.revision,
+        planId: value.plan.id,
+        choice: "automatic",
+        currentPassword: password,
+      });
+      assert.equal(rejected.status, 409);
+      assert.match((await rejected.json()).error, /current plan/);
+      const current = await f.state();
+      assert.equal(current.automatic, false);
+      assert.equal(current.plan.state, "recommended");
+      assert.equal(f.device.writes.length, writes);
     } finally {
       await f.dispose();
     }

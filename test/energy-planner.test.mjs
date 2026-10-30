@@ -5,6 +5,7 @@ import {
   validateEnergyProfile,
   missingEnergyInputs,
   fixedEnergyWindow,
+  energySiteHash,
 } from "../src/energy-profile.mjs";
 import {
   energyLocalTime,
@@ -236,6 +237,111 @@ test("battery simulation conserves energy and honors reserve, power and efficien
   assert.ok(
     Math.abs(small.importKwh - 1.25) < 1e-9,
     "5 kW discharge cannot cover 10 kW load",
+  );
+});
+
+test("reserve restart band preserves running discharge but does not spend an idle near-reserve charge", () => {
+  const value = profile(),
+    now = Date.parse("2026-10-29T08:00Z"),
+    f = forecasts(now, { loadKw: 2 });
+  const idle = simulateEnergyPlan(value, f.solar, f.demand, {
+    from: now,
+    to: now + 3600000,
+    soc: 53,
+  });
+  assert.equal(idle.finalSoc, 53);
+  assert.equal(idle.importKwh, 2);
+  assert.ok(idle.timeline.every((slot) => slot.batteryDischargeKwh === 0));
+  const running = simulateEnergyPlan(value, f.solar, f.demand, {
+    from: now,
+    to: now + 3600000,
+    soc: 53,
+    initialDischarging: true,
+  });
+  assert.ok(Math.abs(running.finalSoc - 50) < 1e-9);
+  assert.ok(Math.abs(running.importKwh - 1.43) < 1e-9);
+  assert.throws(
+    () => simulateEnergyPlan(value, f.solar, f.demand, {
+      from: now,
+      to: now + 3600000,
+      soc: 53,
+      initialDischarging: "yes",
+    }),
+    /discharge state/,
+  );
+});
+
+test("a reserve hold resets discharge until the conservative restart charge is available", () => {
+  const value = profile(),
+    now = Date.parse("2026-10-29T08:00Z"),
+    f = forecasts(now, { loadKw: 1 });
+  const result = simulateEnergyPlan(value, f.solar, f.demand, {
+    from: now,
+    to: now + 2 * 3600000,
+    soc: 53,
+    initialDischarging: true,
+    night: { start: now, end: now + 3600000 },
+    chargeStart: now,
+    targetSoc: 53,
+  });
+  assert.equal(result.finalSoc, 53);
+  assert.equal(result.importKwh, 2);
+  assert.ok(result.timeline.every((slot) => slot.batteryDischargeKwh === 0));
+});
+
+test("solar enables discharge above the restart band and reaching reserve rearms the band", () => {
+  const value = profile(),
+    now = Date.parse("2026-10-29T08:00Z"),
+    hour = 3600000;
+  const phases = [
+    [0, 1, 2, 0],
+    [1, 2, 0, 2],
+    [2, 2.25, 1, 0],
+    [2.25, 2.5, 0, 1],
+  ];
+  const solar = phases.map(([start, end, pv]) => ({
+    start: now + start * hour,
+    end: now + end * hour,
+    expectedKw: pv,
+    lowKw: pv,
+    highKw: pv,
+  }));
+  const demand = phases.map(([start, end, , load]) => ({
+    start: now + start * hour,
+    end: now + end * hour,
+    expectedKw: load,
+    highKw: load,
+  }));
+  const result = simulateEnergyPlan(value, solar, demand, {
+    from: now,
+    to: now + 2.5 * hour,
+    soc: 50,
+  });
+  assert.ok(Math.abs(result.finalSoc - 51.1875) < 1e-9);
+  assert.ok(Math.abs(result.importKwh - 0.445) < 1e-9);
+  assert.ok(result.timeline
+    .filter((slot) => slot.start >= now + 2.25 * hour)
+    .every((slot) => slot.batteryDischargeKwh === 0));
+});
+
+test("battery model revisions retain the original identity of frozen solar forecasts", () => {
+  const value = emptyEnergyProfile();
+  value.site = {
+    latitude: 42.7,
+    longitude: 23.3,
+    inverterKw: 20,
+    arrays: [{
+      name: "East roof",
+      kwp: 10,
+      tilt: 30,
+      azimuth: 90,
+      lossFraction: 0.14,
+      geometryConfirmed: true,
+    }],
+  };
+  assert.equal(
+    energySiteHash(value),
+    "bd150c2c50202a1c6d23f184ec176c102c65d2a6a8969b3a4b2fef2a32ab5cfa",
   );
 });
 

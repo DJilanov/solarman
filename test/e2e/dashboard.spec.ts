@@ -326,6 +326,37 @@ test("an uncertain outage response is not automatically retried or reported as a
   expect(attempts).toBe(1);
 });
 
+test("near-reserve standby explains household grid import in both languages and clears during discharge", async ({
+  page,
+}) => {
+  const data = await homeConsoleFixture(page);
+  Object.assign(data.latest!, {
+    soc: 53,
+    pvW: 0,
+    loadW: 2000,
+    gridW: 2000,
+    batteryW: 0,
+    acEnabled: false,
+  });
+  await page.reload();
+  const hint =
+    "Near the reserve, the inverter may wait for more charge before using the battery again. Grid import here supplies the home; the battery is idle.";
+  await expect(page.getByText(hint, { exact: true })).toBeVisible();
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(page.getByText(
+    "Близо до резерва инверторът може да изчаква по-висок заряд, преди отново да използва батерията. В този момент мрежата захранва дома, а батерията изчаква.",
+    { exact: true },
+  )).toBeVisible();
+  await page.locator(".language-switch select").selectOption("en");
+  Object.assign(data.latest!, { batteryW: 2000, gridW: 0 });
+  await page.reload();
+  await expect(page.getByText("Battery supplying", { exact: true })).toBeVisible();
+  await expect(page.getByText(hint, { exact: true })).toHaveCount(0);
+  Object.assign(data.latest!, { soc: 50, batteryW: 0, gridW: 2000 });
+  await page.reload();
+  await expect(page.getByText(hint, { exact: true })).toHaveCount(0);
+});
+
 test("the homeowner console has four navigation items and usable Bulgarian phone layouts", async ({
   page,
 }) => {
@@ -5627,8 +5658,13 @@ test("night savings preserves unsaved inputs, translates to Bulgarian and fits a
 }) => {
   await homeConsoleFixture(page);
   const data = energyDashboardFixture();
+  data.plan!.prediction.reasons.push("assumed-discharge-restart");
   await page.route("**/api/energy", (route) => route.fulfill({ json: data }));
   await page.goto("/controls/night-savings");
+  await expect(page.getByText(
+    "The forecast uses a conservative six-point discharge restart band above the reserve.",
+    { exact: true },
+  )).toBeVisible();
   await page
     .getByText("Edit installation and assumptions", { exact: true })
     .click();
@@ -5639,6 +5675,10 @@ test("night savings preserves unsaved inputs, translates to Bulgarian and fits a
   ).toHaveValue("24");
   await page.getByLabel("Language", { exact: true }).selectOption("bg");
   await page.setViewportSize({ width: 320, height: 1100 });
+  await expect(page.getByText(
+    "Прогнозата използва предпазно допускане за възобновяване на разреждането на шест процентни пункта над резерва.",
+    { exact: true },
+  )).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Нощна икономия", exact: true }),
   ).toBeVisible();
