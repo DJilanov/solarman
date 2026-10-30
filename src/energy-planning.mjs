@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
+import { EnergyExperience } from "./energy-experience.mjs";
+import { hourlySolarLearning } from "./energy-tools-model.mjs";
 import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import { requireActiveTenant } from "./tenant-lifecycle.mjs";
 import { commissioningBinding } from "./commissioning-state.mjs";
@@ -83,6 +85,7 @@ export class EnergyPlanning {
     this.releasing = new Map();
     this.cycle = null;
     this.stopping = false;
+    this.experience = new EnergyExperience(pool, hub);
   }
   /** @param {string} tenantId @param {string} [timezone] @returns {Promise<object>} */
   async settings(tenantId, timezone = "Europe/Sofia") {
@@ -648,6 +651,15 @@ export class EnergyPlanning {
         settings.profile.planning.solarMargin,
         now,
       );
+      const frozen = (await this.pool.query(
+        "SELECT payload,fetched_at FROM energy_forecasts WHERE tenant_id=$1 AND site_hash=$2 AND fetched_at>clock_timestamp()-interval '30 days' ORDER BY fetched_at DESC LIMIT 120",
+        [tenantId, siteHash],
+      )).rows;
+      const hourly = hourlySolarLearning(frozen, rows, settings.profile.timezone, now);
+      if (hourly.some(hour => hour.days >= 7)) {
+        calibration.hourly = hourly.map(hour => hour.days >= 7 ? Math.max(0.5, Math.min(1.5, hour.rawScale / calibration.scale)) : 1);
+        calibration.version = createHash("sha256").update(JSON.stringify({ base: calibration.version, hourly: calibration.hourly })).digest("hex");
+      }
       let forecast = (
         await this.pool.query(
           "SELECT * FROM energy_forecasts WHERE tenant_id=$1 AND site_hash=$2 AND expires_at>clock_timestamp() AND payload->'calibration'->>'version'=$3 ORDER BY fetched_at DESC LIMIT 1",
@@ -942,6 +954,8 @@ export class EnergyPlanning {
   /** @returns {Promise<void>} */
   async tick() {
     if (this.stopping || this.hub.stopping) return;
+    try { await this.experience.tick(); }
+    catch { console.error(JSON.stringify({ event: "energy_tools_delayed" })); }
     const due = (
       await this.pool.query(
         "SELECT s.* FROM energy_settings s JOIN tenants t ON t.id=s.tenant_id WHERE t.lifecycle='active' AND (s.automatic OR EXISTS(SELECT 1 FROM energy_plans p WHERE p.tenant_id=s.tenant_id AND p.state=ANY($1::text[]))) AND ($2::uuid IS NULL OR s.tenant_id>$2) ORDER BY s.tenant_id LIMIT 200",
@@ -1165,5 +1179,6 @@ export class EnergyPlanning {
     await this.releaseCycle;
     await Promise.allSettled([...this.releasing.values()]);
     await Promise.allSettled([...this.pending.values()]);
+    await this.experience.stop();
   }
 }

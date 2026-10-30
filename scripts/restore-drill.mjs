@@ -161,6 +161,7 @@ async function main() {
       report.observationsQuarantined !== true ||
       report.commissioningQuarantined !== true ||
       report.notificationsQuarantined !== true ||
+      report.energyExperienceQuarantined !== true ||
       report.notificationAccessAttempts !== 0 ||
       report.recoveryQuarantined !== true ||
       report.schemaUpgradeVerified !== true ||

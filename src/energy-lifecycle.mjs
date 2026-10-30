@@ -1,3 +1,5 @@
+import { quarantineEnergyExperience } from "./energy-experience-lifecycle.mjs";
+
 /** @param {import('pg').Pool|import('pg').PoolClient} client @returns {Promise<boolean>} */
 export async function hasEnergyStorage(client) {
   return (
@@ -9,6 +11,8 @@ export async function hasEnergyStorage(client) {
 
 /** @param {import('pg').Pool|import('pg').PoolClient} client @param {string|null} tenantId @param {string} reason @returns {Promise<void>} */
 export async function quarantineEnergy(client, tenantId, reason) {
+  if (["restore", "rollback"].includes(reason))
+    await quarantineEnergyExperience(client, tenantId);
   // Recovery tools are installed before schema upgrades and also open older checkpoints.
   if (!(await hasEnergyStorage(client))) return;
   await client.query(

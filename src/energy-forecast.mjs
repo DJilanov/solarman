@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { energyLocalTime } from "./energy-time.mjs";
 import {
   missingEnergyInputs,
   validateEnergyProfile,
@@ -130,13 +131,15 @@ export function combineEnergyWeather(planes, profile, calibration) {
     )
       throw new EnergyForecastError("weather-timeline");
     const rawKw = planes.reduce((sum, plane) => sum + plane[index].rawKw, 0);
+    const hour = Math.floor(energyLocalTime(slot.start, profile.timezone).minute / 60);
+    const adjustment = calibration.hourly?.[hour] ?? 1;
     return {
       start: slot.start,
       end: slot.end,
       rawKw: Math.min(profile.site.inverterKw, rawKw),
-      expectedKw: Math.min(profile.site.inverterKw, rawKw * calibration.scale),
-      lowKw: Math.min(profile.site.inverterKw, rawKw * calibration.lowScale),
-      highKw: Math.min(profile.site.inverterKw, rawKw * calibration.highScale),
+      expectedKw: Math.min(profile.site.inverterKw, rawKw * calibration.scale * adjustment),
+      lowKw: Math.min(profile.site.inverterKw, rawKw * calibration.lowScale * adjustment),
+      highKw: Math.min(profile.site.inverterKw, rawKw * calibration.highScale * adjustment),
       temperatureC: slot.temperatureC,
       cloudCover: slot.cloudCover,
     };

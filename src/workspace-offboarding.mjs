@@ -1,4 +1,5 @@
 import { hasEnergyStorage } from "./energy-lifecycle.mjs";
+import { hasEnergyExperience } from "./energy-experience-lifecycle.mjs";
 import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import {
   quarantineWorkspace,
@@ -16,6 +17,9 @@ import { hasOutageStorage, outageCleanupPending } from "./outage-lifecycle.mjs";
 
 const LIMIT = 500;
 const ERASE = {
+  experienceTasks: `DELETE FROM energy_load_tasks WHERE id IN(SELECT id FROM energy_load_tasks WHERE tenant_id=$1 LIMIT ${LIMIT})`,
+  experienceBriefings: `DELETE FROM energy_briefing_receipts WHERE (tenant_id,day,kind) IN(SELECT tenant_id,day,kind FROM energy_briefing_receipts WHERE tenant_id=$1 LIMIT ${LIMIT})`,
+  experienceSettings: "DELETE FROM energy_experience_settings WHERE tenant_id=$1",
   outageWrites: `DELETE FROM outage_write_intents WHERE id IN(SELECT id FROM outage_write_intents WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   outagePreparations: `DELETE FROM outage_preparations WHERE id IN(SELECT p.id FROM outage_preparations p WHERE p.tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM outage_write_intents w WHERE w.tenant_id=p.tenant_id AND w.preparation_id=p.id) LIMIT ${LIMIT})`,
   energyEvents: `DELETE FROM energy_events WHERE id IN(SELECT id FROM energy_events WHERE tenant_id=$1 LIMIT ${LIMIT})`,
@@ -741,7 +745,9 @@ export class WorkspaceOffboarding {
       let finalized = false;
       const outageStorage = await hasOutageStorage(client);
       const energyStorage = await hasEnergyStorage(client);
+      const experienceStorage = await hasEnergyExperience(client);
       for (const [section, sql] of Object.entries(ERASE)) {
+        if (!experienceStorage && section.startsWith("experience")) continue;
         if (!energyStorage && section.startsWith("energy")) continue;
         if (!outageStorage && section.startsWith("outage")) continue;
         if (

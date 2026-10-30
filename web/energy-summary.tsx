@@ -88,6 +88,7 @@ export function EnergySummary(): ReactNode {
           )}{" "}
           <ArrowRight size={16} />
         </Link>
+        <Link className="text-link" to="/controls/energy-tools">{tr("Energy assistant")} <ArrowRight size={14} /></Link>
       </div>
     </Panel>
   );

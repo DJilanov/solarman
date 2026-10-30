@@ -387,12 +387,14 @@ export class Notifications {
         return null;
       }
       const cancelled =
+        (["energy-briefing", "energy-reminder"].includes(job.kind) && job.lifecycle !== "active") ||
         !["active", "suspended"].includes(job.lifecycle) ||
         channel.quarantined ||
         String(channel.revision) !== String(job.channel_revision) ||
         job.cancel_requested_at ||
         (!channel.enabled && job.kind !== "test");
       const expired =
+        (["energy-briefing", "energy-reminder"].includes(job.kind) && (!Number.isFinite(Date.parse(job.payload.expiresAt)) || Date.parse(job.payload.expiresAt) <= Date.now())) ||
         Date.now() - new Date(job.created_at).getTime() > 86400000 ||
         job.attempts >= 4;
       if (cancelled || expired) {
@@ -600,12 +602,15 @@ export class Notifications {
           const allowed = (
             await this.pool.query(
               `SELECT 1 FROM notification_outbox j JOIN notification_channels c ON c.id=j.channel_id JOIN tenants t ON t.id=j.tenant_id
-            WHERE j.id=$1 AND j.state='sending' AND j.cancel_requested_at IS NULL AND c.revision=j.channel_revision AND NOT c.quarantined AND c.secret IS NOT NULL AND(c.enabled OR j.kind='test') AND t.lifecycle IN('active','suspended')`,
+            WHERE j.id=$1 AND j.state='sending' AND j.cancel_requested_at IS NULL AND c.revision=j.channel_revision AND NOT c.quarantined AND c.secret IS NOT NULL AND(c.enabled OR j.kind='test') AND t.lifecycle IN('active','suspended')
+              AND(j.kind NOT IN('energy-briefing','energy-reminder') OR t.lifecycle='active')
+              AND(j.kind<>'energy-briefing' OR EXISTS(SELECT 1 FROM energy_experience_settings s WHERE s.tenant_id=j.tenant_id AND s.briefings_enabled))`,
               [job.id],
             )
           ).rowCount;
           if (
             !allowed ||
+            (job.kind === "energy-reminder" && !(await this.hub.energy.experience.reminderCurrent(job))) ||
             abort.signal.aborted ||
             this.stopping ||
             this.hub.stopping
@@ -645,7 +650,9 @@ export class Notifications {
                             ? "Отворете таблото за подробности за събитието."
                             : "Open the dashboard for event details.",
                       url:
-                        job.kind === "test"
+                        ["energy-briefing", "energy-reminder"].includes(job.kind)
+                          ? "/controls/energy-tools"
+                          : job.kind === "test"
                           ? "/settings/notifications"
                           : "/settings/health",
                       language: job.channel.language,

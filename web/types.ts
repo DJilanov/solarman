@@ -730,7 +730,7 @@ export interface NotificationAttempt {
 }
 export interface NotificationDelivery {
   id: string;
-  kind: "opened" | "escalated" | "resolved" | "test" | "platform";
+  kind: "opened" | "escalated" | "resolved" | "test" | "platform" | "energy-briefing" | "energy-reminder";
   state:
     | "queued"
     | "sending"

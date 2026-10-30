@@ -21,6 +21,7 @@ import { age, formatNumber, when } from "./format";
 import { tr } from "./i18n";
 import type { Command, OutageData, OutagePreparation } from "./types";
 import { readingIsStale } from "./reading-freshness";
+import { OutageCalculator } from "./outage-calculator";
 
 const openStates = new Set([
   "queued",
@@ -356,6 +357,7 @@ export default function OutagePreparationPage(): ReactNode {
           className="outage-selector"
           action={<ShieldCheck size={24} />}
         >
+          <OutageCalculator onTarget={value => { setTarget(value); setConfirm(null); }} />
           <div className="outage-dial" aria-hidden="true">
             <div>
               <strong>

@@ -1,6 +1,8 @@
 const BATCH = 500;
 
 const PRUNE = {
+  energyLoadTasks: `DELETE FROM energy_load_tasks WHERE id IN(SELECT id FROM energy_load_tasks WHERE tenant_id=$1 AND (state<>'planned' OR deadline_at<clock_timestamp()) AND updated_at<clock_timestamp()-$2*interval '1 day' LIMIT ${BATCH})`,
+  energyBriefings: `DELETE FROM energy_briefing_receipts WHERE (tenant_id,day,kind) IN(SELECT tenant_id,day,kind FROM energy_briefing_receipts WHERE tenant_id=$1 AND created_at<clock_timestamp()-$2*interval '1 day' LIMIT ${BATCH})`,
   outageWrites: `DELETE FROM outage_write_intents WHERE id IN(SELECT w.id FROM outage_write_intents w JOIN outage_preparations p ON p.tenant_id=w.tenant_id AND p.id=w.preparation_id WHERE w.tenant_id=$1 AND p.state IN('restored','failed') AND p.approved_at IS NULL AND p.ended_at<clock_timestamp()-$2*interval '1 day' AND (w.status='verified' OR w.reconciled_at IS NOT NULL) ORDER BY w.created_at,w.id LIMIT ${BATCH})`,
   outagePreparations: `DELETE FROM outage_preparations WHERE id IN(SELECT p.id FROM outage_preparations p WHERE p.tenant_id=$1 AND p.state IN('restored','failed') AND p.approved_at IS NULL AND p.ended_at<clock_timestamp()-$2*interval '1 day' AND NOT EXISTS(SELECT 1 FROM outage_write_intents w WHERE w.tenant_id=p.tenant_id AND w.preparation_id=p.id) ORDER BY p.ended_at,p.id LIMIT ${BATCH})`,
   energyOutcomes: `DELETE FROM energy_outcomes WHERE (tenant_id,forecast_id,day) IN(SELECT tenant_id,forecast_id,day FROM energy_outcomes WHERE tenant_id=$1 AND assessed_at<clock_timestamp()-$2*interval '1 day' LIMIT ${BATCH})`,

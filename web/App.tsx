@@ -56,6 +56,7 @@ import { HistoryNavigation } from "./history-navigation";
 
 const CommandDetailsPage = lazy(() => import("./command-details"));
 const NightSavingsPage = lazy(() => import("./night-savings"));
+const EnergyToolsPage = lazy(() => import("./energy-tools"));
 const OutagePreparationPage = lazy(() => import("./outage-preparation"));
 const SystemHealthPage = lazy(() => import("./system-health"));
 const PolicyObservationsPage = lazy(() => import("./policy-observations"));
@@ -709,6 +710,7 @@ function Dashboard({
                   </Suspense>
                 }
               />
+              <Route path="/controls/energy-tools" element={<Suspense fallback={<Loading />}><EnergyToolsPage /></Suspense>} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route
                 path="/settings/notifications"

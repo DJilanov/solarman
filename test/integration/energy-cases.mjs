@@ -10,6 +10,8 @@ import { quarantineEnergy } from "../../src/energy-lifecycle.mjs";
 import { nightNativeWindows } from "../../src/energy-native.mjs";
 import { energySiteHash } from "../../src/energy-profile.mjs";
 import { encryptCredentials } from "../../src/credentials.mjs";
+import { encryptNotificationSecret } from "../../src/notification-secrets.mjs";
+import { quarantineEnergyExperience } from "../../src/energy-experience-lifecycle.mjs";
 
 /** @param {object} context @returns {void} */
 export function registerEnergyIntegration({
@@ -119,6 +121,100 @@ export function registerEnergyIntegration({
     };
     return { ...f, pool, hub, state, call, refresh, approve, dispose };
   }
+  test("energy tools calculate outages and keep appliance plans tenant-bound, revisioned and free of inverter writes", async () => {
+    const f = await fixture();
+    try {
+      assert.equal((await fetchApi("/energy/tools")).status, 401);
+      const initial = await (await fetchApi("/energy/tools", { auth: f.member })).json();
+      assert.equal(initial.ready, true);
+      assert.equal(initial.report.days.length, 7);
+      assert.equal(initial.tasks.length, 0);
+      const outage = await f.call("tools/outage", { startsAt: new Date(Date.now() + 4 * 3600000).toISOString(), hours: 10, mode: "essential", essentialW: 500 });
+      assert.equal(outage.status, 200, await outage.clone().text());
+      assert.equal((await outage.json()).feasible, true);
+      assert.equal((await f.call("tools/outage", { startsAt: "invalid", hours: 10, mode: "essential", essentialW: 500 })).status, 400);
+      await f.refresh();
+      const body = { action: "save", id: randomUUID(), revision: "0", name: "Heater", powerKw: 1,
+        durationMinutes: 30, earliestAt: new Date(Date.now() + 15 * 60000).toISOString(), deadlineAt: new Date(Date.now() + 4 * 3600000).toISOString(), reminderEnabled: false };
+      assert.equal((await f.call("tools/task", body, randomUUID(), { csrf: false })).status, 403);
+      const saved = await f.call("tools/task", body);
+      assert.equal(saved.status, 200, await saved.clone().text());
+      assert.equal((await f.call("tools/task", body)).status, 200);
+      const own = await (await fetchApi("/energy/tools", { auth: f.member })).json();
+      assert.equal(own.tasks.length, 1);
+      assert.equal(own.tasks[0].currentBinding, true);
+      const other = await (await fetchApi("/energy/tools", { auth: getBeta() })).json();
+      assert.equal(other.tasks.some(task => task.id === body.id), false);
+      assert.equal((await f.call("tools/task", { action: "cancel", id: body.id, revision: "1" }, randomUUID(), { auth: getBeta() })).status, 404);
+      assert.equal((await f.call("tools/task", { action: "done", id: body.id, revision: "1" })).status, 200);
+      assert.equal((await f.call("tools/task", { action: "cancel", id: body.id, revision: "1" })).status, 409);
+      assert.equal((await f.pool.query("SELECT state FROM energy_load_tasks WHERE id=$1", [body.id])).rows[0].state, "done");
+      assert.equal(f.device.writes.length, 0);
+    } finally { await f.dispose(); }
+  });
+
+  test("energy briefings deduplicate, expire honestly, deliver manual appliance reminders and quarantine on restore", async () => {
+    const f = await fixture(), notifications = f.hub.notifications;
+    const send = notifications.send, platformAt = notifications.platformAt;
+    let deliveries = 0;
+    notifications.send = async () => { deliveries++; return { state: "delivered", messageId: 12345 }; };
+    notifications.platformAt = Date.now();
+    f.hub.runtimes.set(f.target.tenant, f.runtime);
+    try {
+      const body = { revision: "0", briefingsEnabled: true, morningMinute: 435, eveningMinute: 1140, currentPassword: password };
+      assert.equal((await f.call("tools/preferences", body)).status, 409);
+      const channelId = randomUUID();
+      await f.pool.query("INSERT INTO notification_channels(id,tenant_id,chat_id,secret,language,enabled,verified_at) VALUES($1,$2,'123456',$3,'bg',true,clock_timestamp())", [channelId, f.target.tenant, encryptNotificationSecret("123456:energy-fixture-token", f.hub.key, f.target.tenant, channelId)]);
+      assert.equal((await f.call("tools/preferences", { ...body, currentPassword: "wrong-password" })).status, 400);
+      assert.equal((await f.call("tools/preferences", body, randomUUID(), { csrf: false })).status, 403);
+      assert.equal((await f.call("tools/preferences", body)).status, 200);
+      const preferences = await f.hub.energy.experience.preferences(f.target.tenant);
+      const preference = { tenant_id: f.target.tenant, revision: preferences.revision, timezone: f.runtime.timezone };
+      await f.hub.energy.experience.sendBriefing(preference, "morning");
+      await f.hub.energy.experience.sendBriefing(preference, "morning");
+      const notices = (await f.pool.query("SELECT * FROM notification_outbox WHERE tenant_id=$1 AND kind='energy-briefing'", [f.target.tenant])).rows;
+      assert.equal(notices.length, 1);
+      assert.match(notices[0].payload.title, /Сутрешен/);
+      await f.pool.query("UPDATE notification_outbox SET next_attempt_at='1970-01-01',payload=jsonb_set(payload,'{expiresAt}',to_jsonb((clock_timestamp()-interval '1 minute')::text)) WHERE id=$1", [notices[0].id]);
+      await notifications.runOnce();
+      assert.equal((await f.pool.query("SELECT state FROM notification_outbox WHERE id=$1", [notices[0].id])).rows[0].state, "failed");
+      assert.equal(deliveries, 0);
+      await f.refresh();
+      const taskId = randomUUID(), task = { action: "save", id: taskId, revision: "0", name: "Dishwasher", powerKw: 1, durationMinutes: 60,
+        earliestAt: new Date(Date.now() + 60000).toISOString(), deadlineAt: new Date(Date.now() + 4 * 3600000).toISOString(), reminderEnabled: true };
+      assert.equal((await f.call("tools/task", task)).status, 200);
+      await f.pool.query("UPDATE energy_load_tasks SET suggested_at=clock_timestamp()-interval '1 second' WHERE id=$1", [taskId]);
+      await f.hub.energy.experience.remind({ id: taskId, tenant_id: f.target.tenant, revision: "1" });
+      await f.hub.energy.experience.remind({ id: taskId, tenant_id: f.target.tenant, revision: "1" });
+      const reminder = (await f.pool.query("SELECT id,payload FROM notification_outbox WHERE tenant_id=$1 AND kind='energy-reminder'", [f.target.tenant])).rows;
+      assert.equal(reminder.length, 1);
+      assert.match(reminder[0].payload.text, /Dishwasher/);
+      await f.pool.query("UPDATE notification_outbox SET next_attempt_at='1970-01-01' WHERE id=$1", [reminder[0].id]);
+      await notifications.runOnce();
+      assert.equal(deliveries, 1);
+      assert.equal((await f.pool.query("SELECT state FROM notification_outbox WHERE id=$1", [reminder[0].id])).rows[0].state, "delivered");
+      const staleId = randomUUID();
+      assert.equal((await f.call("tools/task", { ...task, id: staleId })).status, 200);
+      await f.pool.query("UPDATE energy_load_tasks SET suggested_at=clock_timestamp()-interval '1 second' WHERE id=$1", [staleId]);
+      await f.hub.energy.experience.remind({ id: staleId, tenant_id: f.target.tenant, revision: "1" });
+      await f.pool.query("UPDATE energy_load_tasks SET binding='changed-installation' WHERE id=$1", [staleId]);
+      const staleNotice = (await f.pool.query("UPDATE notification_outbox SET next_attempt_at='1970-01-01' WHERE tenant_id=$1 AND event_key=$2 RETURNING id", [f.target.tenant, `load:${staleId}:1`])).rows[0];
+      await notifications.runOnce();
+      assert.equal(deliveries, 1, "an installation change must invalidate a queued appliance reminder");
+      assert.equal((await f.pool.query("SELECT state FROM notification_outbox WHERE id=$1", [staleNotice.id])).rows[0].state, "cancelled");
+      await quarantineEnergyExperience(f.pool, f.target.tenant);
+      assert.equal((await f.hub.energy.experience.preferences(f.target.tenant)).briefingsEnabled, false);
+      assert.equal((await f.pool.query("SELECT reminder_enabled FROM energy_load_tasks WHERE id=$1", [taskId])).rows[0].reminder_enabled, false);
+      assert.equal(f.device.writes.length, 0);
+    } finally {
+      notifications.send = send; notifications.platformAt = platformAt;
+      f.hub.runtimes.delete(f.target.tenant);
+      await f.pool.query("UPDATE notification_outbox SET state='cancelled',completed_at=clock_timestamp() WHERE tenant_id=$1 AND state IN('queued','retry','sending')", [f.target.tenant]);
+      await f.pool.query("UPDATE energy_experience_settings SET briefings_enabled=false WHERE tenant_id=$1", [f.target.tenant]);
+      await f.dispose();
+    }
+  });
+
   test("energy settings enforce authentication, CSRF, tenant isolation, revision and idempotency", async () => {
     const f = await fixture();
     try {

@@ -111,6 +111,21 @@ test("roof planes are combined without exceeding the inverter rating", () => {
   );
 });
 
+test("hourly learned solar factors use the installation timezone and preserve inverter clipping", () => {
+  const profile = fixture(), parsed = parseEnergyWeather(weather(), profile.site.arrays[0]);
+  profile.timezone = "Europe/Sofia";
+  const baseline = combineEnergyWeather([parsed], profile, calibration);
+  const adjusted = combineEnergyWeather([parsed], profile, { ...calibration, hourly: { 1: 0.5 } });
+  assert.equal(adjusted[0].expectedKw, baseline[0].expectedKw / 2);
+  assert.equal(adjusted[0].lowKw, baseline[0].lowKw / 2);
+  assert.equal(adjusted[0].highKw, baseline[0].highKw / 2);
+  assert.equal(adjusted[1].expectedKw, baseline[1].expectedKw);
+  profile.site.inverterKw = 5;
+  const clipped = combineEnergyWeather([parsed], profile, { ...calibration, hourly: { 1: 1.5 } });
+  assert.equal(clipped[0].expectedKw, 5);
+  assert.equal(clipped[0].highKw, 5);
+});
+
 test("forecast requests use the official host, correct east bearing and bounded response validation", async () => {
   let calls = 0;
   const provider = new OpenMeteoEnergyForecast(

@@ -3,6 +3,9 @@ import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import { historyEvidence } from "./command-history.mjs";
 
 const EXPORT_SECTIONS = {
+  energyExperience: "SELECT revision::text,briefings_enabled,morning_minute,evening_minute,updated_at FROM energy_experience_settings WHERE tenant_id=$1",
+  energyLoadTasks: "SELECT id,account_id,device,revision::text,name,power_kw,duration_minutes,earliest_at,deadline_at,suggested_at,recommendation,reminder_enabled,reminded_at,state,created_at,updated_at FROM energy_load_tasks WHERE tenant_id=$1 ORDER BY created_at,id",
+  energyBriefings: "SELECT day,kind,payload,created_at FROM energy_briefing_receipts WHERE tenant_id=$1 ORDER BY day,kind",
   energySettings:
     "SELECT revision::text,profile,automatic,approval_binding,approved_by,updated_at,attempted_at,last_code FROM energy_settings WHERE tenant_id=$1",
   energyForecasts:

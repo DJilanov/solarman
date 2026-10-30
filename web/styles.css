@@ -3497,3 +3497,26 @@ textarea {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.energy-assistant .panel-head { flex-wrap: wrap; }
+.energy-assistant .button { max-width: 100%; white-space: normal; }
+.energy-assistant .panel-head > div { min-width: 0; }
+.energy-assistant { min-width: 0; overflow-wrap: anywhere; }
+.energy-tools-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.energy-tools-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 20px 0; align-items: end; }
+.energy-tools-form label { display: flex; min-width: 0; flex-direction: column; gap: 8px; font-size: .85rem; }
+.energy-tools-form input:not([type="checkbox"]), .energy-tools-form select { width: 100%; min-width: 0; box-sizing: border-box; }
+.energy-tools-form .check-label { flex-direction: row; align-items: center; grid-column: 1 / -1; }
+.energy-tools-form .check-label input { flex: 0 0 18px; width: 18px; height: 18px; min-width: 0; padding: 0; margin: 0; }
+.energy-tools-form button { max-width: 100%; white-space: normal; }
+.energy-tools-appliance { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.energy-tools-task-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.energy-tools-task { display: flex; min-width: 0; flex-direction: column; gap: 8px; padding: 16px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.energy-outage-calculator { text-align: left; margin-bottom: 24px; }
+.energy-outage-calculator > summary { cursor: pointer; font-weight: 600; padding: 14px 0; }
+.energy-outage-result { padding: 18px 0; overflow-wrap: anywhere; }
+.energy-outage-result > strong { font-size: 1.25rem; }
+.energy-outage-result .button { white-space: normal; }
+@media (max-width: 700px) {
+  .energy-tools-grid, .energy-tools-form, .energy-tools-appliance, .energy-tools-task-list { grid-template-columns: minmax(0, 1fr); }
+}

@@ -49,6 +49,8 @@ const kindLabels: Record<NotificationDelivery["kind"], string> = {
   resolved: "Recovery detected",
   test: "Destination test",
   platform: "Platform health",
+  "energy-briefing": "Energy briefing",
+  "energy-reminder": "Appliance reminder",
 };
 const codes: Record<string, string> = {
   delivered: "The destination confirmed a message ID.",

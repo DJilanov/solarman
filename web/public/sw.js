@@ -4,6 +4,12 @@ self.addEventListener("activate", (event) =>
   event.waitUntil(self.clients.claim()),
 );
 
+function notificationPath(path) {
+  return ["/settings/notifications", "/controls/energy-tools"].includes(path)
+    ? path
+    : "/settings/health";
+}
+
 self.addEventListener("push", (event) => {
   event.waitUntil(
     (async () => {
@@ -19,10 +25,7 @@ self.addEventListener("push", (event) => {
         payload.title.length <= 200 &&
         typeof payload.body === "string" &&
         payload.body.length <= 1000;
-      const url =
-        payload?.url === "/settings/notifications"
-          ? "/settings/notifications"
-          : "/settings/health";
+      const url = notificationPath(payload?.url);
       const reference =
         typeof payload?.reference === "string" &&
         /^[a-f0-9-]{36}$/.test(payload.reference)
@@ -72,10 +75,7 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   event.waitUntil(
     (async () => {
-      const path =
-        event.notification.data?.url === "/settings/notifications"
-          ? "/settings/notifications"
-          : "/settings/health";
+      const path = notificationPath(event.notification.data?.url);
       const url = new URL(path, self.location.origin).href;
       const windows = await self.clients.matchAll({
         type: "window",

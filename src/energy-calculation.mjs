@@ -46,3 +46,8 @@ export function calculateEnergyPlan(input, signal) {
 export function calculateEnergyOutcomes(input, signal) {
   return runEnergyWorker({ kind: "outcomes", input }, signal);
 }
+
+/** @param {'outage'|'load'} action @param {object} input @param {AbortSignal} [signal] @returns {Promise<object>} */
+export function calculateEnergyTool(action, input, signal) {
+  return runEnergyWorker({ kind: "experience", action, input }, signal);
+}

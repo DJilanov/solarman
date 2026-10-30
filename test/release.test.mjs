@@ -11,6 +11,11 @@ const expected = {
   index: '<script src="/assets/new.js"></script>',
 };
 
+test("rollback preserves energy assistant archive, erasure and reminder handling", () => {
+  assert.throws(() => assertRollbackCompatibility(["025_energy_experience.sql"], ["024_energy_planning.sql"]), /supports energy assistant/);
+  assert.doesNotThrow(() => assertRollbackCompatibility(["025_energy_experience.sql"], ["025_energy_experience.sql"]));
+});
+
 test("a rollback cannot run a release that cannot read Web Push storage", () => {
   assert.throws(
     () =>

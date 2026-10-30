@@ -17,6 +17,21 @@ export async function energyRoute({
   if (pathname !== "/api/energy" && !pathname.startsWith("/api/energy/"))
     return false;
   try {
+    if (pathname === "/api/energy/tools" && request.method === "GET") {
+      json(response, 200, await hub.energy.experience.status(runtime));
+      return true;
+    }
+    if (request.method === "POST" && ["/api/energy/tools/preferences", "/api/energy/tools/outage", "/api/energy/tools/task"].includes(pathname)) {
+      await requireActiveTenant(hub.pool, session.tenant_id);
+      const body = await bodyJson(request), action = pathname.split("/").at(-1);
+      if (action === "preferences") limitSecurity(response, session);
+      const result = action === "preferences"
+        ? await hub.energy.experience.changePreferences(session, runtime, body)
+        : action === "outage" ? await hub.energy.experience.outage(runtime, body)
+          : await hub.energy.experience.task(session, runtime, body);
+      json(response, 200, result);
+      return true;
+    }
     if (pathname === "/api/energy" && request.method === "GET") {
       json(response, 200, await hub.energy.status(runtime));
       return true;

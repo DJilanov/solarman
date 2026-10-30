@@ -202,6 +202,8 @@ async function createAuthenticationFixture(
   const energyProfile = emptyEnergyProfile(),
     energyForecast = randomUUID(),
     energyPlan = randomUUID();
+  await pool.query("INSERT INTO energy_experience_settings(tenant_id,briefings_enabled) VALUES($1,true)", [tenant]);
+  await pool.query("INSERT INTO energy_load_tasks(id,tenant_id,account_id,device,binding,name,power_kw,duration_minutes,earliest_at,deadline_at,suggested_at,recommendation,reminder_enabled) VALUES($1,$2,$3,$4,$5,'Isolated appliance canary',1,60,clock_timestamp(),clock_timestamp()+interval '2 hours',clock_timestamp()+interval '1 hour','{}',true)", [randomUUID(), tenant, account, device, observationBinding(identity)]);
   await pool.query(
     "INSERT INTO energy_settings(tenant_id,profile,automatic,approval_binding,approved_by) VALUES($1,$2,true,$3,$4)",
     [tenant, energyProfile, observationBinding(identity), user],
@@ -927,6 +929,9 @@ export async function restoreDrill(header, dump) {
       ).rows[0].n >= 2,
     );
     await quarantineEnergy(pool, null, "restore");
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM energy_experience_settings WHERE briefings_enabled")).rows[0].n, 0);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM energy_load_tasks WHERE reminder_enabled")).rows[0].n, 0);
+    report.energyExperienceQuarantined = true;
     assert.equal(
       (
         await pool.query(

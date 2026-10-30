@@ -333,3 +333,14 @@ test("push worker shows malformed payloads visibly and cannot acknowledge a fail
   );
   assert.equal(f.requests.length, 0);
 });
+
+test("energy notifications open the energy assistant while rejecting external or unknown paths", async () => {
+  const f = await workerFixture();
+  for (const path of ["/controls/energy-tools", "https://evil.test/controls/energy-tools", "/api/commands"]) {
+    const expected = path === "/controls/energy-tools" ? path : "/settings/health";
+    await f.dispatch("push", { data: { json: () => ({ title: "Energy", body: "Open your dashboard", url: path }) } });
+    assert.equal(f.notifications.at(-1).options.data.url, expected);
+    await f.dispatch("notificationclick", { notification: { close() {}, data: { url: path } } });
+    assert.equal(f.opened.at(-1), `https://solarman.example.test${expected}`);
+  }
+});
