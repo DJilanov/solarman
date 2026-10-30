@@ -324,6 +324,50 @@ export function registerEnergyIntegration({
       await f.dispose();
     }
   });
+  test("a refreshed preview does not replace an approved night plan or its target", async () => {
+    const f = await fixture();
+    try {
+      await f.approve();
+      const writes = f.device.writes.length;
+      const initial = await f.refresh();
+      assert.equal(
+        (
+          await f.call("apply", {
+            revision: initial.revision,
+            planId: initial.plan.id,
+            choice: "tonight",
+            currentPassword: password,
+          })
+        ).status,
+        202,
+      );
+      const saved = await f.state(),
+        id = saved.plan.id;
+      const frozen = JSON.stringify(saved.plan.prediction);
+      const updated = await f.refresh();
+      assert.equal(updated.plan.id, id);
+      assert.equal(updated.plan.state, "scheduled");
+      assert.equal(JSON.stringify(updated.plan.prediction), frozen);
+      assert.ok(updated.preview);
+      assert.notEqual(updated.preview.id, id);
+      assert.equal(updated.preview.state, "recommended");
+      assert.equal(updated.preview.startsAt, updated.plan.startsAt);
+      assert.equal(updated.preview.settingsRevision, updated.revision);
+      assert.equal(f.device.writes.length, writes);
+      await f.pool.query(
+        "UPDATE energy_plans SET settings_revision=settings_revision+1 WHERE id=$1",
+        [updated.preview.id],
+      );
+      assert.equal(
+        (await f.state()).preview,
+        null,
+        "a preview from different settings must not be paired with the saved plan",
+      );
+    } finally {
+      await f.dispose();
+    }
+  });
+
   test("energy planning preserves the last forecast on provider failure and refuses stale telemetry", async () => {
     const f = await fixture();
     try {

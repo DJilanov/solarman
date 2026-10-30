@@ -184,6 +184,8 @@ export default function CommandDetailsPage(): ReactNode {
     firmware_verification_invalidated:
       "Firmware verification changed; workspace control was revoked",
     inverter_clock_check_failed: "Inverter clock check failed",
+    inverter_clock_check_recovered:
+      "A fresh provider reading passed the clock check",
   };
   const assessmentLabels = {
     native_audit: "Periodic or required native check",

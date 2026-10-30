@@ -800,6 +800,19 @@ export class TenantRuntime {
     );
   }
 
+  /** @param {object|null} [verification] @returns {Promise<object>} */
+  async readControlProvider(verification = this.verification) {
+    let reading = await this.readProvider();
+    let mapped = await this.mapProvider(reading, verification);
+    if (!mapped.clock.passed && !mapped.verificationInvalidated) {
+      reading = await this.readProvider();
+      mapped = await this.mapProvider(reading, verification);
+      if (mapped.clock.passed && !mapped.verificationInvalidated)
+        this.events.push({ event: "inverter_clock_check_recovered" });
+    }
+    return { reading, mapped };
+  }
+
   /** @returns {Promise<object>} */
   async verifyReadings() {
     const previousVerification = this.verification;
@@ -812,10 +825,7 @@ export class TenantRuntime {
     const rated = await this.inspector.read(4, 7, 2);
     const snapshot = await this.inspector.snapshot(false);
     const settings = await this.inspector.settings();
-    const mapped = await this.mapProvider(
-      await this.readProvider(),
-      previousVerification,
-    );
+    const { mapped } = await this.readControlProvider(previousVerification);
     if (Date.now() - startedAt > 120_000)
       throw new Error("Live readings are too old");
     if (await this.journal.confirmOff(snapshot.flags))
@@ -1086,8 +1096,7 @@ export class TenantRuntime {
     )
       return this.collectProvider();
     if (!inspectOnly) {
-      const reading = await this.readProvider();
-      const mapped = await this.mapProvider(reading);
+      const { reading, mapped } = await this.readControlProvider();
       if (mapped.verificationInvalidated)
         return this.collectProvider(reading, {
           charge: false,

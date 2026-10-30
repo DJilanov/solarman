@@ -157,6 +157,7 @@ export interface EnergyData {
   code: string | null;
   attemptedAt: string | null;
   plan: EnergyPlan | null;
+  preview?: EnergyPlan | null;
   history: EnergyPlan[];
   outcomes: EnergyOutcome[];
   endurance: {

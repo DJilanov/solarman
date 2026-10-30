@@ -1934,15 +1934,17 @@ test("a failed native policy audit pauses automation instead of repeatedly tryin
 test("a failed clock check preserves its original evidence through cleanup and later successful readings", async () => {
   const { runtime, calls } = await armedFixture();
   const collectedAt = Math.floor((Date.now() - 240000) / 1000) * 1000;
+  let reads = 0;
   try {
-    runtime.client.api = async (path) =>
-      path === "/account/v1.0/balance"
-        ? { total: 200000 }
-        : providerPayload({
-            device: runtime.device,
-            collectedAt,
-            values: { SYSTIM1: "2000-01-01 00:00:00" },
-          });
+    runtime.client.api = async (path) => {
+      if (path === "/account/v1.0/balance") return { total: 200000 };
+      reads++;
+      return providerPayload({
+        device: runtime.device,
+        collectedAt,
+        values: { SYSTIM1: "2000-01-01 00:00:00" },
+      });
+    };
     const disable = runtime.controller.disable;
     runtime.controller.disable = async () => {
       const flags = await disable();
@@ -1955,6 +1957,11 @@ test("a failed clock check preserves its original evidence through cleanup and l
       return flags;
     };
     await runtime.evaluate();
+    assert.equal(
+      reads,
+      2,
+      "a persistent clock error gets only one recheck before pausing",
+    );
     assert.equal(runtime.paused, true);
     assert.equal(runtime.inhibitStarts, true);
     assert.equal(runtime.status().control.canStart, false);
@@ -2002,6 +2009,44 @@ test("a failed clock check preserves its original evidence through cleanup and l
         (event) => event.event === "inverter_clock_check_failed",
       ),
       recorded,
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a mixed provider timestamp gets one coherent recheck before control continues", async () => {
+  const { runtime, calls } = await armedFixture();
+  let reads = 0;
+  const freshAt = Math.floor(Date.now() / 1000) * 1000;
+  const reported = providerPayload({
+    collectedAt: freshAt + 89000,
+  }).dataList.find((point) => point.key === "SYSTIM1").value;
+  try {
+    runtime.client.api = async () =>
+      providerPayload({
+        device: runtime.device,
+        collectedAt: ++reads === 1 ? freshAt - 300000 : freshAt,
+        values: { SYSTIM1: reported },
+      });
+    const ticks = calls.filter((call) => call === "tick").length;
+    await runtime.collect(false, true);
+    assert.equal(reads, 2);
+    assert.equal(runtime.paused, false);
+    assert.equal(runtime.clock.passed, true);
+    assert.equal(runtime.clock.skewSeconds, 89);
+    assert.equal(runtime.clock.collectedAt, new Date(freshAt).toISOString());
+    assert.equal(calls.filter((call) => call === "tick").length, ticks + 1);
+    assert.equal(
+      runtime.events.find(
+        (event) => event.event === "inverter_clock_check_failed",
+      ).skewSeconds,
+      389,
+    );
+    assert.ok(
+      runtime.events.some(
+        (event) => event.event === "inverter_clock_check_recovered",
+      ),
     );
   } finally {
     await runtime.close();

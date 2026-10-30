@@ -2169,5 +2169,11 @@
   "Received by the dashboard": "Получено в таблото",
   "Reported inverter time": "Час, отчетен от инвертора",
   "Measured clock difference": "Измерена разлика в часовника",
-  "Allowed clock difference": "Допустима разлика в часовника"
+  "Allowed clock difference": "Допустима разлика в часовника",
+  "A fresh provider reading passed the clock check": "Ново отчитане от доставчика премина проверката на часовника",
+  "View solar and battery graph": "Виж графиката за слънцето и батерията",
+  "The latest forecast below is a preview. Your saved {{target}}% night target is unchanged.": "Актуалната прогноза по-долу е предварителен преглед. Запазената нощна цел {{target}}% остава същата.",
+  "Saved night plan": "Запазен нощен план",
+  "This is the saved plan. A fresh forecast and battery check are required before it starts; refreshing the preview does not change your approval.": "Това е запазеният план. Преди старта му се проверяват актуалната прогноза и батерията. Обновяването на прегледа не променя одобрението ти.",
+  "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts.": "Цел според актуалната прогноза: {{target}}%. Запазеният план се проверява отново преди началото на зареждането."
 }

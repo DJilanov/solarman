@@ -2169,5 +2169,11 @@
   "Received by the dashboard": "Received by the dashboard",
   "Reported inverter time": "Reported inverter time",
   "Measured clock difference": "Measured clock difference",
-  "Allowed clock difference": "Allowed clock difference"
+  "Allowed clock difference": "Allowed clock difference",
+  "A fresh provider reading passed the clock check": "A fresh provider reading passed the clock check",
+  "View solar and battery graph": "View solar and battery graph",
+  "The latest forecast below is a preview. Your saved {{target}}% night target is unchanged.": "The latest forecast below is a preview. Your saved {{target}}% night target is unchanged.",
+  "Saved night plan": "Saved night plan",
+  "This is the saved plan. A fresh forecast and battery check are required before it starts; refreshing the preview does not change your approval.": "This is the saved plan. A fresh forecast and battery check are required before it starts; refreshing the preview does not change your approval.",
+  "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts.": "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts."
 }

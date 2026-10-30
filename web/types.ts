@@ -452,7 +452,8 @@ export interface CommandDetails extends Command, WriteHistoryData {
         | "write_acknowledgement_audit_recovered"
         | "write_journal_unavailable"
         | "firmware_verification_invalidated"
-        | "inverter_clock_check_failed";
+        | "inverter_clock_check_failed"
+        | "inverter_clock_check_recovered";
       clock?: {
         checkedAt: string;
         collectedAt: string | null;

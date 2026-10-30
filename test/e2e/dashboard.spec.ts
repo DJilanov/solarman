@@ -5844,6 +5844,67 @@ test("archive integrity rejects tampering and recovers with verified UTF-8 data"
   expect(downloads).toBe(1);
 });
 
+test("scheduled night plans keep their approval while refreshed previews update the graph", async ({
+  page,
+}) => {
+  await signIn(page);
+  const data = energyDashboardFixture();
+  if (!data.plan) throw Error("Missing energy fixture");
+  data.plan.state = "scheduled";
+  data.plan.createdAt = new Date(Date.now() - 3600000).toISOString();
+  data.plan.forecast.expiresAt = new Date(Date.now() - 60000).toISOString();
+  const id = data.plan.id,
+    requests: unknown[] = [];
+  await page.route("**/api/energy", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/energy/refresh", async (route) => {
+    requests.push(route.request().postDataJSON());
+    const preview = energyDashboardFixture().plan;
+    if (!preview) throw Error("Missing preview fixture");
+    preview.id = randomUUID();
+    preview.prediction.targetSoc = 75;
+    data.preview = preview;
+    await route.fulfill({ status: 202, json: { accepted: true } });
+  });
+  await page.goto("/controls/night-savings");
+  await expect(
+    page.getByText("This recommendation is out of date.", { exact: false }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Saved night plan", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Refresh forecast and plan", exact: true })
+    .click();
+  await expect(
+    page.getByText("The latest forecast below is a preview.", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Use tonight", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("link", { name: "View solar and battery graph", exact: true })
+    .click();
+  await expect(page).toHaveURL(/#energy-timeline$/);
+  await expect(page.locator("#energy-timeline")).toContainText(
+    "Latest preview target: 75%",
+  );
+  expect(data.plan.id).toBe(id);
+  expect(data.plan.prediction.targetSoc).toBe(82);
+  expect(requests).toEqual([{ revision: data.revision }]);
+  await page.locator(".language-switch select").selectOption("bg");
+  await page.setViewportSize({ width: 390, height: 900 });
+  await expect(page.locator("#energy-timeline")).toContainText(
+    "Цел според актуалната прогноза: 75%",
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.locator("#energy-timeline").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "test-results/night-forecast-preview-bg.png" });
+});
+
 test("night savings previews a target and requires an explicit mode and password before scheduling", async ({
   page,
 }) => {

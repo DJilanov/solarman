@@ -205,6 +205,24 @@ export class EnergyPlanning {
         [tenantId, runtime.account?.id ?? null, runtime.device ?? "", PENDING],
       )
     ).rows;
+    const preview =
+      plans[0] && PENDING.includes(plans[0].state)
+        ? (
+            await this.pool.query(
+              "SELECT p.*,f.payload AS forecast FROM energy_plans p JOIN energy_forecasts f ON f.tenant_id=p.tenant_id AND f.id=p.forecast_id WHERE p.tenant_id=$1 AND p.account_id=$2 AND p.device=$3 AND p.state='recommended' AND p.settings_revision=$4 AND p.profile_hash=$5 AND p.starts_at=$6 AND p.binding=$7 AND p.created_at>=$8 AND p.created_at>clock_timestamp()-interval '15 minutes' AND f.expires_at>clock_timestamp() ORDER BY p.created_at DESC,p.id DESC LIMIT 1",
+              [
+                tenantId,
+                runtime.account?.id ?? null,
+                runtime.device ?? "",
+                settings.revision,
+                energyProfileHash(settings.profile),
+                plans[0].starts_at,
+                plans[0].binding,
+                plans[0].created_at,
+              ],
+            )
+          ).rows[0]
+        : null;
     const outcomes = (
       await this.pool.query(
         "SELECT day,payload FROM energy_outcomes WHERE tenant_id=$1 AND site_hash=$2 ORDER BY day DESC,(payload->>'forecastAt')::timestamptz DESC LIMIT 60",
@@ -250,6 +268,7 @@ export class EnergyPlanning {
       code: settings.last_code,
       attemptedAt: settings.attempted_at ?? null,
       plan: plans[0] ? publicPlan(plans[0]) : null,
+      preview: preview ? publicPlan(preview) : null,
       history,
       outcomes: outcomes
         .filter(

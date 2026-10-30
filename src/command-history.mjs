@@ -161,6 +161,7 @@ export function historyEvidence(value) {
           "write_journal_unavailable",
           "firmware_verification_invalidated",
           "inverter_clock_check_failed",
+          "inverter_clock_check_recovered",
         ].includes(event.event),
       )
       .map((event) => ({

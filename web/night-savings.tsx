@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, RefreshCw, Sun, ShieldCheck } from "lucide-react";
+import {
+  ArrowRight,
+  ChartNoAxesCombined,
+  RefreshCw,
+  Sun,
+  ShieldCheck,
+} from "lucide-react";
 import {
   Area,
   CartesianGrid,
@@ -212,8 +218,22 @@ export default function NightSavingsPage(): ReactNode {
     !uncertain;
   const actionable = canOptIn && prediction?.action === "charge-and-hold";
   const busy = pending || data.calculating;
-  const solar = plan ? solarDay(plan, profile.timezone) : null;
-  const chart = prediction?.selected.timeline.map((slot) => ({
+  const savedPending = Boolean(
+    plan &&
+    ["scheduled", "starting", "running", "restoring"].includes(plan.state),
+  );
+  const preview =
+    savedPending &&
+    data.preview &&
+    data.preview.settingsRevision === data.revision &&
+    Date.parse(data.preview.forecast.expiresAt) > Date.now() &&
+    Date.now() - Date.parse(data.preview.createdAt) <= 15 * 60000
+      ? data.preview
+      : null;
+  const outlook = preview ?? plan,
+    outlookPrediction = outlook?.prediction;
+  const solar = outlook ? solarDay(outlook, profile.timezone) : null;
+  const chart = outlookPrediction?.selected.timeline.map((slot) => ({
     ...slot,
     label: clock(slot.start, profile.timezone),
   }));
@@ -225,6 +245,14 @@ export default function NightSavingsPage(): ReactNode {
         description={tr(
           "Charge only what tomorrow needs. Keep space for the sun.",
         )}
+        action={
+          prediction ? (
+            <a className="button secondary" href="#energy-timeline">
+              <ChartNoAxesCombined size={16} aria-hidden="true" />
+              {tr("View solar and battery graph")}
+            </a>
+          ) : undefined
+        }
       />
       {error && <Notice tone="danger">{tr(error)}</Notice>}
       {actionError && <Notice tone="danger">{tr(actionError)}</Notice>}
@@ -284,6 +312,14 @@ export default function NightSavingsPage(): ReactNode {
         </Panel>
       ) : (
         <>
+          {preview && plan && (
+            <Notice>
+              {tr(
+                "The latest forecast below is a preview. Your saved {{target}}% night target is unchanged.",
+                { target: formatNumber(plan.prediction.targetSoc) },
+              )}
+            </Notice>
+          )}
           <div className="energy-metrics">
             <Panel
               title={tr("Solar for the next day")}
@@ -301,8 +337,8 @@ export default function NightSavingsPage(): ReactNode {
             </Panel>
             <Panel title={tr("Expected household demand")}>
               <div className="energy-number">
-                {prediction
-                  ? formatNumber(prediction.selected.loadKwh, 1)
+                {outlookPrediction
+                  ? formatNumber(outlookPrediction.selected.loadKwh, 1)
                   : "—"}{" "}
                 <small>kWh</small>
               </div>
@@ -312,8 +348,11 @@ export default function NightSavingsPage(): ReactNode {
             </Panel>
             <Panel title={tr("Estimated cost reduction")}>
               <div className="energy-number battery-ink">
-                {prediction
-                  ? money(prediction.estimatedSavings, profile.tariff.currency)
+                {outlookPrediction
+                  ? money(
+                      outlookPrediction.estimatedSavings,
+                      profile.tariff.currency,
+                    )
                   : "—"}
               </div>
               <p className="fine-print">
@@ -324,7 +363,9 @@ export default function NightSavingsPage(): ReactNode {
             </Panel>
           </div>
           <Panel
-            title={tr("Tonight’s recommendation")}
+            title={tr(
+              savedPending ? "Saved night plan" : "Tonight’s recommendation",
+            )}
             action={
               <span className="energy-mode">
                 {tr(
@@ -394,10 +435,17 @@ export default function NightSavingsPage(): ReactNode {
                     </p>
                   </div>
                 </div>
-                {(stale || mismatched) && (
+                {((stale && !savedPending) || mismatched) && (
                   <Notice tone="danger">
                     {tr(
                       "This recommendation is out of date. Refresh it before choosing a plan.",
+                    )}
+                  </Notice>
+                )}
+                {plan.state === "scheduled" && stale && !mismatched && (
+                  <Notice>
+                    {tr(
+                      "This is the saved plan. A fresh forecast and battery check are required before it starts; refreshing the preview does not change your approval.",
                     )}
                   </Notice>
                 )}
@@ -672,96 +720,109 @@ export default function NightSavingsPage(): ReactNode {
               </button>
             </Panel>
           )}
-          {prediction && (
-            <Panel title={tr("Battery and energy timeline")}>
-              <p className="fine-print">
-                {when(prediction.horizon.start, profile.timezone)} →{" "}
-                {when(prediction.horizon.end, profile.timezone)} ·{" "}
-                {tr(
-                  "Solar, household demand and battery charge are estimates.",
+          {outlookPrediction && (
+            <div id="energy-timeline" className="energy-timeline-section">
+              <Panel title={tr("Battery and energy timeline")}>
+                <p className="fine-print">
+                  {when(outlookPrediction.horizon.start, profile.timezone)} →{" "}
+                  {when(outlookPrediction.horizon.end, profile.timezone)} ·{" "}
+                  {tr(
+                    "Solar, household demand and battery charge are estimates.",
+                  )}
+                </p>
+                {preview && (
+                  <p className="fine-print">
+                    {tr(
+                      "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts.",
+                      { target: formatNumber(preview.prediction.targetSoc) },
+                    )}{" "}
+                    {tr("Forecast updated {{time}}", {
+                      time: when(preview.forecast.fetchedAt, profile.timezone),
+                    })}
+                  </p>
                 )}
-              </p>
-              <div
-                className="energy-chart"
-                role="img"
-                aria-label={tr(
-                  "Forecast solar power, household demand and battery percentage",
-                )}
-              >
-                <ResponsiveContainer width="100%" height={290}>
-                  <ComposedChart
-                    data={chart}
-                    margin={{ left: 0, right: 0, top: 12, bottom: 5 }}
-                  >
-                    <Legend />
-                    <CartesianGrid stroke="#78928a25" vertical={false} />
-                    <XAxis
-                      dataKey="label"
-                      minTickGap={45}
-                      tick={{ fill: "#9fb6b0", fontSize: 11 }}
-                    />
-                    <YAxis
-                      yAxisId="power"
-                      width={38}
-                      unit=" kW"
-                      tick={{ fill: "#9fb6b0", fontSize: 10 }}
-                    />
-                    <YAxis
-                      yAxisId="soc"
-                      orientation="right"
-                      domain={[0, 100]}
-                      width={40}
-                      unit="%"
-                      tick={{ fill: "#b9f2d3", fontSize: 10 }}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        background: "#152a26",
-                        border: "1px solid #536e64",
-                        borderRadius: 12,
-                      }}
-                      labelFormatter={(_label, payload) =>
-                        when(
-                          Number(
-                            payload[0]?.payload?.start ??
-                              prediction.horizon.start,
-                          ),
-                          profile.timezone,
-                        )
-                      }
-                    />
-                    <Area
-                      yAxisId="power"
-                      type="monotone"
-                      dataKey="solarKw"
-                      name={tr("Solar")}
-                      stroke="#f4cc86"
-                      fill="#f4cc8625"
-                      isAnimationActive={false}
-                    />
-                    <Line
-                      yAxisId="power"
-                      type="monotone"
-                      dataKey="loadKw"
-                      name={tr("Household demand")}
-                      stroke="#d0c4f3"
-                      dot={false}
-                      isAnimationActive={false}
-                    />
-                    <Line
-                      yAxisId="soc"
-                      type="monotone"
-                      dataKey="soc"
-                      name={tr("Battery charge")}
-                      stroke="#bcf9d9"
-                      strokeWidth={2}
-                      dot={false}
-                      isAnimationActive={false}
-                    />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
-            </Panel>
+                <div
+                  className="energy-chart"
+                  role="img"
+                  aria-label={tr(
+                    "Forecast solar power, household demand and battery percentage",
+                  )}
+                >
+                  <ResponsiveContainer width="100%" height={290}>
+                    <ComposedChart
+                      data={chart}
+                      margin={{ left: 0, right: 0, top: 12, bottom: 5 }}
+                    >
+                      <Legend />
+                      <CartesianGrid stroke="#78928a25" vertical={false} />
+                      <XAxis
+                        dataKey="label"
+                        minTickGap={45}
+                        tick={{ fill: "#9fb6b0", fontSize: 11 }}
+                      />
+                      <YAxis
+                        yAxisId="power"
+                        width={38}
+                        unit=" kW"
+                        tick={{ fill: "#9fb6b0", fontSize: 10 }}
+                      />
+                      <YAxis
+                        yAxisId="soc"
+                        orientation="right"
+                        domain={[0, 100]}
+                        width={40}
+                        unit="%"
+                        tick={{ fill: "#b9f2d3", fontSize: 10 }}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          background: "#152a26",
+                          border: "1px solid #536e64",
+                          borderRadius: 12,
+                        }}
+                        labelFormatter={(_label, payload) =>
+                          when(
+                            Number(
+                              payload[0]?.payload?.start ??
+                                outlookPrediction.horizon.start,
+                            ),
+                            profile.timezone,
+                          )
+                        }
+                      />
+                      <Area
+                        yAxisId="power"
+                        type="monotone"
+                        dataKey="solarKw"
+                        name={tr("Solar")}
+                        stroke="#f4cc86"
+                        fill="#f4cc8625"
+                        isAnimationActive={false}
+                      />
+                      <Line
+                        yAxisId="power"
+                        type="monotone"
+                        dataKey="loadKw"
+                        name={tr("Household demand")}
+                        stroke="#d0c4f3"
+                        dot={false}
+                        isAnimationActive={false}
+                      />
+                      <Line
+                        yAxisId="soc"
+                        type="monotone"
+                        dataKey="soc"
+                        name={tr("Battery charge")}
+                        stroke="#bcf9d9"
+                        strokeWidth={2}
+                        dot={false}
+                        isAnimationActive={false}
+                      />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              </Panel>
+            </div>
           )}
           {prediction && profile.loads.length > 0 && (
             <Panel title={tr("Good times for flexible loads")}>
