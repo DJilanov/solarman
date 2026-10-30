@@ -420,6 +420,24 @@ export function registerEnergyIntegration({
         ).rows[0].n,
         0,
       );
+      const assess = f.hub.energy.assess, writes = f.device.writes.length;
+      let assessments = 0;
+      f.hub.energy.assess = async (...args) => {
+        assessments++;
+        if (assessments === 1) throw new Error("fixture assessment unavailable");
+        return assess.call(f.hub.energy, ...args);
+      };
+      try {
+        await assert.rejects(f.hub.energy.tick(), /fixture assessment unavailable/);
+        assert.notEqual((await f.state()).plan.state, "completed");
+        await f.hub.energy.tick();
+        assert.equal((await f.state()).plan.state, "completed");
+        assert.equal(assessments, 2);
+        assert.equal((await f.state()).automatic, false);
+        assert.equal(f.device.writes.length, writes);
+      } finally {
+        f.hub.energy.assess = assess;
+      }
     } finally {
       await f.dispose();
     }
