@@ -588,7 +588,9 @@ async function completeCommand(runtime, action, user) {
 }
 
 test("read-only verification persists checked values but cannot enable control without host permission", async () => {
-  const { runtime, calls, user } = await controlFixture();
+  const { runtime, calls, user, snapshot } = await controlFixture();
+  snapshot.rawHolding = { 206: 0, 207: 9, 2500: 0, 2501: 187, 2508: 0 };
+  snapshot.rawInput = { 2000: 6, 2002: 30, 507: 2300 };
   try {
     const job = await completeCommand(runtime, "verify", user);
     assert.equal(job.status, "succeeded");
@@ -633,6 +635,24 @@ test("read-only verification persists checked values but cannot enable control w
       )
     ).rows[0].verification;
     assert.deepEqual(stored.holdingRegisters, holdingRegisters);
+    assert.deepEqual(stored.diagnostics, {
+      batteryState: 6,
+      gridVoltages: [230, 230, 230],
+      holdingRegisters: {
+        ...snapshot.rawHolding,
+        3005: 1000,
+        3022: 0,
+        3023: 100,
+        3036: 500,
+      },
+      inputRegisters: snapshot.rawInput,
+    });
+    assert.deepEqual(
+      storedCommand.events.findLast(
+        (event) => event.event === "device_verification",
+      ).report.diagnostics,
+      stored.diagnostics,
+    );
     assert.equal(history.device, runtime.device);
     assert.deepEqual(history.writes, []);
     assert.equal(runtime.status().control.verification.passed, true);

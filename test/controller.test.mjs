@@ -323,7 +323,12 @@ test("read-only diagnostics still show measurements when control settings differ
   assert.deepEqual(await controller.settings(), {
     maximumSoc: 100,
     reserveSoc: 50,
-    rawHolding: { 3005: 1000, 3022: 0, 3023: 0, 3036: 500 },
+    rawHolding: Object.fromEntries(
+      Array.from({ length: 32 }, (_, index) => [
+        3005 + index,
+        inverter.holding.get(3005 + index) ?? 0,
+      ]),
+    ),
   });
   assert.deepEqual(inverter.writes, []);
 });
@@ -356,13 +361,52 @@ test("saved policy evidence preserves individual raw words using one existing bl
     },
     { ...options, writesEnabled: false },
   );
-  assert.deepEqual((await controller.settings()).rawHolding, {
-    3005: 1000,
-    3022: 65535,
-    3023: 1,
-    3036: 500,
-  });
+  const holding = (await controller.settings()).rawHolding;
+  assert.equal(Object.keys(holding).length, 32);
+  assert.equal(holding[3005], 1000);
+  assert.equal(holding[3022], 65535);
+  assert.equal(holding[3023], 1);
+  assert.equal(holding[3036], 500);
   assert.deepEqual(requests, [{ fn: 3, address: 3005, count: 32 }]);
+  assert.deepEqual(inverter.writes, []);
+});
+
+test("native diagnostics retain discharge settings and raw flows without extra requests or writes", async () => {
+  const inverter = new Inverter(52);
+  inverter.holding.set(2501, 187);
+  inverter.holding.set(2506, 100);
+  inverter.holding.set(2508, 0);
+  inverter.input.set(554, 37);
+  const requests = [];
+  const controller = new BatteryController(
+    {
+      command: async (hex) => {
+        const parsed = parseFrame(hex);
+        requests.push({
+          fn: parsed[1],
+          address: parsed.readUInt16BE(2),
+          count: parsed.readUInt16BE(4),
+        });
+        return inverter.command(hex);
+      },
+    },
+    { ...options, writesEnabled: false },
+  );
+  const snapshot = await controller.snapshot(false);
+  assert.equal(snapshot.rawHolding[206], 0);
+  assert.equal(snapshot.rawHolding[207], 9);
+  assert.equal(snapshot.rawHolding[2501], 187);
+  assert.equal(snapshot.rawHolding[2506], 100);
+  assert.equal(snapshot.rawHolding[2508], 0);
+  assert.equal(snapshot.rawInput[2002], 52);
+  assert.equal(snapshot.rawInput[507], inverter.input.get(507));
+  assert.equal(snapshot.rawInput[554], inverter.input.get(554));
+  assert.deepEqual(requests, [
+    { fn: 3, address: 206, count: 2 },
+    { fn: 3, address: 2500, count: 17 },
+    { fn: 4, address: 2000, count: 9 },
+    { fn: 4, address: 507, count: 48 },
+  ]);
   assert.deepEqual(inverter.writes, []);
 });
 

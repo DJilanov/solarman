@@ -868,6 +868,15 @@ export class TenantRuntime {
       checkedAt: new Date().toISOString(),
       passed: checks.every((check) => check.passed),
       checks,
+      diagnostics: {
+        batteryState: snapshot.batteryState,
+        gridVoltages: snapshot.gridVoltages,
+        holdingRegisters: {
+          ...snapshot.rawHolding,
+          ...settings.rawHolding,
+        },
+        inputRegisters: snapshot.rawInput ?? {},
+      },
       holdingRegisters: {
         2504: snapshot.acPowerRaw,
         2505: snapshot.acTargetRaw,

@@ -26,6 +26,8 @@ const EXPECTED_BASE_FLAGS = 0x09;
  * @property {number} loadW
  * @property {number} gridW
  * @property {number[]} gridVoltages
+ * @property {Record<number,number>} rawHolding
+ * @property {Record<number,number>} rawInput
  */
 
 /** @param {Snapshot} snapshot @returns {{ charge: boolean, reason: string, solarSurplusW: number }} */
@@ -184,12 +186,9 @@ export class BatteryController {
     return {
       maximumSoc: registers[0] / 10,
       reserveSoc: registers[31] / 10,
-      rawHolding: {
-        3005: registers[0],
-        3022: registers[17],
-        3023: registers[18],
-        3036: registers[31],
-      },
+      rawHolding: Object.fromEntries(
+        registers.map((value, index) => [3005 + index, value]),
+      ),
     };
   }
 
@@ -216,6 +215,15 @@ export class BatteryController {
       gridW: signed32(flows, 28),
       loadW: unsigned32(flows, 40),
       pvW: unsigned32(flows, 46),
+      rawHolding: Object.fromEntries([
+        [206, flags >>> 16],
+        [207, flags & 65535],
+        ...setup.map((value, index) => [2500 + index, value]),
+      ]),
+      rawInput: Object.fromEntries([
+        ...battery.map((value, index) => [2000 + index, value]),
+        ...flows.map((value, index) => [507 + index, value]),
+      ]),
     };
     if (
       validateSettings &&

@@ -37,6 +37,8 @@ An explicit **Verify device settings** action now saves individual holding-regis
 
 Older reports have no raw-word evidence. The interface labels those words as unrecorded rather than reverse-calculating them from interpreted settings. A saved report's firmware and timestamp remain separate from the latest observed firmware and timestamp.
 
+Verification also saves `diagnostics` with the battery state, grid voltages and exact native words already read from holding 206–207, 2500–2516 and 3005–3036, and input 507–554 and 2000–2008. This captures discharge-command settings and phase measurements for diagnosis without extra inverter requests or writes. Native measurement snapshots retain their existing raw holding/input ranges; provider-only samples have no fabricated native words. The six-word user-facing policy report remains unchanged. Raw values are diagnostic evidence, not confirmation that a generic register workbook applies to the installed firmware or that physical discharge has passed commissioning.
+
 ## Saved device report
 
 On **Controls → Commission the home policy**, the EN/BG saved-device-evidence panel is available before a commissioning run can be prepared. It previews, copies or downloads the native solar policy, validated version strings, selected numeric checks and available raw words from the existing report. Exporting it performs no provider request or inverter command. It excludes account identifiers, serial numbers and free-form diagnostic errors. It contains no manufacturer questions or outreach instructions.
