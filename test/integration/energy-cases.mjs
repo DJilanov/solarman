@@ -354,6 +354,24 @@ export function registerEnergyIntegration({
       assert.equal(updated.preview.startsAt, updated.plan.startsAt);
       assert.equal(updated.preview.settingsRevision, updated.revision);
       assert.equal(f.device.writes.length, writes);
+      await f.pool.query("UPDATE energy_plans SET binding=null WHERE id=$1", [
+        updated.preview.id,
+      ]);
+      assert.equal((await f.state()).preview?.id, updated.preview.id);
+      assert.equal(
+        (
+          await f.call("apply", {
+            revision: updated.revision,
+            planId: updated.preview.id,
+            choice: "tonight",
+            currentPassword: password,
+          })
+        ).status,
+        409,
+        "an unverified preview must remain unavailable for approval",
+      );
+      assert.equal((await f.state()).plan.id, id);
+      assert.equal(f.device.writes.length, writes);
       await f.pool.query(
         "UPDATE energy_plans SET settings_revision=settings_revision+1 WHERE id=$1",
         [updated.preview.id],
