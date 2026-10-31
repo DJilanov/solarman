@@ -30,6 +30,7 @@ import {
   INVERTER_CLOCK_MAX_SKEW_SECONDS,
   parseProviderReading,
   normalizeBluesun,
+  checkInverterClock,
   providerFirmware,
 } from "./telemetry.mjs";
 
@@ -75,6 +76,7 @@ export class TenantRuntime {
     });
     this.telemetry = null;
     this.clock = null;
+    this.clockRecheck = null;
     this.firmware = null;
     this.initialized = false;
     this.cleanupRequired = false;
@@ -817,6 +819,37 @@ export class TenantRuntime {
     return { reading, mapped };
   }
 
+  /** @param {import('./telemetry.mjs').ProviderReading} reading @param {boolean} forceControl @param {number} [now] @returns {boolean} */
+  deferClockCheck(reading, forceControl, now = Date.now()) {
+    if (
+      forceControl ||
+      this.paused ||
+      this.manualTopup ||
+      this.recoveryTesting ||
+      this.inhibitStarts ||
+      !this.profileVerified ||
+      this.profileError ||
+      this.journal.owned ||
+      this.journal.pending ||
+      this.cleanupRequired ||
+      !this.commissioningPermitted("approved") ||
+      !checkInverterClock(
+        { ...reading, collectedAt: new Date(now) },
+        this.timezone,
+      ).passed
+    )
+      return false;
+    const collectedAt = reading.collectedAt.getTime();
+    this.clockRecheck ??= { collectedAt, startedAt: now };
+    const elapsed = now - this.clockRecheck.startedAt;
+    // A plausible mixed cache may wait for one new upload; it never authorizes a write.
+    return (
+      collectedAt <= this.clockRecheck.collectedAt &&
+      elapsed >= 0 &&
+      elapsed <= TELEMETRY_MAX_AGE_MS
+    );
+  }
+
   /** @returns {Promise<object>} */
   async verifyReadings() {
     const previousVerification = this.verification;
@@ -1106,8 +1139,16 @@ export class TenantRuntime {
           charge: false,
           reason: "firmware_verification_changed",
         });
-      if (!mapped.clock.passed)
+      if (!mapped.clock.passed) {
+        if (this.deferClockCheck(reading, forceControl))
+          return this.collectProvider(reading, {
+            charge: false,
+            reason: "clock_check_pending",
+          });
+        this.clockRecheck = null;
         throw new Error("The inverter clock must match the workspace timezone");
+      }
+      this.clockRecheck = null;
       this.supervision.observe(mapped.snapshot, reading.collectedAt);
       this.supervision.options.retryMs =
         this.capacity()?.assessmentMs ?? this.controlPollMs;
@@ -1798,6 +1839,8 @@ export function reasonLabel(reason) {
       telemetry_updated: "Logger readings updated",
       telemetry_unchanged:
         "Logger data is unchanged; waiting for the next device upload",
+      clock_check_pending:
+        "Clock verification is waiting for a new logger upload; no charging command was sent",
       monitoring_settings_mismatch:
         "Device readings updated; control settings require configuration",
       midnight_boundary:

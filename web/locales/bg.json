@@ -2179,5 +2179,6 @@
   "Grid charging can start when this night plan is applied during the cheap period.": "Зареждането от мрежата може да започне още при прилагането на нощния план в евтиния период.",
   "Grid charging period": "Период за зареждане от мрежата",
   "Grid charging stops at the selected target. The battery stays reserved until the return time.": "Зареждането от мрежата спира при избраната цел. Батерията остава в резерв до часа за връщане към нормалния режим.",
-  "The charging cycle is complete. The full cost comparison is available after {{time}}.": "Цикълът на зареждане е завършен. Пълното сравнение на разходите ще е достъпно след {{time}}."
+  "The charging cycle is complete. The full cost comparison is available after {{time}}.": "Цикълът на зареждане е завършен. Пълното сравнение на разходите ще е достъпно след {{time}}.",
+  "Clock verification is waiting for a new logger upload; no charging command was sent": "Проверката на часовника изчаква ново отчитане от логера; не е изпратена команда за зареждане"
 }

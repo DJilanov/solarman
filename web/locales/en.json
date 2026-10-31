@@ -2179,5 +2179,6 @@
   "Grid charging can start when this night plan is applied during the cheap period.": "Grid charging can start when this night plan is applied during the cheap period.",
   "Grid charging period": "Grid charging period",
   "Grid charging stops at the selected target. The battery stays reserved until the return time.": "Grid charging stops at the selected target. The battery stays reserved until the return time.",
-  "The charging cycle is complete. The full cost comparison is available after {{time}}.": "The charging cycle is complete. The full cost comparison is available after {{time}}."
+  "The charging cycle is complete. The full cost comparison is available after {{time}}.": "The charging cycle is complete. The full cost comparison is available after {{time}}.",
+  "Clock verification is waiting for a new logger upload; no charging command was sent": "Clock verification is waiting for a new logger upload; no charging command was sent"
 }

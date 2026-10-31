@@ -2083,6 +2083,189 @@ test("a mixed provider timestamp gets one coherent recheck before control contin
   }
 });
 
+test("a repeated mixed clock upload defers native supervision without authorizing charging", async () => {
+  const { runtime, calls } = await armedFixture();
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  const reported = providerPayload({ collectedAt: now + 89000 }).dataList.find(
+    (point) => point.key === "SYSTIM1",
+  ).value;
+  let collectedAt = now - 240000;
+  try {
+    runtime.client.api = async () =>
+      providerPayload({
+        device: runtime.device,
+        collectedAt,
+        values: { SYSTIM1: reported },
+      });
+    runtime.supervision.lastNativeAt -= 3600000;
+    const ticks = calls.filter((call) => call === "tick").length;
+    const disables = calls.filter((call) => call === "disable").length;
+    await runtime.evaluate();
+    assert.equal(runtime.paused, false);
+    assert.equal(runtime.clock.passed, false);
+    assert.equal(runtime.status().control.canStart, false);
+    assert.equal(calls.filter((call) => call === "tick").length, ticks);
+    assert.equal(calls.filter((call) => call === "disable").length, disables);
+    const job = (
+      await pool.query(
+        "SELECT status,message,detail FROM command_executions WHERE tenant_id=$1 AND action='evaluate' ORDER BY created_at DESC LIMIT 1",
+        [runtime.tenantId],
+      )
+    ).rows[0];
+    assert.equal(job.status, "succeeded");
+    assert.equal(job.detail.decision.reason, "clock_check_pending");
+    assert.match(job.message, /no charging command was sent/);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT control_fault FROM device_health WHERE tenant_id=$1",
+          [runtime.tenantId],
+        )
+      ).rows[0].control_fault,
+      false,
+    );
+    await runtime.evaluate();
+    assert.equal(
+      runtime.paused,
+      false,
+      "the same cached upload is not a new failed observation",
+    );
+    collectedAt = now;
+    await runtime.evaluate();
+    assert.equal(runtime.clock.passed, true);
+    assert.equal(runtime.clock.skewSeconds, 89);
+    assert.equal(runtime.clockRecheck, null);
+    assert.equal(runtime.paused, false);
+    assert.equal(runtime.status().control.canStart, true);
+    assert.equal(calls.filter((call) => call === "tick").length, ticks + 1);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("another failed clock upload or an expired recheck pauses native supervision", async () => {
+  for (const scenario of ["new-upload", "timeout"]) {
+    const { runtime, calls } = await armedFixture();
+    const now = Math.floor(Date.now() / 1000) * 1000;
+    const reported = providerPayload({ collectedAt: now + 89000 }).dataList.find(
+      (point) => point.key === "SYSTIM1",
+    ).value;
+    let collectedAt = now - 240000;
+    try {
+      runtime.client.api = async () =>
+        providerPayload({
+          device: runtime.device,
+          collectedAt,
+          values: { SYSTIM1: reported },
+        });
+      await runtime.evaluate();
+      assert.equal(runtime.paused, false);
+      assert.ok(runtime.clockRecheck);
+      if (scenario === "new-upload") collectedAt += 60000;
+      else runtime.clockRecheck.startedAt -= 600001;
+      await runtime.evaluate();
+      assert.equal(runtime.paused, true, scenario);
+      assert.equal(runtime.inhibitStarts, true, scenario);
+      assert.equal(runtime.clockRecheck, null);
+      assert.equal(runtime.status().control.canStart, false);
+      assert.match(runtime.status().error, /inverter clock/);
+      assert.ok(calls.includes("disable"));
+    } finally {
+      await runtime.close();
+    }
+  }
+});
+
+test("an explicit control request cannot defer a failed clock check", async () => {
+  const { runtime, user } = await armedFixture();
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  const reported = providerPayload({ collectedAt: now + 89000 }).dataList.find(
+    (point) => point.key === "SYSTIM1",
+  ).value;
+  try {
+    runtime.client.api = async () =>
+      providerPayload({
+        device: runtime.device,
+        collectedAt: now - 240000,
+        values: { SYSTIM1: reported },
+      });
+    const job = await completeCommand(runtime, "resume", user);
+    assert.equal(job.status, "failed");
+    assert.equal(runtime.clockRecheck, null);
+    assert.equal(runtime.paused, true);
+    assert.match(runtime.status().error, /inverter clock/);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a manual pause during a clock recheck survives later coherent uploads", async () => {
+  const { runtime, user, calls } = await armedFixture();
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  const reported = providerPayload({ collectedAt: now + 89000 }).dataList.find(
+    (point) => point.key === "SYSTIM1",
+  ).value;
+  try {
+    runtime.client.api = async () =>
+      providerPayload({
+        device: runtime.device,
+        collectedAt: now - 240000,
+        values: { SYSTIM1: reported },
+      });
+    await runtime.evaluate();
+    assert.ok(runtime.clockRecheck);
+    assert.equal(
+      (await completeCommand(runtime, "pause", user)).status,
+      "succeeded",
+    );
+    const ticks = calls.filter((call) => call === "tick").length;
+    runtime.client.api = async () => providerPayload({ device: runtime.device });
+    await runtime.evaluate();
+    assert.equal(runtime.paused, true);
+    assert.equal(calls.filter((call) => call === "tick").length, ticks);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT paused FROM controller_state WHERE tenant_id=$1",
+          [runtime.tenantId],
+        )
+      ).rows[0].paused,
+      true,
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("owned scheduled charging is cleaned up instead of deferring a mixed clock upload", async () => {
+  const { runtime, calls } = await armedFixture();
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  const reported = providerPayload({ collectedAt: now + 89000 }).dataList.find(
+    (point) => point.key === "SYSTIM1",
+  ).value;
+  try {
+    const intent = await runtime.journal.prepare(206, [0, 25], null);
+    await runtime.journal.acknowledge(intent);
+    await runtime.journal.verify(intent);
+    assert.equal(runtime.journal.owned, true);
+    const disables = calls.filter((call) => call === "disable").length;
+    runtime.client.api = async () =>
+      providerPayload({
+        device: runtime.device,
+        collectedAt: now - 240000,
+        values: { SYSTIM1: reported },
+      });
+    await runtime.evaluate();
+    assert.equal(runtime.clockRecheck, null);
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.journal.owned, false);
+    assert.equal(calls.filter((call) => call === "disable").length, disables + 1);
+    assert.match(runtime.status().error, /inverter clock/);
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("supervision caches are rebuilt with native checks after restart", async () => {
   const { runtime, snapshot } = await armedFixture();
   let restarted;
