@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { parseFrame } from "../../src/modbus.mjs";
+import { SolarmanTransportError } from "../../src/solarman.mjs";
 import { energyProfile, energyWeather } from "../fixtures/energy.mjs";
 import {
   commissioningBinding,
@@ -600,6 +603,125 @@ export function registerEnergyIntegration({
       await f.dispose();
     }
   });
+  test("a failed night setup restores normal settings without reporting a completed trial", async () => {
+    const f = await fixture();
+    try {
+      await f.approve();
+      const value = await f.refresh();
+      assert.equal(
+        (
+          await f.call("apply", {
+            revision: value.revision,
+            planId: value.plan.id,
+            choice: "tonight",
+            currentPassword: password,
+          })
+        ).status,
+        202,
+      );
+      const plan = (
+          await f.pool.query("SELECT * FROM energy_plans WHERE id=$1", [
+            value.plan.id,
+          ])
+        ).rows[0],
+        now = Date.now(),
+        prediction = {
+          ...plan.prediction,
+          night: {
+            start: now - 60000,
+            end: now + 3600000,
+            releaseAt: now + 3480000,
+          },
+          chargeStart: now + 60000,
+          chargeEnd: now + 3480000,
+        };
+      await f.pool.query(
+        "UPDATE energy_plans SET state='starting',prediction=$2,starts_at=$3,ends_at=$4 WHERE id=$1",
+        [
+          plan.id,
+          prediction,
+          new Date(prediction.night.start),
+          new Date(prediction.night.releaseAt),
+        ],
+      );
+      const command = f.runtime.client.command;
+      let failed = false;
+      f.runtime.client.command = async (raw) => {
+        const reply = await command(raw),
+          bytes = parseFrame(raw);
+        if (!failed && bytes[1] === 16 && bytes.readUInt16BE(2) === 2500) {
+          failed = true;
+          throw new SolarmanTransportError();
+        }
+        return reply;
+      };
+      await f.runtime.outage.prepare(
+        f.user,
+        { targetSoc: prediction.targetSoc },
+        plan.id,
+        {
+          planId: plan.id,
+          endsAt: new Date(prediction.night.releaseAt),
+          windows: nightNativeWindows(prediction, plan.profile.timezone),
+        },
+      );
+      await f.runtime.work.idle();
+      await f.runtime.outage.load();
+      assert.equal(failed, true);
+      assert.equal(f.runtime.outage.row.state, "restored");
+      assert.equal(f.runtime.outage.row.proof.applyWritesVerified, undefined);
+      assert.equal(f.device.holding.get(2500), 0);
+      const writes = f.device.writes.length;
+      await f.hub.energy.tick();
+      const result = (
+        await f.pool.query("SELECT state,code FROM energy_plans WHERE id=$1", [
+          plan.id,
+        ])
+      ).rows[0];
+      assert.deepEqual(result, { state: "failed", code: "start-unconfirmed" });
+      assert.equal(f.device.writes.length, writes);
+      const repair = await readFile(
+        new URL(
+          "../../migrations/026_energy_failed_start.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      );
+      await f.pool.query(
+        "UPDATE energy_plans SET state='completed',code=null WHERE id=$1",
+        [plan.id],
+      );
+      await f.pool.query(repair);
+      assert.equal(
+        (
+          await f.pool.query("SELECT state FROM energy_plans WHERE id=$1", [
+            plan.id,
+          ])
+        ).rows[0].state,
+        "failed",
+      );
+      await f.pool.query(
+        "UPDATE outage_preparations SET proof=proof||'{\"applyWritesVerified\":true}'::jsonb WHERE id=$1",
+        [f.runtime.outage.row.id],
+      );
+      await f.pool.query(
+        "UPDATE energy_plans SET state='completed',code=null WHERE id=$1",
+        [plan.id],
+      );
+      await f.pool.query(repair);
+      assert.equal(
+        (
+          await f.pool.query("SELECT state FROM energy_plans WHERE id=$1", [
+            plan.id,
+          ])
+        ).rows[0].state,
+        "completed",
+      );
+    } finally {
+      await f.dispose();
+    }
+  });
+
   test("energy scheduler rechecks a real due window and an outage request preempts the night hold exactly once", async () => {
     const f = await fixture();
     try {

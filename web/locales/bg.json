@@ -2175,5 +2175,7 @@
   "The latest forecast below is a preview. Your saved {{target}}% night target is unchanged.": "Актуалната прогноза по-долу е предварителен преглед. Запазената нощна цел {{target}}% остава същата.",
   "Saved night plan": "Запазен нощен план",
   "This is the saved plan. A fresh forecast and battery check are required before it starts; refreshing the preview does not change your approval.": "Това е запазеният план. Преди старта му се проверяват актуалната прогноза и батерията. Обновяването на прегледа не променя одобрението ти.",
-  "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts.": "Цел според актуалната прогноза: {{target}}%. Запазеният план се проверява отново преди началото на зареждането."
+  "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts.": "Цел според актуалната прогноза: {{target}}%. Запазеният план се проверява отново преди началото на зареждането.",
+  "Readings are arriving again. App control remains paused after an earlier request failure. Verify device settings before resuming.": "Отчитанията отново пристигат. Управлението остава на пауза след по-ранна неуспешна заявка. Проверете настройките на инвертора, преди да продължите.",
+  "Night charging could not be confirmed. Normal settings were restored; this trial did not complete.": "Нощното зареждане не е потвърдено. Нормалните настройки са възстановени; изпитването не е завършено."
 }

@@ -161,20 +161,47 @@ export function StatusBadge({ status }: { status: string }): ReactNode {
     </span>
   );
 }
+export function ControllerErrorNotice({
+  controller,
+}: {
+  controller: ControllerStatus;
+}): ReactNode {
+  const { pathname } = useLocation();
+  if (!controller.error) return null;
+  const now = Date.now(),
+    uploadedAt = Date.parse(controller.telemetry?.collectedAt ?? ""),
+    restored =
+      controller.error === "SOLARMAN HTTP request failed or timed out" &&
+      controller.connectionRecovered === true &&
+      controller.paused &&
+      controller.control.workspaceEnabled &&
+      controller.telemetry?.deviceState === 1 &&
+      Number.isFinite(uploadedAt) &&
+      uploadedAt <= now + 30_000 &&
+      now - uploadedAt <= (controller.pollSeconds + 180) * 1000;
+  return (
+    <Notice tone="danger">
+      {restored
+        ? tr(
+            "Readings are arriving again. App control remains paused after an earlier request failure. Verify device settings before resuming.",
+          )
+        : controller.error}{" "}
+      {(!restored || pathname !== "/controls/setup") && (
+        <Link to={restored ? "/controls/setup" : "/settings"}>
+          {tr(restored ? "Review app controls" : "Check connection")}{" "}
+          <ArrowRight size={13} />
+        </Link>
+      )}
+    </Notice>
+  );
+}
 export function SetupNotice({
   controller,
 }: {
   controller: ControllerStatus;
 }): ReactNode {
   if (controller.error)
-    return (
-      <Notice tone="danger">
-        {controller.error}{" "}
-        <Link to="/settings">
-          {tr("Check connection")} <ArrowRight size={13} />
-        </Link>
-      </Notice>
-    );
+    return <ControllerErrorNotice controller={controller} />;
   if (controller.setupError)
     return (
       <Notice>

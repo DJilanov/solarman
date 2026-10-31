@@ -2015,6 +2015,36 @@ test("a failed clock check preserves its original evidence through cleanup and l
   }
 });
 
+test("provider connection recovery requires a successful reading and leaves control paused", async () => {
+  const { runtime, calls } = await armedFixture();
+  const { SolarmanTransportError } = await import("../../src/solarman.mjs");
+  try {
+    runtime.client.api = async (path) => {
+      if (path === "/account/v1.0/balance") return { total: 200000 };
+      throw new SolarmanTransportError();
+    };
+    await runtime.evaluate();
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.status().connectionRecovered, false);
+    const ticks = calls.filter((call) => call === "tick").length;
+    runtime.client.api = async (path) =>
+      path === "/account/v1.0/balance"
+        ? { total: 200000 }
+        : providerPayload({ device: runtime.device });
+    await runtime.evaluate();
+    assert.equal(runtime.status().connectionRecovered, true);
+    assert.equal(
+      runtime.status().error,
+      "SOLARMAN HTTP request failed or timed out",
+    );
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.status().control.canStart, false);
+    assert.equal(calls.filter((call) => call === "tick").length, ticks);
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("a mixed provider timestamp gets one coherent recheck before control continues", async () => {
   const { runtime, calls } = await armedFixture();
   let reads = 0;

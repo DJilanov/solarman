@@ -1002,14 +1002,16 @@ export class EnergyPlanning {
       if (plan && ["starting", "running", "restoring"].includes(plan.state)) {
         const preparation = (
           await this.pool.query(
-            "SELECT state,last_error FROM outage_preparations WHERE tenant_id=$1 AND energy_plan_id=$2 ORDER BY created_at DESC LIMIT 1",
+            "SELECT state,last_error,proof FROM outage_preparations WHERE tenant_id=$1 AND energy_plan_id=$2 ORDER BY created_at DESC LIMIT 1",
             [settings.tenant_id, plan.id],
           )
         ).rows[0];
         if (preparation) {
           const state =
             preparation.state === "restored"
-              ? "completed"
+              ? preparation.proof?.applyWritesVerified === true
+                ? "completed"
+                : "failed"
               : preparation.state === "failed"
                 ? "failed"
                 : ["restoring", "recovery-required", "quarantined"].includes(
@@ -1028,7 +1030,14 @@ export class EnergyPlanning {
               );
             await this.pool.query(
               "UPDATE energy_plans SET state=$3,code=$4,updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2",
-              [settings.tenant_id, plan.id, state, preparation.last_error],
+              [
+                settings.tenant_id,
+                plan.id,
+                state,
+                state === "failed" && preparation.state === "restored"
+                  ? "start-unconfirmed"
+                  : preparation.last_error,
+              ],
             );
           }
         } else if (Date.now() - new Date(plan.updated_at).getTime() > 5 * 60000)

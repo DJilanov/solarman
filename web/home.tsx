@@ -15,6 +15,7 @@ import { tr, locale } from "./i18n";
 import { age, energy, formatNumber, power, when } from "./format";
 import {
   EmptyState,
+  ControllerErrorNotice,
   Heading,
   Loading,
   Notice,
@@ -174,9 +175,10 @@ export default function HomePage(): ReactNode {
         action={<span className="home-date">{date}</span>}
       />
       {overviewError && <Notice tone="danger">{overviewError}</Notice>}
-      {(controller.error || controller.setupError) && (
+      <ControllerErrorNotice controller={controller} />
+      {!controller.error && controller.setupError && (
         <Notice tone="danger">
-          {controller.error ?? controller.setupError}{" "}
+          {controller.setupError}{" "}
           <Link to="/settings">{tr("Check connection")}</Link>
         </Notice>
       )}

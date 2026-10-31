@@ -14,7 +14,14 @@ import {
 import { useWorkspace } from "./context";
 import { tr } from "./i18n";
 import { formatNumber } from "./format";
-import { Heading, Loading, Notice, Panel, StatusBadge } from "./components";
+import {
+  ControllerErrorNotice,
+  Heading,
+  Loading,
+  Notice,
+  Panel,
+  StatusBadge,
+} from "./components";
 import { GridChargeControl } from "./grid-charge";
 import { appPolicyStatus } from "./home";
 import { ControlReadinessPanel } from "./control-readiness";
@@ -53,7 +60,7 @@ export default function AutomationsPage(): ReactNode {
       />
       <EnergySummary />
       {overviewError && <Notice tone="danger">{overviewError}</Notice>}
-      {controller.error && <Notice tone="danger">{controller.error}</Notice>}
+      <ControllerErrorNotice controller={controller} />
       {controller.supervision.issue && (
         <Notice tone="danger">
           {tr(controller.supervision.issue.message)}
@@ -266,6 +273,7 @@ export function ControlSetupPage(): ReactNode {
           </Link>
         }
       />
+      <ControllerErrorNotice controller={controller} />
       <ol className="setup-steps" aria-label={tr("Control setup progress")}>
         {steps.map((label, index) => (
           <li

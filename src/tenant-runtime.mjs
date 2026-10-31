@@ -460,6 +460,10 @@ export class TenantRuntime {
       topupExpiresAt: this.topupExpiresAt,
       lastSuccessAt: this.lastSuccessAt,
       telemetry: this.telemetry,
+      connectionRecovered: Boolean(
+        !this.lastError &&
+        this.profileError === "SOLARMAN HTTP request failed or timed out",
+      ),
       error: this.lastError || this.profileError,
       setupError: this.setupError,
       pollSeconds: this.pollMs / 1000,

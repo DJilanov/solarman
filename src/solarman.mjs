@@ -11,6 +11,13 @@ export class SolarmanAuthenticationError extends Error {
   }
 }
 
+export class SolarmanTransportError extends Error {
+  constructor() {
+    super("SOLARMAN HTTP request failed or timed out");
+    this.name = "SolarmanTransportError";
+  }
+}
+
 const CALLBACK_PREFIX = "/solarman/callback/";
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
@@ -232,7 +239,7 @@ export class SolarmanClient {
         body: JSON.stringify(body),
       });
     } catch {
-      throw new Error("SOLARMAN HTTP request failed or timed out");
+      throw new SolarmanTransportError();
     }
     if (!response.ok) {
       if (response.status === 401) this.token = null;
@@ -415,13 +422,21 @@ export class SolarmanClient {
         path === "/account/v1.0/balance"
           ? "balance"
           : (options.purpose ?? "routine");
-      return this.post(
-        path,
-        body,
-        await this.accessToken(purpose),
-        false,
-        purpose,
-      );
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await this.post(
+            path,
+            body,
+            await this.accessToken(purpose),
+            false,
+            purpose,
+          );
+        } catch (error) {
+          if (!(error instanceof SolarmanTransportError) || attempt > 0)
+            throw error;
+          await delay(1000);
+        }
+      }
     });
     this.tail = result.then(
       () => undefined,

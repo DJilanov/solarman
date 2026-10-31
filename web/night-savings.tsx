@@ -83,6 +83,8 @@ const codes: Record<string, string> = {
     "Shared command capacity cannot accept another night plan ending at this time",
   "target-unreachable":
     "The selected target cannot be reached before the cheap period ends. Choose a lower target.",
+  "start-unconfirmed":
+    "Night charging could not be confirmed. Normal settings were restored; this trial did not complete.",
 };
 function money(value: number, currency: string): string {
   return new Intl.NumberFormat(locale(), {
@@ -938,6 +940,7 @@ export default function NightSavingsPage(): ReactNode {
                   {when(item.startsAt, item.timezone)} ·{" "}
                   {tr(states[item.state] ?? "Plan needs attention")}
                 </strong>
+                {item.code && codes[item.code] && <p>{tr(codes[item.code])}</p>}
                 <p>
                   {tr("Predicted saving")}{" "}
                   {money(item.prediction.estimatedSavings, item.currency)} ·{" "}

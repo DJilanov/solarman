@@ -2175,5 +2175,7 @@
   "The latest forecast below is a preview. Your saved {{target}}% night target is unchanged.": "The latest forecast below is a preview. Your saved {{target}}% night target is unchanged.",
   "Saved night plan": "Saved night plan",
   "This is the saved plan. A fresh forecast and battery check are required before it starts; refreshing the preview does not change your approval.": "This is the saved plan. A fresh forecast and battery check are required before it starts; refreshing the preview does not change your approval.",
-  "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts.": "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts."
+  "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts.": "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts.",
+  "Readings are arriving again. App control remains paused after an earlier request failure. Verify device settings before resuming.": "Readings are arriving again. App control remains paused after an earlier request failure. Verify device settings before resuming.",
+  "Night charging could not be confirmed. Normal settings were restored; this trial did not complete.": "Night charging could not be confirmed. Normal settings were restored; this trial did not complete."
 }

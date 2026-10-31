@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import {
   SolarmanClient,
   SolarmanAuthenticationError,
+  SolarmanTransportError,
 } from "../src/solarman.mjs";
 import { frame, readCommand, writeCommand } from "../src/modbus.mjs";
 
@@ -140,7 +141,10 @@ for (const fn of [3, 4]) {
       reservations.push({ kind, purpose: reservedPurpose });
     };
     assert.equal(await client.command(read, { purpose }), expected);
-    assert.deepEqual(requests.map((request) => request.content), [read, read]);
+    assert.deepEqual(
+      requests.map((request) => request.content),
+      [read, read],
+    );
     assert.notEqual(requests[0].callBackUrl, requests[1].callBackUrl);
     assert.equal(tokenCount(), 1);
     assert.deepEqual(reservations, [
@@ -258,7 +262,10 @@ for (const gate of ["allowance", "authorization"]) {
       if (gate === "authorization" && authorizations === 2)
         throw new Error("Retry authorization revoked");
     };
-    await assert.rejects(client.command(command), /Retry .* (unavailable|revoked)/);
+    await assert.rejects(
+      client.command(command),
+      /Retry .* (unavailable|revoked)/,
+    );
     assert.equal(reservations, 2);
     assert.equal(authorizations, gate === "allowance" ? 1 : 2);
     assert.equal(requests.length, 1);
@@ -485,6 +492,117 @@ test("the documented balance endpoint uses its distinct bounded probe allowance"
     { kind: "token", purpose: "balance" },
     { kind: "read", purpose: "balance" },
   ]);
+});
+
+test("provider reads retry one transport failure and account for both attempts", async (t) => {
+  const { client } = await fixture(t);
+  await client.accessToken();
+  const originalFetch = globalThis.fetch,
+    reservations = [];
+  let attempts = 0,
+    paced = 0;
+  client.beforeRequest = async () => {
+    paced++;
+  };
+  client.onRequest = async (kind, purpose) => {
+    reservations.push({ kind, purpose });
+  };
+  t.mock.method(globalThis, "fetch", async (...args) => {
+    if (++attempts === 1) throw new TypeError("private transport details");
+    return originalFetch(...args);
+  });
+  assert.equal(
+    (await client.api("/account/v1.0/balance", { appId: "test-app" })).total,
+    1000,
+  );
+  assert.equal(attempts, 2);
+  assert.equal(paced, 2);
+  assert.deepEqual(reservations, [
+    { kind: "read", purpose: "balance" },
+    { kind: "read", purpose: "balance" },
+  ]);
+});
+
+test("a read retries transport failure during authentication with the original recovery allowance", async (t) => {
+  const { client } = await fixture(t);
+  const originalFetch = globalThis.fetch,
+    reservations = [];
+  let attempts = 0;
+  client.onRequest = async (kind, purpose) => {
+    reservations.push({ kind, purpose });
+  };
+  t.mock.method(globalThis, "fetch", async (...args) => {
+    if (++attempts === 1)
+      throw new TypeError("private authentication transport details");
+    if (new URL(String(args[0])).pathname === "/device/v1.0/currentData")
+      return new Response(JSON.stringify({ success: true }));
+    return originalFetch(...args);
+  });
+  await client.api(
+    "/device/v1.0/currentData",
+    { deviceSn: "TEST-INVERTER" },
+    { purpose: "recovery" },
+  );
+  assert.deepEqual(reservations, [
+    { kind: "token", purpose: "recovery" },
+    { kind: "token", purpose: "recovery" },
+    { kind: "read", purpose: "recovery" },
+  ]);
+});
+
+test("persistent provider transport failures stop after two sanitized attempts", async (t) => {
+  const { client } = await fixture(t);
+  await client.accessToken();
+  let attempts = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    attempts++;
+    throw new TypeError("private transport details");
+  });
+  await assert.rejects(
+    client.api("/device/v1.0/currentData", { deviceSn: "TEST-INVERTER" }),
+    (error) => {
+      assert.ok(error instanceof SolarmanTransportError);
+      assert.equal(error.message, "SOLARMAN HTTP request failed or timed out");
+      return true;
+    },
+  );
+  assert.equal(attempts, 2);
+});
+
+test("provider HTTP errors and rejected reads do not trigger a transport retry", async (t) => {
+  const { client } = await fixture(t);
+  await client.accessToken();
+  for (const [status, body] of [
+    [503, {}],
+    [200, { success: false, code: "2101006" }],
+  ]) {
+    let attempts = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      attempts++;
+      return new Response(JSON.stringify(body), { status });
+    });
+    await assert.rejects(
+      client.api("/device/v1.0/currentData", { deviceSn: "TEST-INVERTER" }),
+    );
+    assert.equal(attempts, 1);
+    t.mock.restoreAll();
+  }
+});
+
+test("custom inverter commands are never replayed after a transport failure", async (t) => {
+  const { client } = await fixture(t);
+  await client.accessToken();
+  for (const value of [command, writeCommand(2500, [3])]) {
+    let attempts = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      attempts++;
+      throw new TypeError("private transport details");
+    });
+    await assert.rejects(client.command(value), SolarmanTransportError);
+    assert.equal(attempts, 1);
+    assert.equal(client.pending.size, 0);
+    t.mock.restoreAll();
+  }
 });
 
 test("authentication incidents require an explicit provider rejection rather than a malformed response", async (t) => {

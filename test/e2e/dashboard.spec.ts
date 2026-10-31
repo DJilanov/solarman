@@ -118,6 +118,95 @@ async function outageConsoleFixture(
   return { overview, outage };
 }
 
+test("a recovered provider connection routes paused control to verification instead of connection settings", async ({
+  page,
+}) => {
+  const data = await homeConsoleFixture(page);
+  data.controller.mode = "error";
+  data.controller.error = "SOLARMAN HTTP request failed or timed out";
+  data.controller.connectionRecovered = false;
+  data.controller.control.canStart = false;
+  await page.goto("/");
+  const message = page.getByText("Readings are arriving again.", {
+    exact: false,
+  });
+  await expect(message).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "Check connection", exact: false }),
+  ).toHaveAttribute("href", "/settings");
+  data.controller.connectionRecovered = true;
+  await page.goto("/");
+  await expect(message).toBeVisible();
+  await expect(
+    page
+      .getByRole("link", { name: "Review app controls", exact: true })
+      .first(),
+  ).toHaveAttribute("href", "/controls/setup");
+  await expect(
+    page.getByRole("link", { name: "Check connection", exact: false }),
+  ).toHaveCount(0);
+  if (!data.controller.telemetry) throw Error("Missing telemetry fixture");
+  data.controller.telemetry.collectedAt = new Date(
+    Date.now() - 86400000,
+  ).toISOString();
+  await page.goto("/");
+  await expect(message).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "Check connection", exact: false }),
+  ).toHaveAttribute("href", "/settings");
+  data.controller.telemetry.collectedAt = new Date().toISOString();
+  await page.goto("/");
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(
+    page.getByText("Отчитанията отново пристигат.", { exact: false }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: "test-results/connection-restored-bg.png" });
+  await page
+    .getByRole("link", {
+      name: "Прегледай управлението от приложението",
+      exact: true,
+    })
+    .first()
+    .click();
+  await expect(page).toHaveURL(/\/controls\/setup$/);
+  await expect(
+    page.getByText("Отчитанията отново пристигат.", { exact: false }),
+  ).toBeVisible();
+});
+
+test("failed night plan history explains restoration without claiming a completed trial in Bulgarian", async ({
+  page,
+}) => {
+  await signIn(page);
+  const data = energyDashboardFixture();
+  if (!data.plan) throw Error("Missing energy fixture");
+  data.history = [
+    {
+      ...data.plan,
+      id: randomUUID(),
+      state: "failed",
+      code: "start-unconfirmed",
+    },
+  ];
+  await page.route("**/api/energy", (route) => route.fulfill({ json: data }));
+  await page.goto("/controls/night-savings");
+  await page.locator(".language-switch select").selectOption("bg");
+  const history = page.locator("details").filter({
+    has: page.getByText("Предишни планове и очаквана икономия", {
+      exact: true,
+    }),
+  });
+  await history.locator("summary").click();
+  await expect(history).toContainText("Планът е неуспешен");
+  await expect(history).toContainText(
+    "Нощното зареждане не е потвърдено. Нормалните настройки са възстановени; изпитването не е завършено.",
+  );
+});
+
 test("outage dial, slider and presets stay in sync with precise accessible controls and reduced motion", async ({
   page,
 }) => {
@@ -5896,11 +5985,11 @@ test("scheduled night plans keep their approval while refreshed previews update 
   await expect(page.locator("#energy-timeline")).toContainText(
     "Цел според актуалната прогноза: 75%",
   );
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
-    ),
-  ).toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    )
+    .toBe(true);
   await page.locator("#energy-timeline").scrollIntoViewIfNeeded();
   await page.screenshot({ path: "test-results/night-forecast-preview-bg.png" });
 });

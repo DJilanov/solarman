@@ -296,6 +296,7 @@ export interface ControllerStatus {
   recoveryTesting?: boolean;
   topupExpiresAt: string | null;
   lastSuccessAt: string | null;
+  connectionRecovered?: boolean;
   telemetry: {
     source: "provider" | "register";
     collectedAt: string;
