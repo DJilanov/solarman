@@ -1790,7 +1790,6 @@
   "No extra grid top-up is recommended.": "Не се препоръчва допълнително дозареждане от мрежата.",
   "Grid charging up to {{power}} kW. Solar can still fill the battery to 100%.": "Зареждане от мрежата до {{power}} kW. Соларната енергия продължава да може да зарежда до 100%.",
   "Cheap electricity": "Евтина електроенергия",
-  "Planned grid charging": "Планирано зареждане от мрежата",
   "Return to daytime use": "Връщане към дневно използване",
   "Estimated grid energy for charging": "Очаквана мрежова енергия за зареждане",
   "This recommendation is out of date. Refresh it before choosing a plan.": "Тази препоръка е остаряла. Обновете я, преди да изберете план.",
@@ -1809,7 +1808,6 @@
   "Enable Automatic night savings?": "Да се включи ли автоматична нощна икономия?",
   "This plan runs once. It holds the battery during the cheap period and restores normal daytime use afterward.": "Планът се изпълнява веднъж. Запазва батерията през евтиния период и след това възстановява обичайното дневно използване.",
   "Each night, a fresh forecast and your household history choose a target within your settings. You can pause Automatic at any time.": "Всяка нощ новата прогноза и историята на потреблението определят цел в зададените граници. Можете да спрете автоматичния режим по всяко време.",
-  "Native charging windows limit grid charging. Returning to daytime discharge needs the dashboard connection; a pending restoration remains visible if contact is lost.": "Зареждането от мрежата е ограничено от часовите прозорци в инвертора. Връщането към дневно разреждане изисква връзка с таблото; при загуба на връзка неприключилото възстановяване остава видимо.",
   "Confirm night plan": "Потвърждаване на нощния план",
   "Demand model: {{days}} observed days, {{hours}} covered hours.": "Модел на потреблението: {{days}} наблюдавани дни, {{hours}} часа с данни.",
   "History is limited. Missing hours use an explicit estimate or the observed average, with extra demand margin.": "Историята е ограничена. За липсващите часове се използва зададената оценка или наблюдаваната средна стойност, с допълнителен запас за потребление.",
@@ -2005,7 +2003,6 @@
   "Your session changed; sign in before saving": "Сесията ви е променена; влезте отново преди запазване",
   "The active night plan changed; review its current state": "Активният нощен план е променен; прегледайте текущото му състояние",
   "An outage reserve transition is already in progress": "Вече се изпълнява преминаване към резерв за прекъсване",
-  "If contact is lost, daytime discharge can remain paused and the inverter’s daily charging window can repeat the following night. The dashboard keeps restoration pending until it is verified.": "При загуба на връзка дневното разреждане може да остане спряно, а дневният прозорец на инвертора да се повтори следващата нощ. Таблото запазва възстановяването като неприключило, докато не го потвърди.",
   "Restoration is pending. Review the confirmed inverter state.": "Възстановяването не е приключило. Прегледайте потвърденото състояние на инвертора.",
   "Night savings settings are being checked. Review the confirmed state.": "Настройките на нощната икономия се проверяват. Прегледайте потвърденото състояние.",
   "Shared command capacity cannot accept another night plan ending at this time": "Споделеният капацитет за команди не позволява още един нощен план, приключващ по това време",
@@ -2177,5 +2174,10 @@
   "This is the saved plan. A fresh forecast and battery check are required before it starts; refreshing the preview does not change your approval.": "Това е запазеният план. Преди старта му се проверяват актуалната прогноза и батерията. Обновяването на прегледа не променя одобрението ти.",
   "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts.": "Цел според актуалната прогноза: {{target}}%. Запазеният план се проверява отново преди началото на зареждането.",
   "Readings are arriving again. App control remains paused after an earlier request failure. Verify device settings before resuming.": "Отчитанията отново пристигат. Управлението остава на пауза след по-ранна неуспешна заявка. Проверете настройките на инвертора, преди да продължите.",
-  "Night charging could not be confirmed. Normal settings were restored; this trial did not complete.": "Нощното зареждане не е потвърдено. Нормалните настройки са възстановени; изпитването не е завършено."
+  "Night charging could not be confirmed. Normal settings were restored; this trial did not complete.": "Нощното зареждане не е потвърдено. Нормалните настройки са възстановени; изпитването не е завършено.",
+  "If contact is lost, daytime battery use can remain paused and native grid charging can continue outside the cheap period. Restoration remains pending until verified.": "При загуба на връзка дневното разреждане може да остане спряно, а инверторът да зарежда от мрежата и извън евтиния период. Възстановяването остава неприключило до потвърждение.",
+  "Grid charging can start when this night plan is applied during the cheap period.": "Зареждането от мрежата може да започне още при прилагането на нощния план в евтиния период.",
+  "Grid charging period": "Период за зареждане от мрежата",
+  "Grid charging stops at the selected target. The battery stays reserved until the return time.": "Зареждането от мрежата спира при избраната цел. Батерията остава в резерв до часа за връщане към нормалния режим.",
+  "The charging cycle is complete. The full cost comparison is available after {{time}}.": "Цикълът на зареждане е завършен. Пълното сравнение на разходите ще е достъпно след {{time}}."
 }

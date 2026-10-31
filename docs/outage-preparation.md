@@ -16,7 +16,7 @@ Attended tests attempt restoration on session expiry or interrupted restart. Res
 
 The paused normal baseline must be verified: flags 9, SelfUse mode 0, AC ratio 100 (2 kW on the verified 20 kW model), AC target 500 (50%), overall SOC ceiling 1000 (100%), and on-grid reserve 500 (50%). Existing disabled charging windows are captured exactly.
 
-Apply writes mode 3, AC target X×10, the known 00:01–23:59 full-day charging window, and flags 25. The native clock boundary leaves a short midnight charging gap; backup mode still holds the battery. Each write has durable intent, dispatch authorization, acknowledgement and readback. The solar ceiling, charge-power ratio, battery minimum, on-grid reserve and protection settings are not changed.
+Apply writes mode 3, AC target X×10, the known 00:01–23:59 full-day charging window, and flags 25. The programmed window excludes midnight, but the installed Maintain mode has charged before a later programmed start in the night trial; the window is not a confirmed charge-stop boundary. Backup mode holds the battery until verified restoration. Each write has durable intent, dispatch authorization, acknowledgement and readback. The solar ceiling, charge-power ratio, battery minimum, on-grid reserve and protection settings are not changed.
 
 Return to normal disables scheduled charging, restores the saved windows and AC target, then restores SelfUse last. Fresh reads refuse conflicting outside changes; uncertain writes are read back and restored rather than replayed. The original uncertain audit entry remains uncertain with a separate reconciliation time. Normal app automation stays paused after restoration; native SelfUse resumes using battery energy according to its existing reserve.
 

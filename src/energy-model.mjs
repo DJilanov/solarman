@@ -229,10 +229,8 @@ export function chooseEnergyPlan({
     );
   const from = now,
     to = next.start,
-    firstStart = Math.max(
-      night.start,
-      Math.ceil((now + 2 * 60000) / 900000) * 900000,
-    ),
+    // Maintain mode can charge as soon as the hold is applied, irrespective of a later native window.
+    chargeStart = Math.max(night.start, now),
     releaseAt = night.end - NIGHT_RELEASE_MARGIN_MS;
   const baseline = simulateEnergyPlan(profile, solar, demand, {
     from,
@@ -255,65 +253,53 @@ export function chooseEnergyPlan({
   if (
     (targetOverride !== null ||
       profile.tariff.nightPrice < profile.tariff.dayPrice) &&
-    firstStart < releaseAt
+    chargeStart < releaseAt
   ) {
-    const starts = [];
-    for (let at = firstStart; at < releaseAt; at += 900000) starts.push(at);
     for (
       let target = targetOverride ?? Math.ceil(profile.battery.reserveSoc);
       target <= (targetOverride ?? profile.planning.maximumSoc);
       target++
-    )
-      for (const start of starts) {
-        const expected = simulateEnergyPlan(profile, solar, demand, {
-          from,
-          to,
-          soc,
-          initialDischarging,
-          night,
-          chargeStart: start,
+    ) {
+      const expected = simulateEnergyPlan(profile, solar, demand, {
+        from,
+        to,
+        soc,
+        initialDischarging,
+        night,
+        chargeStart,
+        targetSoc: target,
+        includeTimeline: false,
+      });
+      evaluated++;
+      if (expected.endNightSoc === null || expected.endNightSoc + 0.25 < target)
+        continue;
+      const conservative = simulateEnergyPlan(profile, solar, demand, {
+        from,
+        to,
+        soc,
+        initialDischarging,
+        night,
+        chargeStart,
+        targetSoc: target,
+        scenario: "conservative",
+        includeTimeline: false,
+      });
+      if (
+        conservative.endNightSoc === null ||
+        conservative.endNightSoc + 0.25 < target
+      )
+        continue;
+      const value = expected.totalCost * 0.65 + conservative.totalCost * 0.35;
+      if (value < objective - 0.005) {
+        chosen = {
           targetSoc: target,
-          includeTimeline: false,
-        });
-        evaluated++;
-        if (
-          expected.endNightSoc === null ||
-          expected.endNightSoc + 0.25 < target
-        )
-          continue;
-        const conservative = simulateEnergyPlan(profile, solar, demand, {
-          from,
-          to,
-          soc,
-          initialDischarging,
-          night,
-          chargeStart: start,
-          targetSoc: target,
-          scenario: "conservative",
-          includeTimeline: false,
-        });
-        if (
-          conservative.endNightSoc === null ||
-          conservative.endNightSoc + 0.25 < target
-        )
-          continue;
-        const value = expected.totalCost * 0.65 + conservative.totalCost * 0.35;
-        if (
-          value < objective - 0.005 ||
-          (chosen &&
-            Math.abs(value - objective) < 0.005 &&
-            target === chosen.targetSoc &&
-            start > chosen.chargeStart)
-        ) {
-          chosen = {
-            targetSoc: target,
-            chargeStart: start,
-            expected,
-            conservative,
-          };
-          objective = value;
-        }
+          chargeStart,
+          expected,
+          conservative,
+        };
+        objective = value;
       }
+    }
   }
   if (
     targetOverride === null &&
@@ -349,6 +335,7 @@ export function chooseEnergyPlan({
       })
     : conservativeBaseline;
   const reasons = targetOverride !== null ? ["manual-target"] : [];
+  if (chosen) reasons.push("immediate-night-charge");
   if (profile.tariff.nightPrice >= profile.tariff.dayPrice)
     reasons.push("night-not-cheaper");
   else if (!chosen) reasons.push("no-economic-topup");
@@ -406,6 +393,7 @@ export function chooseEnergyPlan({
       savingsIncludeWear: profile.tariff.cyclingCost !== null,
       dischargeRestartMarginSoc: DISCHARGE_RESTART_MARGIN_SOC,
       initialDischarging,
+      nativeGridChargeTiming: "on-hold-apply",
     },
     estimated: true,
   };

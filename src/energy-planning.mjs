@@ -234,20 +234,24 @@ export class EnergyPlanning {
       now = Date.now();
     const previous = (
       await this.pool.query(
-        "SELECT * FROM energy_plans WHERE tenant_id=$1 AND account_id=$2 AND device=$3 AND approved_by IS NOT NULL AND (ends_at<clock_timestamp() OR state='failed') ORDER BY created_at DESC LIMIT 30",
+        "SELECT * FROM energy_plans WHERE tenant_id=$1 AND account_id=$2 AND device=$3 AND approved_by IS NOT NULL AND (ends_at<clock_timestamp() OR state IN('failed','completed')) ORDER BY created_at DESC LIMIT 30",
         [tenantId, runtime.account?.id ?? null, runtime.device ?? ""],
       )
     ).rows;
     const measured = previous.length ? energyMeasuredBuckets(rows) : [];
     const history = previous
       .filter(
-        (plan) => plan.state === "failed" || plan.prediction.horizon.end <= now,
+        (plan) =>
+          ["failed", "completed"].includes(plan.state) ||
+          plan.prediction.horizon.end <= now,
       )
       .slice(0, 14)
-      .map((plan) => ({
-        ...publicPlan({ ...plan, forecast: undefined }),
-        assessment: scoreEnergyPlan(plan, rows, { buckets: measured }),
-      }));
+      .map((plan) => {
+        const assessment = scoreEnergyPlan(plan, rows, { buckets: measured });
+        if (plan.prediction.horizon.end > now)
+          assessment.estimatedCounterfactualSavings = null;
+        return { ...publicPlan({ ...plan, forecast: undefined }), assessment };
+      });
     await runtime.outage.load();
     const native = runtime.outage.status();
     const floorRaw = runtime.outage.row?.baseline?.batterySettings?.[1];

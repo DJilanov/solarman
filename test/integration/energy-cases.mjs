@@ -722,10 +722,38 @@ export function registerEnergyIntegration({
         ).rows[0].state,
         "completed",
       );
+      await f.pool.query(
+        "UPDATE energy_plans SET prediction=jsonb_set(prediction,'{horizon}',$2::jsonb) WHERE id=$1",
+        [
+          plan.id,
+          JSON.stringify({
+            start: Math.floor((Date.now() - 4 * 3600000) / 900000) * 900000,
+            end: Date.now() + 900000,
+          }),
+        ],
+      );
+      const completed = (await f.state()).history.find(
+        (row) => row.id === plan.id,
+      );
       assert.equal(
-        (await f.state()).history.some((row) => row.id === plan.id),
-        false,
-        "successful plans still wait for their full assessment horizon",
+        completed?.state,
+        "completed",
+        "completed charging cycles are visible before their forecast horizon ends",
+      );
+      assert.ok(completed.assessment.coverage > 0.8);
+      assert.equal(
+        completed.assessment.estimatedCounterfactualSavings,
+        null,
+        "full savings remain unavailable until the assessment horizon ends",
+      );
+      await f.pool.query(
+        "UPDATE energy_plans SET prediction=jsonb_set(prediction,'{horizon,end}',$2::jsonb) WHERE id=$1",
+        [plan.id, JSON.stringify(Date.now() - 900000)],
+      );
+      assert.equal(
+        typeof (await f.state()).history.find((row) => row.id === plan.id)
+          .assessment.estimatedCounterfactualSavings,
+        "number",
       );
     } finally {
       await f.dispose();

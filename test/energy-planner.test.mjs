@@ -6,6 +6,7 @@ import {
   missingEnergyInputs,
   fixedEnergyWindow,
   energySiteHash,
+  ENERGY_MODEL_VERSION,
 } from "../src/energy-profile.mjs";
 import {
   energyLocalTime,
@@ -370,6 +371,48 @@ test("the night planner finds a feasible cheaper target for a dark day and retur
   );
   assert.ok(plan.chargeEnd < plan.night.end);
   assert.equal(plan.maximumChargeKw, 2);
+});
+
+test("night charging starts at hold application rather than a deferred native window", () => {
+  for (const time of ["2026-10-31T18:00Z", "2026-10-31T03:37:20Z"]) {
+    const value = profile(),
+      now = Date.parse(time),
+      f = forecasts(now);
+    const plan = chooseEnergyPlan({
+      profile: value,
+      ...f,
+      soc: 50,
+      now,
+      targetOverride: 56,
+    });
+    const start = Math.max(now, plan.night.start);
+    assert.equal(plan.chargeStart, start);
+    const firstCharge = plan.selected.timeline.find(
+      (slot) => slot.gridChargeKwh > 0,
+    );
+    assert.ok(firstCharge);
+    assert.equal(firstCharge.start, start);
+    assert.ok(plan.selected.endNightSoc >= 55.75);
+    assert.equal(plan.assumptions.nativeGridChargeTiming, "on-hold-apply");
+    assert.ok(plan.reasons.includes("immediate-night-charge"));
+    assert.equal(plan.version, ENERGY_MODEL_VERSION);
+  }
+});
+
+test("an expired restoration margin never starts another cheap-period hold", () => {
+  const value = profile(),
+    now = Date.parse("2026-10-31T04:56Z");
+  assert.throws(
+    () =>
+      chooseEnergyPlan({
+        profile: value,
+        ...forecasts(now),
+        soc: 50,
+        now,
+        targetOverride: 56,
+      }),
+    /remaining cheap period/,
+  );
 });
 
 test("an expensive night price and excessive cycling cost never justify nightly top-ups", () => {

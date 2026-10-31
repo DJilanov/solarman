@@ -207,6 +207,102 @@ test("failed night plan history explains restoration without claiming a complete
   );
 });
 
+test("night planning explains immediate charging, target hold and connection-dependent restoration", async ({
+  page,
+}) => {
+  await signIn(page);
+  const data = energyDashboardFixture();
+  if (!data.plan) throw Error("Missing energy fixture");
+  data.plan.prediction.chargeStart = data.plan.prediction.night.start;
+  data.plan.prediction.reasons.push("immediate-night-charge");
+  const mutations: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/api\/(commands|energy\/apply|outage\/prepare)$/.test(
+        new URL(request.url()).pathname,
+      )
+    )
+      mutations.push(request.url());
+  });
+  await page.route("**/api/energy", (route) => route.fulfill({ json: data }));
+  await page.goto("/controls/night-savings");
+  await expect(
+    page.getByText("Grid charging period", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "Grid charging can start when this night plan is applied during the cheap period.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Use tonight", exact: true }).click();
+  await expect(
+    page.getByText(
+      "If contact is lost, daytime battery use can remain paused and native grid charging can continue outside the cheap period. Restoration remains pending until verified.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await page.locator(".language-switch select").selectOption("bg");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(
+    page.getByText(
+      "Зареждането от мрежата спира при избраната цел. Батерията остава в резерв до часа за връщане към нормалния режим.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "При загуба на връзка дневното разреждане може да остане спряно, а инверторът да зарежда от мрежата и извън евтиния период. Възстановяването остава неприключило до потвърждение.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    )
+    .toBe(true);
+  expect(mutations).toHaveLength(0);
+});
+
+test("a completed night cycle remains visible before full savings can be assessed", async ({
+  page,
+}) => {
+  await signIn(page);
+  const data = energyDashboardFixture();
+  if (!data.plan) throw Error("Missing energy fixture");
+  data.plan.state = "completed";
+  data.plan.createdAt = new Date(Date.now() - 3600000).toISOString();
+  data.plan.forecast.expiresAt = new Date(Date.now() - 60000).toISOString();
+  data.history = [data.plan];
+  await page.route("**/api/energy", (route) => route.fulfill({ json: data }));
+  await page.goto("/controls/night-savings");
+  await expect(
+    page.getByRole("heading", { name: "Saved night plan", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Grid charging stops at the selected target.", {
+      exact: false,
+    }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("This recommendation is out of date.", { exact: false }),
+  ).toHaveCount(0);
+  await page
+    .getByText("Previous plans and estimated savings", { exact: true })
+    .click();
+  await expect(
+    page.getByText("The charging cycle is complete.", { exact: false }),
+  ).toBeVisible();
+  await expect(page.locator(".energy-history")).toContainText(
+    "Battery target: 82%",
+  );
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(
+    page.getByText("Цикълът на зареждане е завършен.", { exact: false }),
+  ).toBeVisible();
+});
+
 test("outage dial, slider and presets stay in sync with precise accessible controls and reduced motion", async ({
   page,
 }) => {
@@ -6181,6 +6277,11 @@ test("night savings Automatic remains available when no extra charging is recomm
     await route.fulfill({ status: 202, json: { accepted: true } });
   });
   await page.goto("/controls/night-savings");
+  await expect(
+    page.getByText("Grid charging stops at the selected target.", {
+      exact: false,
+    }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Use tonight", exact: true }),
   ).toBeDisabled();

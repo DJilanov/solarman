@@ -33,6 +33,8 @@ const reasons: Record<string, string> = {
   "no-economic-topup":
     "Expected solar and the existing reserve make an extra night top-up unnecessary.",
   "charge-at-night": "Store cheaper night electricity for the following day.",
+  "immediate-night-charge":
+    "Grid charging can start when this night plan is applied during the cheap period.",
   "preserve-for-day":
     "Keep stored energy for the more expensive daytime period.",
   "target-ceiling":
@@ -366,7 +368,9 @@ export default function NightSavingsPage(): ReactNode {
           </div>
           <Panel
             title={tr(
-              savedPending ? "Saved night plan" : "Tonight’s recommendation",
+              plan && plan.state !== "recommended"
+                ? "Saved night plan"
+                : "Tonight’s recommendation",
             )}
             action={
               <span className="energy-mode">
@@ -411,7 +415,7 @@ export default function NightSavingsPage(): ReactNode {
                     </p>
                     {prediction.chargeStart !== null && (
                       <p>
-                        <span>{tr("Planned grid charging")}</span>
+                        <span>{tr("Grid charging period")}</span>
                         <strong>
                           {clock(prediction.chargeStart, profile.timezone)}–
                           {clock(
@@ -437,7 +441,16 @@ export default function NightSavingsPage(): ReactNode {
                     </p>
                   </div>
                 </div>
-                {((stale && !savedPending) || mismatched) && (
+                {prediction.action === "charge-and-hold" &&
+                  (plan.state === "recommended" || savedPending) && (
+                    <p className="fine-print">
+                      {tr(
+                        "Grid charging stops at the selected target. The battery stays reserved until the return time.",
+                      )}
+                    </p>
+                  )}
+                {((plan.state === "recommended" && (stale || mismatched)) ||
+                  (savedPending && mismatched)) && (
                   <Notice tone="danger">
                     {tr(
                       "This recommendation is out of date. Refresh it before choosing a plan.",
@@ -589,7 +602,7 @@ export default function NightSavingsPage(): ReactNode {
                     </p>
                     <p className="fine-print">
                       {tr(
-                        "If contact is lost, daytime discharge can remain paused and the inverter’s daily charging window can repeat the following night. The dashboard keeps restoration pending until it is verified.",
+                        "If contact is lost, daytime battery use can remain paused and native grid charging can continue outside the cheap period. Restoration remains pending until verified.",
                       )}
                     </p>
                     <p className="fine-print">
@@ -940,7 +953,25 @@ export default function NightSavingsPage(): ReactNode {
                   {when(item.startsAt, item.timezone)} ·{" "}
                   {tr(states[item.state] ?? "Plan needs attention")}
                 </strong>
+                <p>
+                  {tr("Battery target")}:{" "}
+                  {formatNumber(item.prediction.targetSoc)}%
+                </p>
                 {item.code && codes[item.code] && <p>{tr(codes[item.code])}</p>}
+                {item.state === "completed" &&
+                  item.prediction.horizon.end > Date.now() && (
+                    <p>
+                      {tr(
+                        "The charging cycle is complete. The full cost comparison is available after {{time}}.",
+                        {
+                          time: when(
+                            item.prediction.horizon.end,
+                            item.timezone,
+                          ),
+                        },
+                      )}
+                    </p>
+                  )}
                 <p>
                   {tr("Predicted saving")}{" "}
                   {money(item.prediction.estimatedSavings, item.currency)} ·{" "}

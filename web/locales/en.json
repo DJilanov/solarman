@@ -1790,7 +1790,6 @@
   "No extra grid top-up is recommended.": "No extra grid top-up is recommended.",
   "Grid charging up to {{power}} kW. Solar can still fill the battery to 100%.": "Grid charging up to {{power}} kW. Solar can still fill the battery to 100%.",
   "Cheap electricity": "Cheap electricity",
-  "Planned grid charging": "Planned grid charging",
   "Return to daytime use": "Return to daytime use",
   "Estimated grid energy for charging": "Estimated grid energy for charging",
   "This recommendation is out of date. Refresh it before choosing a plan.": "This recommendation is out of date. Refresh it before choosing a plan.",
@@ -1809,7 +1808,6 @@
   "Enable Automatic night savings?": "Enable Automatic night savings?",
   "This plan runs once. It holds the battery during the cheap period and restores normal daytime use afterward.": "This plan runs once. It holds the battery during the cheap period and restores normal daytime use afterward.",
   "Each night, a fresh forecast and your household history choose a target within your settings. You can pause Automatic at any time.": "Each night, a fresh forecast and your household history choose a target within your settings. You can pause Automatic at any time.",
-  "Native charging windows limit grid charging. Returning to daytime discharge needs the dashboard connection; a pending restoration remains visible if contact is lost.": "Native charging windows limit grid charging. Returning to daytime discharge needs the dashboard connection; a pending restoration remains visible if contact is lost.",
   "Confirm night plan": "Confirm night plan",
   "Demand model: {{days}} observed days, {{hours}} covered hours.": "Demand model: {{days}} observed days, {{hours}} covered hours.",
   "History is limited. Missing hours use an explicit estimate or the observed average, with extra demand margin.": "History is limited. Missing hours use an explicit estimate or the observed average, with extra demand margin.",
@@ -2005,7 +2003,6 @@
   "Your session changed; sign in before saving": "Your session changed; sign in before saving",
   "The active night plan changed; review its current state": "The active night plan changed; review its current state",
   "An outage reserve transition is already in progress": "An outage reserve transition is already in progress",
-  "If contact is lost, daytime discharge can remain paused and the inverter’s daily charging window can repeat the following night. The dashboard keeps restoration pending until it is verified.": "If contact is lost, daytime discharge can remain paused and the inverter’s daily charging window can repeat the following night. The dashboard keeps restoration pending until it is verified.",
   "Restoration is pending. Review the confirmed inverter state.": "Restoration is pending. Review the confirmed inverter state.",
   "Night savings settings are being checked. Review the confirmed state.": "Night savings settings are being checked. Review the confirmed state.",
   "Shared command capacity cannot accept another night plan ending at this time": "Shared command capacity cannot accept another night plan ending at this time",
@@ -2177,5 +2174,10 @@
   "This is the saved plan. A fresh forecast and battery check are required before it starts; refreshing the preview does not change your approval.": "This is the saved plan. A fresh forecast and battery check are required before it starts; refreshing the preview does not change your approval.",
   "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts.": "Latest preview target: {{target}}%. The saved plan is rechecked before charging starts.",
   "Readings are arriving again. App control remains paused after an earlier request failure. Verify device settings before resuming.": "Readings are arriving again. App control remains paused after an earlier request failure. Verify device settings before resuming.",
-  "Night charging could not be confirmed. Normal settings were restored; this trial did not complete.": "Night charging could not be confirmed. Normal settings were restored; this trial did not complete."
+  "Night charging could not be confirmed. Normal settings were restored; this trial did not complete.": "Night charging could not be confirmed. Normal settings were restored; this trial did not complete.",
+  "If contact is lost, daytime battery use can remain paused and native grid charging can continue outside the cheap period. Restoration remains pending until verified.": "If contact is lost, daytime battery use can remain paused and native grid charging can continue outside the cheap period. Restoration remains pending until verified.",
+  "Grid charging can start when this night plan is applied during the cheap period.": "Grid charging can start when this night plan is applied during the cheap period.",
+  "Grid charging period": "Grid charging period",
+  "Grid charging stops at the selected target. The battery stays reserved until the return time.": "Grid charging stops at the selected target. The battery stays reserved until the return time.",
+  "The charging cycle is complete. The full cost comparison is available after {{time}}.": "The charging cycle is complete. The full cost comparison is available after {{time}}."
 }

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { energyMinute } from "./energy-time.mjs";
 
-export const ENERGY_MODEL_VERSION = "hourly-pv/load/tariff-battery/v2";
+export const ENERGY_MODEL_VERSION = "hourly-pv/load/tariff-battery/v3";
 // Battery dispatch revisions must preserve the identity of frozen PV forecasts.
 const SOLAR_SITE_VERSION = "hourly-pv/load/tariff-battery/v1";
 export const BULGARIAN_NIGHT_WINDOWS = Object.freeze([
