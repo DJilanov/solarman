@@ -381,12 +381,14 @@ export function AdvancedControls(): ReactNode {
             "Record solar charging above 50%, battery use above the reserve and the grid charging transition using existing readings.",
           )}
         </p>
-        <Link className="button secondary" to="/controls/observations">
-          {tr("Observe the home policy")}
-        </Link>
-        <Link className="button secondary" to="/controls/commissioning">
-          {tr("Commission the home policy")}
-        </Link>
+        <div className="readiness-actions">
+          <Link className="button secondary" to="/controls/observations">
+            {tr("Observe the home policy")}
+          </Link>
+          <Link className="button secondary" to="/controls/commissioning">
+            {tr("Commission the home policy")}
+          </Link>
+        </div>
       </Panel>
       <div className="controls-grid">
         <Panel

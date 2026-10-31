@@ -114,6 +114,40 @@ html[lang="bg"] .button {
 html[lang="bg"] .charge-trigger {
   min-height: 54px;
 }
+.readiness-actions,
+.settings-actions {
+  gap: 12px;
+  margin-block: 20px;
+}
+.readiness-actions:first-child,
+.settings-actions:first-child {
+  margin-block-start: 0;
+}
+.readiness-actions:last-child,
+.settings-actions:last-child {
+  margin-block-end: 0;
+}
+.security-form > .settings-actions,
+.private-access-result > .settings-actions {
+  margin-block: 4px 0;
+}
+.panel > p + .button,
+.panel > .checkbox-row + .button,
+.energy-outage-result > p + .button {
+  margin-block-start: 20px;
+}
+.controls-grid .panel > .fine-print {
+  margin-block-end: 20px;
+}
+.panel > .button + .fine-print {
+  margin-block-start: 12px;
+}
+.notice > div > .button {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  margin: 16px 0 0;
+}
 input,
 select,
 textarea {
@@ -1999,6 +2033,7 @@ html[lang="bg"] .nav-item span {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+  margin-block-start: 20px;
 }
 .outage-approval {
   display: grid;
