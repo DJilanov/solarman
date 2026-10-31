@@ -679,6 +679,11 @@ export function registerEnergyIntegration({
         ])
       ).rows[0];
       assert.deepEqual(result, { state: "failed", code: "start-unconfirmed" });
+      assert.equal(
+        (await f.state()).history.find((row) => row.id === plan.id)?.state,
+        "failed",
+        "failed attempts are visible before the charging window or forecast horizon ends",
+      );
       assert.equal(f.device.writes.length, writes);
       const repair = await readFile(
         new URL(
@@ -716,6 +721,11 @@ export function registerEnergyIntegration({
           ])
         ).rows[0].state,
         "completed",
+      );
+      assert.equal(
+        (await f.state()).history.some((row) => row.id === plan.id),
+        false,
+        "successful plans still wait for their full assessment horizon",
       );
     } finally {
       await f.dispose();
