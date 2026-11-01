@@ -15,6 +15,9 @@ import { energySiteHash } from "../../src/energy-profile.mjs";
 import { encryptCredentials } from "../../src/credentials.mjs";
 import { encryptNotificationSecret } from "../../src/notification-secrets.mjs";
 import { quarantineEnergyExperience } from "../../src/energy-experience-lifecycle.mjs";
+import { expireNightTrial, remindNightTrial, registerNightTrial } from "../../src/night-trial.mjs";
+import { encryptPushSubscription } from "../../src/web-push.mjs";
+import { createECDH, randomBytes } from "node:crypto";
 
 /** @param {object} context @returns {void} */
 export function registerEnergyIntegration({
@@ -124,6 +127,259 @@ export function registerEnergyIntegration({
     };
     return { ...f, pool, hub, state, call, refresh, approve, dispose };
   }
+  async function trialFixture() {
+    const f = await fixture();
+    await f.approve();
+    const data = await f.refresh();
+    const config = {
+      version: 1,
+      trialId: randomUUID(),
+      tenantId: f.target.tenant,
+      userId: f.target.user,
+      activationKey: randomUUID(),
+      stopKey: randomUUID(),
+      reviewKey: randomUUID(),
+      expiresAt: new Date(Date.now() + 3600000).toISOString(),
+      reviewAt: new Date(Date.now() + 7200000).toISOString(),
+    };
+    const enabled = await f.call(
+      "apply",
+      {
+        revision: data.revision,
+        planId: data.plan.id,
+        choice: "automatic",
+        currentPassword: password,
+      },
+      config.activationKey,
+    );
+    assert.equal(enabled.status, 202, await enabled.clone().text());
+    return {
+      ...f,
+      config,
+      dispose: async () => {
+        await f.pool.query(
+          "UPDATE notification_outbox SET state='cancelled',completed_at=clock_timestamp() WHERE tenant_id=$1 AND state IN('queued','retry','sending')",
+          [f.target.tenant],
+        );
+        await f.pool.query(
+          "UPDATE energy_settings SET automatic=false,approval_binding=null,approved_by=null WHERE tenant_id=$1",
+          [f.target.tenant],
+        );
+        await f.dispose();
+      },
+    };
+  }
+
+  test("a bounded night trial expires once, preserves tenant ownership and never sends inverter writes", async () => {
+    const f = await trialFixture();
+    try {
+      const now = Date.parse(f.config.expiresAt);
+      const writes = f.device.writes.length;
+      const wrongOwner = await expireNightTrial(
+        f.pool,
+        { ...f.config, userId: randomUUID() },
+        now,
+      );
+      assert.equal(wrongOwner.state, "unavailable");
+      assert.equal((await f.state()).automatic, true);
+      const results = await Promise.all([
+        expireNightTrial(f.pool, f.config, now),
+        expireNightTrial(f.pool, f.config, now),
+      ]);
+      assert.deepEqual(
+        results.map((result) => result.state),
+        ["paused", "paused"],
+      );
+      assert.equal((await f.state()).automatic, false);
+      const row = (
+        await f.pool.query(
+          "SELECT approval_binding FROM energy_settings WHERE tenant_id=$1",
+          [f.target.tenant],
+        )
+      ).rows[0];
+      assert.equal(row.approval_binding, null);
+      assert.equal(
+        (
+          await f.pool.query(
+            "SELECT count(*)::int AS n FROM energy_events WHERE tenant_id=$1 AND action='trial-expired'",
+            [f.target.tenant],
+          )
+        ).rows[0].n,
+        1,
+      );
+      assert.equal(f.device.writes.length, writes);
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  test("an old trial deadline preserves a newly approved Automatic policy", async () => {
+    const f = await trialFixture();
+    try {
+      const before = await f.state();
+      assert.equal(
+        (await f.call("pause", { revision: before.revision })).status,
+        202,
+      );
+      const newer = await f.refresh();
+      assert.equal(
+        (
+          await f.call("apply", {
+            revision: newer.revision,
+            planId: newer.plan.id,
+            choice: "automatic",
+            currentPassword: password,
+          })
+        ).status,
+        202,
+      );
+      const result = await expireNightTrial(
+        f.pool,
+        f.config,
+        Date.parse(f.config.expiresAt),
+      );
+      assert.equal(result.state, "superseded");
+      assert.equal((await f.state()).automatic, true);
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  test("a trial review queues one owner-only iPhone briefing and respects disabled notifications", async () => {
+    const f = await trialFixture();
+    try {
+      const channelId = randomUUID(),
+        otherId = randomUUID(),
+        pair = createECDH("prime256v1");
+      pair.generateKeys();
+      const subscription = {
+        endpoint: "https://web.push.apple.com/night-trial-fixture",
+        keys: {
+          p256dh: pair.getPublicKey().toString("base64url"),
+          auth: randomBytes(16).toString("base64url"),
+        },
+      };
+      await f.pool.query(
+        "INSERT INTO notification_channels(id,tenant_id,user_id,kind,endpoint_hash,secret,language,enabled,verified_at,chat_id) VALUES($1,$2,$3,'webpush',$4,$5,'bg',true,clock_timestamp(),'Trial phone')",
+        [
+          channelId,
+          f.target.tenant,
+          f.target.user,
+          randomBytes(32).toString("hex"),
+          encryptPushSubscription(
+            subscription,
+            f.hub.key,
+            f.target.tenant,
+            channelId,
+          ),
+        ],
+      );
+      await f.pool.query(
+        "INSERT INTO users(id,tenant_id,email,password_hash) SELECT $1,$2,$3,password_hash FROM users WHERE id=$4",
+        [
+          otherId,
+          f.target.tenant,
+          `other-${otherId}@example.test`,
+          f.target.user,
+        ],
+      );
+      const secondChannel = randomUUID();
+      await f.pool.query(
+        "INSERT INTO notification_channels(id,tenant_id,user_id,kind,endpoint_hash,secret,language,enabled,verified_at,chat_id) VALUES($1,$2,$3,'webpush',$4,$5,'bg',true,clock_timestamp(),'Other phone')",
+        [
+          secondChannel,
+          f.target.tenant,
+          otherId,
+          randomBytes(32).toString("hex"),
+          encryptPushSubscription(
+            subscription,
+            f.hub.key,
+            f.target.tenant,
+            secondChannel,
+          ),
+        ],
+      );
+      await f.pool.query(
+        "INSERT INTO energy_experience_settings(tenant_id,briefings_enabled) VALUES($1,true)",
+        [f.target.tenant],
+      );
+      const now = Date.parse(f.config.reviewAt),
+        writes = f.device.writes.length;
+      assert.deepEqual(await remindNightTrial(f.pool, f.config, now), {
+        state: "queued",
+        channels: 1,
+      });
+      await remindNightTrial(f.pool, f.config, now);
+      const rows = (
+        await f.pool.query(
+          "SELECT channel_id,payload FROM notification_outbox WHERE tenant_id=$1 AND event_key=$2",
+          [f.target.tenant, `night-trial:${f.config.trialId}:review`],
+        )
+      ).rows;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].channel_id, channelId);
+      assert.match(rows[0].payload.title, /тестовата седмица/);
+      assert.equal(f.device.writes.length, writes);
+      await f.pool.query(
+        "UPDATE notification_channels SET enabled=false WHERE tenant_id=$1",
+        [f.target.tenant],
+      );
+      const disabled = await remindNightTrial(
+        f.pool,
+        { ...f.config, reviewKey: randomUUID(), trialId: randomUUID() },
+        now,
+      );
+      assert.deepEqual(disabled, { state: "no-channel", channels: 0 });
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  test("the planner enforces a registered trial deadline even when its external timer never ran", async () => {
+    const f = await trialFixture();
+    try {
+      const expired = {
+        ...f.config,
+        expiresAt: new Date(Date.now() - 1000).toISOString(),
+      };
+      assert.deepEqual(await registerNightTrial(f.pool, expired), {
+        state: "registered",
+      });
+      assert.deepEqual(await registerNightTrial(f.pool, expired), {
+        state: "registered",
+      });
+      const writes = f.device.writes.length;
+      await f.hub.energy.tick();
+      assert.equal((await f.state()).automatic, false);
+      assert.equal(f.device.writes.length, writes);
+      const old = await f.state();
+      assert.equal(
+        (await f.call("pause", { revision: old.revision })).status,
+        202,
+      );
+      const refreshed = await f.refresh();
+      assert.equal(
+        (
+          await f.call("apply", {
+            revision: refreshed.revision,
+            planId: refreshed.plan.id,
+            choice: "automatic",
+            currentPassword: password,
+          })
+        ).status,
+        202,
+      );
+      await f.hub.energy.tick();
+      assert.equal(
+        (await f.state()).automatic,
+        true,
+        "a later approval is not bound by the old trial",
+      );
+    } finally {
+      await f.dispose();
+    }
+  });
+
   test("energy tools calculate outages and keep appliance plans tenant-bound, revisioned and free of inverter writes", async () => {
     const f = await fixture();
     try {

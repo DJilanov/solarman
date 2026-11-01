@@ -33,6 +33,7 @@ import {
 import { scoreEnergyPlan } from "./energy-outcomes.mjs";
 import { nightNativeWindows } from "./energy-native.mjs";
 import { WorkQueue } from "./work-queue.mjs";
+import { expireDueNightTrial } from "./night-trial.mjs";
 
 const PENDING = ["scheduled", "starting", "running", "restoring"];
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -841,6 +842,7 @@ export class EnergyPlanning {
 
   /** @param {object} preparation @returns {Promise<void>} */
   async authorizeNative(preparation) {
+    await expireDueNightTrial(this.pool, preparation.tenant_id);
     const row = (
       await this.pool.query(
         "SELECT p.*,s.revision AS current_revision,s.profile AS current_profile,s.approval_binding,s.approved_by AS policy_owner,f.expires_at,t.lifecycle FROM energy_plans p JOIN energy_settings s ON s.tenant_id=p.tenant_id JOIN energy_forecasts f ON f.tenant_id=p.tenant_id AND f.id=p.forecast_id JOIN tenants t ON t.id=p.tenant_id WHERE p.tenant_id=$1 AND p.id=$2",
@@ -991,6 +993,13 @@ export class EnergyPlanning {
     for (const settings of due) {
       if (this.stopping) break;
       const runtime = await this.hub.forTenant(settings.tenant_id);
+      if (
+        (await expireDueNightTrial(this.pool, settings.tenant_id))?.state ===
+        "paused"
+      ) {
+        await this.release(runtime);
+        continue;
+      }
       await runtime.outage.load();
       if (runtime.outage.active && runtime.outage.row.purpose === "night") {
         const stopAt = new Date(runtime.outage.row.ends_at).getTime();
