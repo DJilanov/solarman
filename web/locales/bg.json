@@ -2180,5 +2180,13 @@
   "Grid charging period": "Период за зареждане от мрежата",
   "Grid charging stops at the selected target. The battery stays reserved until the return time.": "Зареждането от мрежата спира при избраната цел. Батерията остава в резерв до часа за връщане към нормалния режим.",
   "The charging cycle is complete. The full cost comparison is available after {{time}}.": "Цикълът на зареждане е завършен. Пълното сравнение на разходите ще е достъпно след {{time}}.",
-  "Clock verification is waiting for a new logger upload; no charging command was sent": "Проверката на часовника изчаква ново отчитане от логера; не е изпратена команда за зареждане"
+  "Clock verification is waiting for a new logger upload; no charging command was sent": "Проверката на часовника изчаква ново отчитане от логера; не е изпратена команда за зареждане",
+  "SOLARMAN is temporarily unreachable. The saved night plan will retry automatically.": "SOLARMAN временно не е достъпен. Запазеният нощен план ще опита отново автоматично.",
+  "Waiting for the inverter clock to pass verification. The saved night plan will retry automatically.": "Изчаква се успешна проверка на часовника на инвертора. Запазеният нощен план ще опита отново автоматично.",
+  "Waiting for fresh inverter readings before retrying the saved night plan.": "Изчакват се актуални отчитания от инвертора преди нов опит за запазения нощен план.",
+  "Waiting for native settings and recovery checks before retrying the saved night plan.": "Изчакват се проверки на настройките и възстановяването преди нов опит за запазения нощен план.",
+  "Waiting for an updated weather and consumption forecast before retrying the saved night plan.": "Изчаква се актуална прогноза за времето и потреблението преди нов опит за запазения нощен план.",
+  "Next automatic attempt: {{time}}. Attempts stop before the cheap period ends.": "Следващ автоматичен опит: {{time}}. Опитите спират преди края на евтината тарифа.",
+  "Buffer inside the cheap tariff · minutes": "Буфер в евтината тарифа · минути",
+  "Choose a night charging buffer from 0 to 120 minutes in 15-minute steps": "Изберете буфер за нощно зареждане от 0 до 120 минути през 15 минути"
 }

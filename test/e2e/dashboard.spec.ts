@@ -178,6 +178,42 @@ test("a recovered provider connection routes paused control to verification inst
   ).toBeVisible();
 });
 
+test("night start retries show the actual blocker and next attempt in English and Bulgarian", async ({
+  page,
+}) => {
+  await signIn(page);
+  const data = energyDashboardFixture();
+  if (!data.plan) throw Error("Missing energy fixture");
+  data.automatic = true;
+  data.plan.state = "scheduled";
+  data.plan.code = "waiting-connection";
+  data.plan.startAttempts = 2;
+  data.plan.nextAttemptAt = new Date(Date.now() + 300000).toISOString();
+  await page.route("**/api/energy", (route) => route.fulfill({ json: data }));
+  await page.goto("/controls/night-savings");
+  await expect(
+    page.getByText(
+      "SOLARMAN is temporarily unreachable. The saved night plan will retry automatically.",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Next automatic attempt:" }),
+  ).toBeVisible();
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(
+    page.getByText(
+      "SOLARMAN временно не е достъпен. Запазеният нощен план ще опита отново автоматично.",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Следващ автоматичен опит:" }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(390);
+});
+
 test("failed night plan history explains restoration without claiming a completed trial in Bulgarian", async ({
   page,
 }) => {

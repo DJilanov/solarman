@@ -2180,5 +2180,13 @@
   "Grid charging period": "Grid charging period",
   "Grid charging stops at the selected target. The battery stays reserved until the return time.": "Grid charging stops at the selected target. The battery stays reserved until the return time.",
   "The charging cycle is complete. The full cost comparison is available after {{time}}.": "The charging cycle is complete. The full cost comparison is available after {{time}}.",
-  "Clock verification is waiting for a new logger upload; no charging command was sent": "Clock verification is waiting for a new logger upload; no charging command was sent"
+  "Clock verification is waiting for a new logger upload; no charging command was sent": "Clock verification is waiting for a new logger upload; no charging command was sent",
+  "SOLARMAN is temporarily unreachable. The saved night plan will retry automatically.": "SOLARMAN is temporarily unreachable. The saved night plan will retry automatically.",
+  "Waiting for the inverter clock to pass verification. The saved night plan will retry automatically.": "Waiting for the inverter clock to pass verification. The saved night plan will retry automatically.",
+  "Waiting for fresh inverter readings before retrying the saved night plan.": "Waiting for fresh inverter readings before retrying the saved night plan.",
+  "Waiting for native settings and recovery checks before retrying the saved night plan.": "Waiting for native settings and recovery checks before retrying the saved night plan.",
+  "Waiting for an updated weather and consumption forecast before retrying the saved night plan.": "Waiting for an updated weather and consumption forecast before retrying the saved night plan.",
+  "Next automatic attempt: {{time}}. Attempts stop before the cheap period ends.": "Next automatic attempt: {{time}}. Attempts stop before the cheap period ends.",
+  "Buffer inside the cheap tariff · minutes": "Buffer inside the cheap tariff · minutes",
+  "Choose a night charging buffer from 0 to 120 minutes in 15-minute steps": "Choose a night charging buffer from 0 to 120 minutes in 15-minute steps"
 }

@@ -1,6 +1,14 @@
 import { energyLocalTime, energyNativeTime } from "./energy-time.mjs";
 import { validateChargeWindows } from "./outage-policy.mjs";
 
+/** @param {{fresh:boolean,passed:boolean,skewSeconds:number|null}|null} clock @param {object} profile @returns {boolean} */
+export function nightClockAllowed(clock, profile) {
+  if (!clock?.fresh || !Number.isFinite(clock.skewSeconds)) return false;
+  const buffer = profile.planning.nightBufferMinutes ?? 0;
+  const maximum = Math.max(120, Math.min(3600, buffer * 60));
+  return clock.skewSeconds >= 0 && clock.skewSeconds <= maximum;
+}
+
 /** @param {object} plan @param {string} timezone @returns {number[]} */
 export function nightNativeWindows(plan, timezone) {
   const start = plan.chargeStart,

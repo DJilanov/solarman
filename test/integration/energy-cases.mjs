@@ -18,6 +18,7 @@ import { quarantineEnergyExperience } from "../../src/energy-experience-lifecycl
 import { expireNightTrial, remindNightTrial, registerNightTrial } from "../../src/night-trial.mjs";
 import { encryptPushSubscription } from "../../src/web-push.mjs";
 import { createECDH, randomBytes } from "node:crypto";
+import { providerPayload } from "../fixtures/provider.mjs";
 
 /** @param {object} context @returns {void} */
 export function registerEnergyIntegration({
@@ -169,6 +170,235 @@ export function registerEnergyIntegration({
       },
     };
   }
+
+  async function dueFixture(buffer = 0) {
+    const f = await fixture();
+    await f.approve();
+    const profile = energyProfile();
+    profile.planning.nightBufferMinutes = buffer;
+    const local = new Intl.DateTimeFormat("en-GB", {
+      timeZone: profile.timezone,
+      hourCycle: "h23",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).formatToParts(new Date());
+    const minute =
+      Number(local.find((part) => part.type === "hour").value) * 60 +
+      Number(local.find((part) => part.type === "minute").value);
+    const start = (Math.floor(minute / 15) * 15 - buffer - 15 + 1440) % 1440;
+    profile.tariff.windows = [
+      {
+        months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        startMinute: start,
+        endMinute: (start + 480) % 1440,
+      },
+    ];
+    const before = await f.state();
+    assert.equal(
+      (await f.call("settings", { revision: before.revision, profile })).status,
+      202,
+    );
+    const value = await f.refresh();
+    assert.equal(
+      (
+        await f.call("apply", {
+          revision: value.revision,
+          planId: value.plan.id,
+          choice: "automatic",
+          currentPassword: password,
+        })
+      ).status,
+      202,
+    );
+    const plan = () =>
+      f.pool
+        .query("SELECT * FROM energy_plans WHERE id=$1", [value.plan.id])
+        .then((result) => result.rows[0]);
+    const settings = await f.hub.energy.settings(f.target.tenant);
+    return {
+      ...f,
+      plan,
+      settings,
+      dispose: async () => {
+        await f.pool.query(
+          "UPDATE energy_settings SET automatic=false,approval_binding=null,approved_by=null WHERE tenant_id=$1",
+          [f.target.tenant],
+        );
+        await f.dispose();
+      },
+    };
+  }
+
+  test("night start retries a temporary connection failure with durable backoff and fresh paused diagnostics", async () => {
+    const f = await dueFixture();
+    const read = f.runtime.readControlProvider;
+    try {
+      const writes = f.device.writes.length;
+      f.runtime.readControlProvider = async () => {
+        throw new SolarmanTransportError();
+      };
+      await f.hub.energy.begin(f.runtime, f.settings, await f.plan());
+      const waiting = await f.plan();
+      assert.equal(waiting.state, "scheduled");
+      assert.equal(waiting.code, "waiting-connection");
+      assert.equal(waiting.start_attempts, 1);
+      assert.ok(new Date(waiting.next_start_at).getTime() > Date.now() + 110000);
+      assert.equal(f.device.writes.length, writes);
+      assert.equal(
+        (await f.state()).plan.nextAttemptAt,
+        waiting.next_start_at.toISOString(),
+      );
+      await f.hub.energy.tick();
+      assert.equal((await f.plan()).start_attempts, 1);
+      await f.pool.query(
+        "UPDATE energy_plans SET next_start_at=clock_timestamp()-interval '1 second' WHERE id=$1",
+        [waiting.id],
+      );
+      await f.hub.energy.tick();
+      const second = await f.plan();
+      assert.equal(second.start_attempts, 2);
+      assert.ok(new Date(second.next_start_at).getTime() > Date.now() + 290000);
+      f.runtime.readControlProvider = read;
+      f.runtime.profileVerified = false;
+      f.runtime.profileError = "SOLARMAN HTTP request failed or timed out";
+      await f.pool.query(
+        "UPDATE energy_plans SET next_start_at=clock_timestamp()-interval '1 second' WHERE id=$1",
+        [waiting.id],
+      );
+      await f.hub.energy.tick();
+      await f.runtime.work.idle();
+      await f.runtime.outage.load();
+      assert.equal(
+        f.runtime.outage.row?.state,
+        "active",
+        JSON.stringify(await f.plan()),
+      );
+      assert.equal(f.runtime.profileError, null);
+      assert.equal(f.runtime.outage.row.proof.applyWritesVerified, true);
+      assert.equal((await f.plan()).start_attempts, 3);
+      assert.equal((await f.state()).automatic, true);
+    } finally {
+      f.runtime.readControlProvider = read;
+      await f.dispose();
+    }
+  });
+
+  test("night start waits for an unbuffered clock mismatch without losing its approved plan", async () => {
+    const f = await dueFixture();
+    const api = f.runtime.client.api;
+    try {
+      const writes = f.device.writes.length;
+      f.runtime.client.api = async () =>
+        providerPayload({
+          device: f.runtime.device,
+          values: {
+            SYSTIM1: new Intl.DateTimeFormat("sv-SE", {
+              timeZone: "Europe/Sofia",
+              dateStyle: "short",
+              timeStyle: "medium",
+            }).format(Date.now() + 130000),
+          },
+        });
+      await f.hub.energy.begin(f.runtime, f.settings, await f.plan());
+      const plan = await f.plan();
+      assert.equal(plan.state, "scheduled");
+      assert.equal(plan.code, "waiting-clock");
+      assert.equal(f.device.writes.length, writes);
+      assert.equal((await f.state()).automatic, true);
+      assert.equal(
+        (
+          await f.pool.query(
+            "SELECT count(*)::int AS n FROM outage_preparations WHERE energy_plan_id=$1",
+            [plan.id],
+          )
+        ).rows[0].n,
+        0,
+      );
+    } finally {
+      f.runtime.client.api = api;
+      await f.dispose();
+    }
+  });
+
+  test("buffered night start accepts a clock offset within its one-hour margin without relaxing other controls", async () => {
+    const f = await dueFixture(60);
+    const api = f.runtime.client.api;
+    try {
+      f.runtime.client.api = async () =>
+        providerPayload({
+          device: f.runtime.device,
+          values: {
+            SYSTIM1: new Intl.DateTimeFormat("sv-SE", {
+              timeZone: "Europe/Sofia",
+              dateStyle: "short",
+              timeStyle: "medium",
+            }).format(Date.now() + 3599000),
+          },
+        });
+      await f.hub.energy.begin(f.runtime, f.settings, await f.plan());
+      await f.runtime.work.idle();
+      await f.runtime.outage.load();
+      assert.equal(f.runtime.clock.passed, false);
+      assert.equal(
+        f.runtime.outage.row?.state,
+        "active",
+        JSON.stringify(await f.plan()),
+      );
+      assert.equal(f.runtime.outage.row.proof.applyWritesVerified, true);
+      assert.equal(f.runtime.readiness().canStart, false);
+      await f.restore();
+      await f.runtime.readControlProvider();
+      assert.ok(f.runtime.readiness().reasons.some(reason => reason.code === "clock"));
+      assert.equal(f.runtime.readiness().canStart, false);
+    } finally {
+      f.runtime.client.api = api;
+      await f.dispose();
+    }
+  });
+
+  test("night start never retries outside its approved cheap window or after permission revocation", async () => {
+    const f = await dueFixture();
+    try {
+      const plan = await f.plan(),
+        writes = f.device.writes.length;
+      await f.pool.query(
+        "UPDATE energy_plans SET ends_at=clock_timestamp()+interval '4 minutes' WHERE id=$1",
+        [plan.id],
+      );
+      await f.hub.energy.begin(f.runtime, f.settings, await f.plan());
+      assert.equal((await f.plan()).state, "skipped");
+      assert.equal((await f.plan()).code, "charging-window-missed");
+      assert.equal(f.device.writes.length, writes);
+      await f.pool.query(
+        "UPDATE energy_plans SET state='scheduled',ends_at=clock_timestamp()+interval '2 hours' WHERE id=$1",
+        [plan.id],
+      );
+      await f.call("pause", { revision: (await f.state()).revision });
+      await f.hub.energy.begin(f.runtime, f.settings, plan);
+      assert.equal((await f.plan()).state, "cancelled");
+      assert.equal(f.device.writes.length, writes);
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  test("night start recovers an interrupted preflight only when no native preparation exists", async () => {
+    const f = await dueFixture();
+    try {
+      const plan = await f.plan(),
+        writes = f.device.writes.length;
+      await f.pool.query(
+        "UPDATE energy_plans SET state='starting',start_attempts=1,updated_at=clock_timestamp()-interval '6 minutes' WHERE id=$1",
+        [plan.id],
+      );
+      await f.hub.energy.tick();
+      assert.equal((await f.plan()).state, "scheduled");
+      assert.equal((await f.plan()).code, "waiting-connection");
+      assert.equal(f.device.writes.length, writes);
+    } finally {
+      await f.dispose();
+    }
+  });
 
   test("a bounded night trial expires once, preserves tenant ownership and never sends inverter writes", async () => {
     const f = await trialFixture();

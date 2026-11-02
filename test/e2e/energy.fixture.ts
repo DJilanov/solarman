@@ -112,6 +112,8 @@ export function energyDashboardFixture(): EnergyData {
       id: "823e8ba7-d14d-4ed1-9e22-e0dc80b9cba6",
       state: "recommended",
       code: null,
+      startAttempts: 0,
+      nextAttemptAt: null,
       createdAt: new Date(now).toISOString(),
       settingsRevision: "2",
       startsAt: new Date(start).toISOString(),

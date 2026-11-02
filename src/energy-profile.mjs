@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { energyMinute } from "./energy-time.mjs";
 
-export const ENERGY_MODEL_VERSION = "hourly-pv/load/tariff-battery/v3";
+export const ENERGY_MODEL_VERSION = "hourly-pv/load/tariff-battery/v4";
 // Battery dispatch revisions must preserve the identity of frozen PV forecasts.
 const SOLAR_SITE_VERSION = "hourly-pv/load/tariff-battery/v1";
 export const BULGARIAN_NIGHT_WINDOWS = Object.freeze([
@@ -247,12 +247,23 @@ export function validateEnergyProfile(input) {
   }
   keys(planning, [
     "maximumSoc",
+    "nightBufferMinutes",
     "solarMargin",
     "loadMargin",
     "fallbackDailyKwh",
     "heatingKwPerDegree",
     "heatingBaseC",
   ]);
+  if (
+    planning.nightBufferMinutes !== undefined &&
+    (!Number.isInteger(planning.nightBufferMinutes) ||
+      planning.nightBufferMinutes < 0 ||
+      planning.nightBufferMinutes > 120 ||
+      planning.nightBufferMinutes % 15 !== 0)
+  )
+    throw new Error(
+      "Choose a night charging buffer from 0 to 120 minutes in 15-minute steps",
+    );
   number(
     planning.maximumSoc,
     battery.reserveSoc,

@@ -24,6 +24,7 @@ import {
   suggestSurplusLoads,
 } from "../src/energy-history.mjs";
 import { chooseEnergyPlan, simulateEnergyPlan } from "../src/energy-model.mjs";
+import { nightClockAllowed } from "../src/energy-native.mjs";
 
 function profile() {
   const value = emptyEnergyProfile();
@@ -343,6 +344,57 @@ test("battery model revisions retain the original identity of frozen solar forec
   assert.equal(
     energySiteHash(value),
     "bd150c2c50202a1c6d23f184ec176c102c65d2a6a8969b3a4b2fef2a32ab5cfa",
+  );
+});
+
+test("a one-hour tariff buffer limits winter night charging to 23:00–05:00 without changing prices", () => {
+  const value = profile(),
+    now = Date.parse("2026-11-02T10:00:00Z");
+  value.planning.nightBufferMinutes = 60;
+  const plan = chooseEnergyPlan({
+    profile: value,
+    ...forecasts(now),
+    soc: 50,
+    now,
+  });
+  assert.equal(plan.night.start, Date.parse("2026-11-02T20:00:00Z"));
+  assert.equal(plan.night.end, Date.parse("2026-11-03T04:00:00Z"));
+  assert.equal(plan.chargeStart, Date.parse("2026-11-02T21:00:00Z"));
+  assert.equal(plan.chargeEnd, Date.parse("2026-11-03T03:00:00Z"));
+  assert.equal(
+    energyTariff(value, Date.parse("2026-11-02T20:15:00Z")).buy,
+    value.tariff.nightPrice,
+  );
+  assert.ok(
+    plan.selected.timeline
+      .filter((slot) => slot.gridChargeKwh > 0)
+      .every(
+        (slot) => slot.start >= plan.chargeStart && slot.end <= plan.chargeEnd,
+      ),
+  );
+  for (const invalid of [-15, 1, 121, null]) {
+    value.planning.nightBufferMinutes = invalid;
+    assert.throws(() => validateEnergyProfile(value));
+  }
+});
+
+test("night clock tolerance is bounded by both tariff buffers, freshness and a one-hour maximum", () => {
+  const value = profile(),
+    clock = { fresh: true, passed: false, skewSeconds: 130 };
+  assert.equal(nightClockAllowed(clock, value), false);
+  value.planning.nightBufferMinutes = 60;
+  for (const skewSeconds of [130, 3599, 3600])
+    assert.equal(nightClockAllowed({ ...clock, skewSeconds }, value), true);
+  for (const skewSeconds of [3601, -1, null, NaN, Infinity])
+    assert.equal(nightClockAllowed({ ...clock, skewSeconds }, value), false);
+  assert.equal(nightClockAllowed({ ...clock, fresh: false }, value), false);
+  assert.equal(nightClockAllowed(null, value), false);
+  value.planning.nightBufferMinutes = 15;
+  assert.equal(nightClockAllowed({ ...clock, skewSeconds: 901 }, value), false);
+  value.planning.nightBufferMinutes = 120;
+  assert.equal(
+    nightClockAllowed({ ...clock, skewSeconds: 3601 }, value),
+    false,
   );
 });
 

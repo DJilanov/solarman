@@ -2,6 +2,8 @@ import path from "node:path";
 
 /** @param {string[]} applied @param {string[]} supported @returns {void} */
 export function assertRollbackCompatibility(applied, supported) {
+  if (applied.includes("027_energy_start_retry.sql") && !supported.includes("027_energy_start_retry.sql"))
+    throw new Error("Rollback requires a release that preserves night charging retries and tariff buffers");
   if (
     applied.includes("025_energy_experience.sql") &&
     !supported.includes("025_energy_experience.sql")

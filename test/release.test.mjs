@@ -11,6 +11,11 @@ const expected = {
   index: '<script src="/assets/new.js"></script>',
 };
 
+test("rollback preserves durable night retries and buffered charging admission", () => {
+  assert.throws(() => assertRollbackCompatibility(["027_energy_start_retry.sql"], ["026_energy_failed_start.sql"]), /preserves night charging retries/);
+  assert.doesNotThrow(() => assertRollbackCompatibility(["027_energy_start_retry.sql"], ["027_energy_start_retry.sql"]));
+});
+
 test("rollback preserves energy assistant archive, erasure and reminder handling", () => {
   assert.throws(() => assertRollbackCompatibility(["025_energy_experience.sql"], ["024_energy_planning.sql"]), /supports energy assistant/);
   assert.doesNotThrow(() => assertRollbackCompatibility(["025_energy_experience.sql"], ["025_energy_experience.sql"]));

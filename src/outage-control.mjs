@@ -219,7 +219,11 @@ export class OutageControl {
     )
       return this.preemptNight(session, target, key);
     const status = this.status();
-    if (test ? !status.canTest : !status.canPrepare) {
+    const nightReady = night && this.runtime.hub.energy.canPrepareNight(
+      this.runtime,
+      (await this.runtime.hub.energy.settings(this.runtime.tenantId)).profile,
+    );
+    if (test ? !status.canTest : night ? !nightReady : !status.canPrepare) {
       const repeated = await this.existing(
         session.id,
         key,
@@ -865,13 +869,13 @@ export class OutageControl {
     )
       throw new OutageError(409, "Outage control permission changed");
     if (this.row.purpose === "night")
-      await r.hub.energy.authorizeNative(this.row);
+      await r.hub.energy.authorizeNative(this.row, r.clockEvidence(Date.now()));
     const run = await currentCommissioning(this.pool, r.tenantId);
     const clock = r.clockEvidence(Date.now());
     if (
       !matchingControlFirmware(state.verification?.firmware, r.firmware) ||
       !clock?.fresh ||
-      !clock.passed
+      (!clock.passed && this.row.purpose !== "night")
     )
       throw new OutageError(
         409,

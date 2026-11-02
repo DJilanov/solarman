@@ -31,9 +31,10 @@ import {
   calculateEnergyOutcomes,
 } from "./energy-calculation.mjs";
 import { scoreEnergyPlan } from "./energy-outcomes.mjs";
-import { nightNativeWindows } from "./energy-native.mjs";
+import { nightNativeWindows, nightClockAllowed } from "./energy-native.mjs";
 import { WorkQueue } from "./work-queue.mjs";
 import { expireDueNightTrial } from "./night-trial.mjs";
+import { SolarmanTransportError } from "./solarman.mjs";
 
 const PENDING = ["scheduled", "starting", "running", "restoring"];
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -49,6 +50,8 @@ function publicPlan(plan) {
     id: plan.id,
     state: plan.state,
     code: plan.code,
+    startAttempts: plan.start_attempts,
+    nextAttemptAt: plan.next_start_at,
     createdAt: plan.created_at,
     settingsRevision: String(plan.settings_revision),
     startsAt: plan.starts_at,
@@ -296,7 +299,7 @@ export class EnergyPlanning {
       ),
       control: {
         canActivate:
-          !runtime.outage.active && native.canPrepare && runtime.controlEnabled,
+          this.canPrepareNight(runtime, settings.profile),
         supported: native.supported,
         enabled: runtime.controlEnabled,
         holdApproved: native.capabilityApproved,
@@ -459,7 +462,7 @@ export class EnergyPlanning {
           await runtime.outage.load();
           if (
             active ||
-            !runtime.outage.status().canPrepare ||
+            !this.canPrepareNight(runtime, settings.profile) ||
             !runtime.controlEnabled
           )
             throw new SecurityError(
@@ -773,7 +776,7 @@ export class EnergyPlanning {
           model,
           reading,
           prediction,
-          new Date(prediction.night.start),
+          new Date(prediction.night.start + (settings.profile.planning.nightBufferMinutes ?? 0) * 60000),
           new Date(prediction.night.releaseAt),
         ],
       );
@@ -840,8 +843,22 @@ export class EnergyPlanning {
       );
   }
 
-  /** @param {object} preparation @returns {Promise<void>} */
-  async authorizeNative(preparation) {
+  /** @param {object} runtime @param {object} profile @returns {boolean} */
+  canPrepareNight(runtime, profile) {
+    return (
+      !runtime.outage.active &&
+      runtime.outage.status().capabilityApproved &&
+      runtime
+        .readiness()
+        .reasons.every(
+          (reason) =>
+            reason.code === "clock" &&
+            nightClockAllowed(runtime.clockEvidence(), profile),
+        )
+    );
+  }
+  /** @param {object} preparation @param {object} clock @returns {Promise<void>} */
+  async authorizeNative(preparation, clock) {
     await expireDueNightTrial(this.pool, preparation.tenant_id);
     const row = (
       await this.pool.query(
@@ -851,6 +868,7 @@ export class EnergyPlanning {
     ).rows[0];
     if (
       !row ||
+      !nightClockAllowed(clock, row.current_profile) ||
       row.lifecycle !== "active" ||
       !["starting", "running"].includes(row.state) ||
       !row.approved_by ||
@@ -888,15 +906,40 @@ export class EnergyPlanning {
   /** @param {object} runtime @param {object} settings @param {object} plan @returns {Promise<void>} */
   async begin(runtime, settings, plan) {
     const claimed = await this.pool.query(
-      "UPDATE energy_plans SET state='starting',updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2 AND state='scheduled' RETURNING id",
+      "UPDATE energy_plans p SET state='starting',start_attempts=start_attempts+1,next_start_at=null,code=null,updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2 AND state='scheduled' AND (next_start_at IS NULL OR next_start_at<=clock_timestamp()) AND EXISTS(SELECT 1 FROM energy_settings s WHERE s.tenant_id=p.tenant_id AND s.revision=p.settings_revision AND s.approval_binding=p.binding AND s.approved_by=p.approved_by) RETURNING p.*",
       [runtime.tenantId, plan.id],
     );
     if (!claimed.rowCount) return;
+    plan = claimed.rows[0];
     try {
-      await runtime.outage.load();
-      if (runtime.outage.active) throw new Error("outage-priority");
-      if (!runtime.outage.status().canPrepare || !runtime.controlEnabled)
-        throw new Error("controls-unavailable");
+      if (new Date(plan.ends_at).getTime() <= Date.now() + 5 * 60000)
+        throw new Error("charging-window-missed");
+      await runtime.queue(async () => {
+        await runtime.initialize();
+        await runtime.outage.load();
+        if (runtime.outage.active) throw new Error("outage-priority");
+        if (
+          !runtime.controlEnabled ||
+          !runtime.hostWritesAllowed ||
+          !runtime.verifiedDevice() ||
+          !runtime.commissioningPermitted("approved") ||
+          runtime.lifecycle !== "active"
+        )
+          throw new Error("controls-unavailable");
+        if (runtime.cleanupRequired || runtime.journal.pending)
+          throw new Error("waiting-controls");
+        const { mapped } = await runtime.readControlProvider();
+        if (mapped.verificationInvalidated)
+          throw new Error("permission-changed");
+        const clock = runtime.clockEvidence();
+        if (!clock?.fresh) throw new Error("waiting-readings");
+        if (!nightClockAllowed(clock, settings.profile))
+          throw new Error("waiting-clock");
+        // Paused monitoring does not audit native settings. Refresh them before admission without enabling charging.
+        await runtime.collect(true);
+        if (!this.canPrepareNight(runtime, settings.profile))
+          throw new Error("waiting-controls");
+      }, 5);
       if (
         settings.approval_binding !==
           commissioningBinding(runtime.account, runtime.verification) ||
@@ -911,8 +954,11 @@ export class EnergyPlanning {
           ? { targetSoc: plan.prediction.targetSoc }
           : {},
       );
-      if (!current || current.prediction.action === "normal")
-        throw new Error(current ? "no-topup-needed" : "forecast-unavailable");
+      if (!current) throw new Error("waiting-forecast");
+      if (current.prediction.night.start !== plan.prediction.night.start)
+        throw new Error("charging-window-missed");
+      if (current.prediction.action === "normal")
+        throw new Error("no-topup-needed");
       if (
         current.prediction.targetSoc > plan.prediction.targetSoc &&
         !settings.automatic
@@ -933,7 +979,10 @@ export class EnergyPlanning {
             current.reading,
             current.demand,
             current.forecast_id,
-            new Date(prediction.night.start),
+            new Date(
+              prediction.night.start +
+                (settings.profile.planning.nightBufferMinutes ?? 0) * 60000,
+            ),
             new Date(prediction.night.releaseAt),
           ],
         )
@@ -961,6 +1010,20 @@ export class EnergyPlanning {
         },
       );
     } catch (error) {
+      const waiting = [
+        "waiting-controls",
+        "waiting-clock",
+        "waiting-readings",
+        "waiting-forecast",
+      ].includes(error.message)
+        ? error.message
+        : error instanceof SolarmanTransportError ||
+            /^SOLARMAN HTTP status (429|5\d\d)$/.test(error.message) ||
+            error.message ===
+              "Device acknowledgment timed out; command outcome is unknown"
+          ? "waiting-connection"
+          : null;
+      if (waiting && (await this.deferStart(runtime, plan, waiting))) return;
       const code = [
         "outage-priority",
         "controls-unavailable",
@@ -973,10 +1036,30 @@ export class EnergyPlanning {
         ? error.message
         : "start-unconfirmed";
       await this.pool.query(
-        "UPDATE energy_plans SET state=CASE WHEN $3='no-topup-needed' THEN 'skipped' ELSE 'blocked' END,code=$3,updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2 AND state='starting'",
+        "UPDATE energy_plans SET state=CASE WHEN $3 IN('no-topup-needed','charging-window-missed') THEN 'skipped' ELSE 'blocked' END,code=$3,next_start_at=null,updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2 AND state='starting'",
         [runtime.tenantId, plan.id, code],
       );
     }
+  }
+  /** @param {object} runtime @param {object} plan @param {string} code @returns {Promise<boolean>} */
+  async deferStart(runtime, plan, code) {
+    const delays = [2, 5, 15, 30];
+    const minutes =
+      delays[Math.min(Math.max(plan.start_attempts - 1, 0), delays.length - 1)];
+    const deadline = new Date(plan.ends_at).getTime() - 5 * 60000;
+    const retryAt = Math.min(Date.now() + minutes * 60000, deadline - 60000);
+    const deferred = retryAt > Date.now();
+    const result = await this.pool.query(
+      "UPDATE energy_plans p SET state=CASE WHEN s.approval_binding=p.binding AND s.revision=p.settings_revision AND s.approved_by=p.approved_by THEN $3 ELSE 'cancelled' END,code=CASE WHEN s.approval_binding=p.binding AND s.revision=p.settings_revision AND s.approved_by=p.approved_by THEN $4 ELSE 'permission-changed' END,next_start_at=CASE WHEN s.approval_binding=p.binding AND s.revision=p.settings_revision AND s.approved_by=p.approved_by THEN $5::timestamptz ELSE null END,updated_at=clock_timestamp() FROM energy_settings s WHERE p.tenant_id=$1 AND p.id=$2 AND s.tenant_id=p.tenant_id AND p.state='starting' AND NOT EXISTS(SELECT 1 FROM outage_preparations o WHERE o.tenant_id=p.tenant_id AND o.energy_plan_id=p.id) RETURNING p.id",
+      [
+        runtime.tenantId,
+        plan.id,
+        deferred ? "scheduled" : "skipped",
+        deferred ? code : "charging-window-missed",
+        deferred ? new Date(retryAt) : null,
+      ],
+    );
+    return Boolean(result.rowCount);
   }
   /** @returns {Promise<void>} */
   async tick() {
@@ -1055,20 +1138,24 @@ export class EnergyPlanning {
               ],
             );
           }
-        } else if (Date.now() - new Date(plan.updated_at).getTime() > 5 * 60000)
-          await this.pool.query(
+        } else if (Date.now() - new Date(plan.updated_at).getTime() > 5 * 60000) {
+          if (plan.state === "starting")
+            await this.deferStart(runtime, plan, "waiting-connection");
+          else await this.pool.query(
             "UPDATE energy_plans SET state='blocked',code='start-interrupted',updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2",
             [settings.tenant_id, plan.id],
           );
+        }
         continue;
       }
       if (plan) {
         if (new Date(plan.ends_at).getTime() <= Date.now() + 5 * 60000)
           await this.pool.query(
-            "UPDATE energy_plans SET state='skipped',code='charging-window-missed',updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2",
+            "UPDATE energy_plans SET state='skipped',code='charging-window-missed',next_start_at=null,updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2",
             [settings.tenant_id, plan.id],
           );
-        else if (new Date(plan.starts_at).getTime() <= Date.now())
+        else if (new Date(plan.starts_at).getTime() <= Date.now() &&
+          (!plan.next_start_at || new Date(plan.next_start_at).getTime() <= Date.now()))
           await this.begin(runtime, settings, plan);
         continue;
       }
@@ -1093,7 +1180,7 @@ export class EnergyPlanning {
       const window = energyNightWindows(settings.profile, Date.now())[0];
       const already = await this.pool.query(
         "SELECT 1 FROM energy_plans WHERE tenant_id=$1 AND starts_at=$2 AND approved_by IS NOT NULL LIMIT 1",
-        [settings.tenant_id, new Date(window.start)],
+        [settings.tenant_id, new Date(window.start + (settings.profile.planning.nightBufferMinutes ?? 0) * 60000)],
       );
       if (
         already.rowCount ||

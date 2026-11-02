@@ -404,6 +404,18 @@ export function EnergySettings({
             }
           />
           <NumberField
+            label="Buffer inside the cheap tariff · minutes"
+            value={profile.planning.nightBufferMinutes ?? 0}
+            min={0}
+            max={120}
+            step={15}
+            onChange={(value) =>
+              edit((next) => {
+                next.planning.nightBufferMinutes = value ?? 0;
+              })
+            }
+          />
+          <NumberField
             label="Battery wear allowance / delivered kWh"
             optional
             value={profile.tariff.cyclingCost}

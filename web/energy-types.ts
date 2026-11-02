@@ -29,6 +29,7 @@ export interface EnergyProfile {
   };
   planning: {
     maximumSoc: number;
+    nightBufferMinutes?: number;
     solarMargin: number;
     loadMargin: number;
     fallbackDailyKwh: number | null;
@@ -120,6 +121,8 @@ export interface EnergyPlan {
   id: string;
   state: string;
   code: string | null;
+  startAttempts: number;
+  nextAttemptAt: string | null;
   createdAt: string;
   settingsRevision: string;
   startsAt: string;

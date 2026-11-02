@@ -56,7 +56,11 @@ export function simulateEnergyPlan(
     gridCost = 0,
     endNightSoc = null,
     minimumSoc = soc;
-  const releaseAt = night ? night.end - NIGHT_RELEASE_MARGIN_MS : null,
+  const buffer = (profile.planning.nightBufferMinutes ?? 0) * 60000;
+  const holdStart = night ? night.start + buffer : null;
+  const releaseAt = night
+      ? night.end - Math.max(NIGHT_RELEASE_MARGIN_MS, buffer)
+      : null,
     timeline = [];
   let solarIndex = 0,
     demandIndex = 0;
@@ -87,7 +91,7 @@ export function simulateEnergyPlan(
     const boundaries = [
       interval.start,
       interval.end,
-      ...[night?.start, releaseAt, chargeStart].filter(
+      ...[holdStart, releaseAt, chargeStart].filter(
         (value) =>
           Number.isFinite(value) &&
           value > interval.start &&
@@ -106,9 +110,7 @@ export function simulateEnergyPlan(
         end = boundaries[index],
         hours = (end - at) / 3600000;
       const tariff = energyTariff(profile, at),
-        hold = Boolean(
-          night && at >= Math.max(from, night.start) && at < releaseAt,
-        );
+        hold = Boolean(night && at >= Math.max(from, holdStart) && at < releaseAt);
       const generated = solarKw * hours,
         consumed = loadKw * hours,
         fromPv = Math.min(generated, consumed);
@@ -230,8 +232,14 @@ export function chooseEnergyPlan({
   const from = now,
     to = next.start,
     // Maintain mode can charge as soon as the hold is applied, irrespective of a later native window.
-    chargeStart = Math.max(night.start, now),
-    releaseAt = night.end - NIGHT_RELEASE_MARGIN_MS;
+    chargeStart = Math.max(
+      night.start + (profile.planning.nightBufferMinutes ?? 0) * 60000,
+      now,
+    ),
+    releaseAt = night.end - Math.max(
+      NIGHT_RELEASE_MARGIN_MS,
+      (profile.planning.nightBufferMinutes ?? 0) * 60000,
+    );
   const baseline = simulateEnergyPlan(profile, solar, demand, {
     from,
     to,
@@ -389,7 +397,7 @@ export function chooseEnergyPlan({
     assumptions: {
       chargingPowerFactor: 0.9,
       conservativeWeight: 0.35,
-      releaseMarginMinutes: NIGHT_RELEASE_MARGIN_MS / 60000,
+      releaseMarginMinutes: Math.max(5, profile.planning.nightBufferMinutes ?? 0),
       savingsIncludeWear: profile.tariff.cyclingCost !== null,
       dischargeRestartMarginSoc: DISCHARGE_RESTART_MARGIN_SOC,
       initialDischarging,

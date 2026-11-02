@@ -11,7 +11,7 @@ const EXPORT_SECTIONS = {
   energyForecasts:
     "SELECT id,site_hash,fetched_at,expires_at,payload FROM energy_forecasts WHERE tenant_id=$1 ORDER BY fetched_at,id",
   energyPlans:
-    "SELECT id,account_id,device,binding,forecast_id,settings_revision::text,profile_hash,profile,demand,reading,prediction,state,approved_by,approved_snapshot,starts_at,ends_at,code,created_at,updated_at FROM energy_plans WHERE tenant_id=$1 ORDER BY created_at,id",
+    "SELECT id,account_id,device,binding,forecast_id,settings_revision::text,profile_hash,profile,demand,reading,prediction,state,approved_by,approved_snapshot,starts_at,ends_at,code,start_attempts,next_start_at,created_at,updated_at FROM energy_plans WHERE tenant_id=$1 ORDER BY created_at,id",
   energyOutcomes:
     "SELECT forecast_id,day,site_hash,payload,assessed_at FROM energy_outcomes WHERE tenant_id=$1 ORDER BY day,forecast_id",
   energyEvents:

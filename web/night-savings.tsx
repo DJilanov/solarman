@@ -62,6 +62,16 @@ const states: Record<string, string> = {
   quarantined: "Plan requires review",
 };
 const codes: Record<string, string> = {
+  "waiting-connection":
+    "SOLARMAN is temporarily unreachable. The saved night plan will retry automatically.",
+  "waiting-clock":
+    "Waiting for the inverter clock to pass verification. The saved night plan will retry automatically.",
+  "waiting-readings":
+    "Waiting for fresh inverter readings before retrying the saved night plan.",
+  "waiting-controls":
+    "Waiting for native settings and recovery checks before retrying the saved night plan.",
+  "waiting-forecast":
+    "Waiting for an updated weather and consumption forecast before retrying the saved night plan.",
   "readings-stale":
     "Waiting for fresh battery readings. The last forecast has not been replaced with zero production.",
   "demand-history-missing":
@@ -471,6 +481,14 @@ export default function NightSavingsPage(): ReactNode {
                         "Review the current plan state before continuing.",
                     )}
                   </Notice>
+                )}
+                {plan.state === "scheduled" && plan.nextAttemptAt && (
+                  <p className="fine-print" role="status">
+                    {tr(
+                      "Next automatic attempt: {{time}}. Attempts stop before the cheap period ends.",
+                      { time: when(plan.nextAttemptAt, profile.timezone) },
+                    )}
+                  </p>
                 )}
                 <ul className="energy-reasons">
                   {prediction.reasons.map((reason) => (
