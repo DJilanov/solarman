@@ -2,6 +2,13 @@ export interface Session {
   user: { id: string; email: string; platformAdmin: boolean };
   tenant: { id: string; name: string; timezone: string };
   csrfToken: string;
+  security?: {
+    adminSetupRequired: boolean;
+    passkeyEnrollmentRequired: boolean;
+    mfaVerified: boolean;
+    recoveryKeySaved: boolean;
+    passkeyEnrolled: boolean;
+  };
 }
 export interface RetentionPolicy {
   enabled: boolean;
@@ -78,6 +85,15 @@ export interface BrowserSession {
 }
 export interface AccountSecurityData {
   passwordChangedAt: string | null;
+  mfaRequired?: boolean;
+  passkeys?: {
+    id: string;
+    name: string;
+    deviceType: "singleDevice" | "multiDevice";
+    backedUp: boolean;
+    createdAt: string;
+    lastUsedAt: string | null;
+  }[];
   recovery: { keyCreatedAt: string | null; linkExpiresAt: string | null };
   sessions: BrowserSession[];
   sessionCount: number;
@@ -95,7 +111,10 @@ export interface AccountSecurityData {
       | "recovery_access_revoked"
       | "recovery_link_created"
       | "recovery_link_revoked"
-      | "password_recovered";
+      | "password_recovered"
+      | "passkey_added"
+      | "passkey_removed"
+      | "passkeys_reset";
     affectedSessions: number;
     at: string;
   }[];

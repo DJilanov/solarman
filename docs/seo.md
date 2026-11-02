@@ -1,10 +1,10 @@
 # Public search discovery
 
-The public English page is `https://solarman.jilanov.com/` and the Bulgarian page is `https://solarman.jilanov.com/bg/`. Both are rendered from the actual React landing page during `npm run build`, including its lazy-loaded styles. Hydration restores the interactive preview. No customer readings, session state or provider credentials are included in this HTML.
+The public English page is `https://solarman.jilanov.com/` and the Bulgarian page is `https://solarman.jilanov.com/bg/`. Both are rendered from the actual React landing page during `npm run build`, including its lazy-loaded styles. The same build renders `/pricing/`, `/privacy/`, `/terms/` and their `/bg/` counterparts with document-specific canonical and language links. Hydration restores the interactive preview. No customer readings, session state or provider credentials are included in this HTML.
 
 Each language has its own title, description, canonical URL and Open Graph metadata. Reciprocal English/Bulgarian `hreflang` links and an English `x-default` connect the versions. The URL determines the public language; private pages continue to use the saved language preference. Footer links also allow switching without JavaScript. WebSite microdata describes the site without weakening the script CSP.
 
-The build generates `/robots.txt` and `/sitemap.xml`. The sitemap lists only the two canonical public pages. `/welcome` and explicit public `index.html` paths permanently redirect to their canonical URL. Unknown public routes return HTTP 404. Login and workspace routes use a separate empty application shell with both a robots meta tag and an `X-Robots-Tag: noindex, nofollow` response header. These are indexing instructions; authentication and tenant isolation remain the access controls. API and callback paths are excluded from crawling, and private page paths remain crawlable so Google can see their noindex instruction.
+The build generates `/robots.txt` and `/sitemap.xml`. The sitemap lists eight canonical public pages: the home, services/support, privacy and terms documents in English and Bulgarian. `/welcome` and explicit public `index.html` paths permanently redirect to their canonical URL. Unknown public routes return HTTP 404. Login and workspace routes use a separate empty application shell with both a robots meta tag and an `X-Robots-Tag: noindex, nofollow` response header. These are indexing instructions; authentication and tenant isolation remain the access controls. API and callback paths are excluded from crawling, and private page paths remain crawlable so Google can see their noindex instruction.
 
 ## Search Console
 
@@ -18,10 +18,11 @@ Monitor Pages for exclusion/fetch errors and Performance for actual impressions,
 
 These are intended search topics, not measured keyword volumes:
 
-1. Bulgarian solar monitoring: a useful guide to reading photovoltaic production, household demand, grid import and battery flow. Link to the demo from the explanation.
-2. Night charging: explain how day/night prices, weather predictions, recent consumption and battery reserve affect a charging plan. Use explicit assumptions and measured results when available; do not promise a fixed saving.
-3. Battery reserve before an outage: explain the user workflow and the installation requirements for actual backup power.
-4. Compatibility: publish the supported Bluesun BSE20KH3 profile and connection requirements accurately. Do not imply that every inverter supported by SOLARMAN monitoring also supports this application's controls.
+1. The installed phone app: explain Home Screen installation on iPhone/Android, notification verification, system alerts and optional energy briefings. The landing hero leads with this existing benefit; it does not imply offline control or immediate power-cut detection.
+2. Bulgarian solar monitoring: a useful guide to reading photovoltaic production, household demand, grid import and battery flow. Link to the demo from the explanation.
+3. Night charging: explain how day/night prices, weather predictions, recent consumption and battery reserve affect a charging plan. Use explicit assumptions and measured results when available; do not promise a fixed saving.
+4. Battery reserve before an outage: explain the user workflow and the installation requirements for actual backup power.
+5. Compatibility: publish the supported Bluesun BSE20KH3 profile and connection requirements accurately. Do not imply that every inverter supported by SOLARMAN monitoring also supports this application's controls.
 
 Create original Bulgarian and English pages only when there is enough substantive material for each. Add their routes to public client routing, static HTTP serving, prerendering and the sitemap together, with real internal links. Do not create thin keyword, city or model variants. Obtain consent and anonymize installation details before publishing a customer case study.
 

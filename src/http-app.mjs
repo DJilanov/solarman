@@ -1,5 +1,9 @@
 import { energyRoute } from "./energy-http.mjs";
 import { readFile } from "node:fs/promises";
+import { Passkeys } from "./passkeys.mjs";
+import publicRoutes from "./public-site.json" with { type: "json" };
+import { customerLaunchStatus } from "./customer-launch.mjs";
+
 import { outageRoute } from "./outage-http.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +27,8 @@ import {
   SecurityError,
   browserDescription,
 } from "./account-security.mjs";
+
+const publicPaths = new Set(Object.values(publicRoutes).flatMap((route) => Object.values(route)));
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -62,6 +68,13 @@ function json(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
+/** @param {import('node:http').IncomingMessage} request @returns {string} */
+function requestAddress(request) {
+  const trusted = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket.remoteAddress);
+  return trusted && typeof request.headers["x-real-ip"] === "string"
+    ? request.headers["x-real-ip"] : (request.socket.remoteAddress ?? "unknown");
+}
+
 /** @param {object} row @returns {object | null} */
 function measurement(row) {
   return row
@@ -86,6 +99,7 @@ export function createApp({ pool, hub, config }) {
   const limiter = new LoginLimiter();
   const securityLimiter = new LoginLimiter();
   const security = new AccountSecurity(pool);
+  const passkeys = new Passkeys(pool, config.origin);
   const recovery = new AccountRecovery(pool);
   const invitations = new Invitations(pool);
   const lifecycle = new TenantLifecycle(pool);
@@ -98,13 +112,7 @@ export function createApp({ pool, hub, config }) {
     });
   /** @param {import('node:http').IncomingMessage} request @param {import('node:http').ServerResponse} response @param {string} purpose @returns {string} */
   const limitPublic = (request, response, purpose) => {
-    const trusted = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(
-      request.socket.remoteAddress,
-    );
-    const address =
-      trusted && typeof request.headers["x-real-ip"] === "string"
-        ? request.headers["x-real-ip"]
-        : request.socket.remoteAddress;
+    const address = requestAddress(request);
     const key = `${purpose}:${address ?? "unknown"}`;
     if (!limiter.allow(key)) {
       response.setHeader("retry-after", "900");
@@ -144,11 +152,14 @@ export function createApp({ pool, hub, config }) {
         await pool.query(
           `WITH touched AS (UPDATE sessions SET last_seen_at=now(),user_agent=CASE WHEN user_agent='' THEN $2 ELSE user_agent END WHERE token_hash=$1 AND expires_at>now()
           AND (last_seen_at IS NULL OR last_seen_at<now()-interval '5 minutes'))
-          SELECT s.token_hash,s.csrf_token,s.id AS session_id,u.id,u.email,u.tenant_id,u.platform_admin,t.name AS tenant_name,a.timezone FROM sessions s
+          SELECT s.token_hash,s.csrf_token,s.id AS session_id,s.mfa_verified_at,u.id,u.email,u.tenant_id,u.platform_admin,u.password_changed_at,u.mfa_required,t.name AS tenant_name,a.timezone,
+          EXISTS(SELECT 1 FROM account_passkeys p WHERE p.user_id=u.id) AS has_passkeys,
+          EXISTS(SELECT 1 FROM account_recovery_tokens r WHERE r.user_id=u.id AND r.kind='saved_key' AND r.used_at IS NULL AND r.revoked_at IS NULL) AS has_recovery_key FROM sessions s
       JOIN users u ON u.id=s.user_id JOIN tenants t ON t.id=u.tenant_id
       LEFT JOIN solarman_accounts a ON a.tenant_id=u.tenant_id
       LEFT JOIN workspace_offboarding o ON o.tenant_id=u.tenant_id
-      WHERE s.token_hash=$1 AND s.expires_at>now() AND o.erasure_authorized_at IS NULL`,
+      WHERE s.token_hash=$1 AND s.expires_at>now() AND o.erasure_authorized_at IS NULL
+      AND (s.mfa_verified_at IS NOT NULL OR NOT EXISTS(SELECT 1 FROM account_passkeys p WHERE p.user_id=u.id))`,
           [tokenHash(token), browserDescription(request.headers["user-agent"])],
         )
       ).rows[0] ?? null
@@ -166,7 +177,19 @@ export function createApp({ pool, hub, config }) {
       timezone: user.timezone ?? "Europe/Sofia",
     },
     csrfToken,
+    security: {
+      adminSetupRequired: Boolean(config.secure && user.platform_admin && (!user.password_changed_at || !user.has_recovery_key || !user.has_passkeys || !user.mfa_verified_at)),
+      passkeyEnrollmentRequired: Boolean(user.mfa_required && !user.has_passkeys),
+      mfaVerified: Boolean(user.mfa_verified_at),
+      recoveryKeySaved: Boolean(user.has_recovery_key),
+      passkeyEnrolled: Boolean(user.has_passkeys),
+    },
   });
+  const renewedSession = async (request, login) => {
+    const session = await getSession({ headers: { ...request.headers, cookie: `${cookieName}=${login.token}` } });
+    if (!session) throw new HttpError(401, "Sign in to continue");
+    return sessionData(session, login.csrfToken);
+  };
   const analytics = async (
     tenantId,
     runtime,
@@ -265,12 +288,10 @@ export function createApp({ pool, hub, config }) {
         const file = path.resolve(staticRoot, `.${relative}`);
         if (!file.startsWith(`${staticRoot}${path.sep}`) && file !== staticRoot)
           throw new HttpError(404, "Not found");
-        const redirect = {
-          "/welcome": "/",
-          "/index.html": "/",
-          "/bg": "/bg/",
-          "/bg/index.html": "/bg/",
-        }[relative];
+        const redirect = relative === "/welcome" ? "/"
+          : publicPaths.has(relative + "/") ? relative + "/"
+          : relative.endsWith("/index.html") && publicPaths.has(relative.slice(0, -10)) ? relative.slice(0, -10)
+          : null;
         if (redirect) {
           response.writeHead(308, {
             location: redirect + url.search,
@@ -280,7 +301,7 @@ export function createApp({ pool, hub, config }) {
           return;
         }
         const extension = path.extname(file);
-        const publicPage = relative === "/" || relative === "/bg/";
+        const publicPage = publicPaths.has(relative);
         const privatePage =
           !extension &&
           /^\/(?:login|dashboard|activate|recover|workspaces|analytics|activity|controls|settings)(?:\/|$)/.test(
@@ -306,10 +327,7 @@ export function createApp({ pool, hub, config }) {
         )
           throw new HttpError(404, "Page not found");
         const target = publicPage
-          ? path.join(
-              staticRoot,
-              relative === "/bg/" ? "bg/index.html" : "index.html",
-            )
+          ? path.join(staticRoot, relative.slice(1), "index.html")
           : privatePage
             ? path.join(staticRoot, "app.html")
             : file;
@@ -379,14 +397,7 @@ export function createApp({ pool, hub, config }) {
         ) {
           throw new HttpError(400, "Enter your email address and password");
         }
-        const trustedProxy = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(
-          request.socket.remoteAddress,
-        );
-        const forwarded =
-          trustedProxy && typeof request.headers["x-real-ip"] === "string"
-            ? request.headers["x-real-ip"]
-            : request.socket.remoteAddress;
-        const key = `ip:${forwarded ?? "unknown"}`;
+        const key = `ip:${requestAddress(request)}`;
         if (!limiter.allow(key)) {
           response.setHeader("retry-after", "900");
           throw new HttpError(
@@ -404,13 +415,27 @@ export function createApp({ pool, hub, config }) {
         ).rows[0];
         if (!(await verifyPassword(body.password, user?.password_hash ?? null)))
           throw new HttpError(401, "Email or password is incorrect");
-        const { token, csrfToken } = await security.login(
+        const login = await passkeys.login(
           user,
           request.headers["user-agent"],
         );
+        if (login.mfaRequired) {
+          json(response, 202, login);
+          return;
+        }
         limiter.clear(key);
-        response.setHeader("set-cookie", cookie(token));
-        json(response, 200, sessionData(user, csrfToken));
+        response.setHeader("set-cookie", cookie(login.token));
+        json(response, 200, await renewedSession(request, login));
+        return;
+      }
+      if (pathname === "/api/auth/passkey" && request.method === "POST") {
+        const key = limitPublic(request, response, "passkey-login");
+        const body = await bodyJson(request);
+        const login = await passkeys.finishLogin(body.challengeToken, body.response, request.headers["user-agent"]);
+        limiter.clear(key);
+        limiter.clear(`ip:${requestAddress(request)}`);
+        response.setHeader("set-cookie", cookie(login.token));
+        json(response, 200, await renewedSession(request, login));
         return;
       }
       if (pathname === "/api/invitation" && request.method === "GET") {
@@ -436,6 +461,7 @@ export function createApp({ pool, hub, config }) {
           body.token,
           body.password,
           request.headers["user-agent"],
+          body.termsVersion,
         );
         response.setHeader("set-cookie", cookie(result.token));
         limiter.clear(limitKey);
@@ -473,6 +499,31 @@ export function createApp({ pool, hub, config }) {
         await security.logout(session);
         response.setHeader("set-cookie", cookie("", 0));
         json(response, 200, { ok: true });
+        return;
+      }
+      if (session.mfa_required && !session.has_passkeys && !pathname.startsWith("/api/security"))
+        throw new HttpError(403, "Finish passkey setup before opening your workspace");
+      if (config.secure && session.platform_admin && request.method === "POST" && pathname.startsWith("/api/admin/") &&
+        (!session.password_changed_at || !session.has_recovery_key || !session.has_passkeys || !session.mfa_verified_at))
+        throw new HttpError(403, "Finish administrator security setup before onboarding customers");
+      if (pathname === "/api/security/passkeys/options" && request.method === "POST") {
+        limitSecurity(response, session);
+        const body = await bodyJson(request);
+        json(response, 200, await passkeys.beginRegistration(session, body.currentPassword, body.name, request.headers["user-agent"]));
+        return;
+      }
+      if (pathname === "/api/security/passkeys/register" && request.method === "POST") {
+        limitSecurity(response, session);
+        const body = await bodyJson(request);
+        const login = await passkeys.finishRegistration(session, body.challengeToken, body.response, request.headers["user-agent"]);
+        response.setHeader("set-cookie", cookie(login.token));
+        json(response, 200, await renewedSession(request, login));
+        return;
+      }
+      if (pathname === "/api/security/passkeys/remove" && request.method === "POST") {
+        limitSecurity(response, session);
+        const body = await bodyJson(request);
+        json(response, 200, await passkeys.remove(session, body.currentPassword, body.id));
         return;
       }
       if (pathname === "/api/security" && request.method === "GET") {
@@ -522,7 +573,7 @@ export function createApp({ pool, hub, config }) {
         );
         securityLimiter.clear(session.id);
         response.setHeader("set-cookie", cookie(token));
-        json(response, 200, sessionData(session, csrfToken));
+        json(response, 200, await renewedSession(request, { token, csrfToken }));
         return;
       }
       if (
@@ -617,6 +668,11 @@ export function createApp({ pool, hub, config }) {
           (SELECT count(*)::integer FROM users u WHERE u.tenant_id=t.id) AS members
           FROM tenants t LEFT JOIN solarman_accounts a ON a.tenant_id=t.id ORDER BY t.created_at DESC`);
         json(response, 200, { items: result.rows });
+        return;
+      }
+      if (pathname === "/api/admin/launch" && request.method === "GET") {
+        if (!session.platform_admin) throw new HttpError(403, "Administrator access is required");
+        json(response, 200, await customerLaunchStatus(hub, session));
         return;
       }
       if (pathname === "/api/workspace/lifecycle" && request.method === "GET") {

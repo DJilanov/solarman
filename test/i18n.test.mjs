@@ -26,6 +26,11 @@ test("every literal translation used by the interface exists in both catalogues"
   for (const file of [
     "App.tsx",
     "landing.tsx",
+    "public-layout.tsx",
+    "public-information.tsx",
+    "customer-setup.tsx",
+    "customer-launch.tsx",
+    "passkey-settings.tsx",
     "home.tsx",
     "energy-settings.tsx",
     "night-savings.tsx",
@@ -77,6 +82,7 @@ test("every literal translation used by the interface exists in both catalogues"
 test("account security errors and event labels have English and Bulgarian translations", () => {
   const backend = [
     "account-security.mjs",
+    "passkeys.mjs",
     "account-recovery.mjs",
     "invitations.mjs",
     "tenant-lifecycle.mjs",

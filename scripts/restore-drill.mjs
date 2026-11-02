@@ -148,6 +148,7 @@ async function main() {
       report.authenticationVerified !== true ||
       report.accountSecurityVerified !== true ||
       report.accountRecoveryVerified !== true ||
+      report.passkeyChallengesQuarantined !== true ||
       report.tenantLifecycleVerified !== true ||
       report.retentionQuarantined !== true ||
       report.workspaceExportVerified !== true ||

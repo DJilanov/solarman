@@ -11,6 +11,13 @@ const expected = {
   index: '<script src="/assets/new.js"></script>',
 };
 
+test("rollback cannot bypass enrolled passkeys or discard customer terms acceptance", () => {
+  for (const version of ["028_passkeys.sql", "029_service_terms.sql"]) {
+    assert.throws(() => assertRollbackCompatibility([version], []), /Rollback requires a release/);
+    assert.doesNotThrow(() => assertRollbackCompatibility([version], [version]));
+  }
+});
+
 test("rollback preserves durable night retries and buffered charging admission", () => {
   assert.throws(() => assertRollbackCompatibility(["027_energy_start_retry.sql"], ["026_energy_failed_start.sql"]), /preserves night charging retries/);
   assert.doesNotThrow(() => assertRollbackCompatibility(["027_energy_start_retry.sql"], ["027_energy_start_retry.sql"]));

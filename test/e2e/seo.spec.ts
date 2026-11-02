@@ -12,8 +12,8 @@ test("public pages are complete, styled and linked in both languages without Jav
   try {
     const page = await context.newPage();
     for (const [path, language, heading] of [
-      ["/", "en", "Your home energy,"],
-      ["/bg/", "bg", "Енергията у дома,"],
+      ["/", "en", "Your home energy."],
+      ["/bg/", "bg", "Енергията у дома."],
     ]) {
       const response = await page.goto(`http://localhost:3000${path}`);
       expect(response?.status()).toBe(200);
@@ -52,8 +52,8 @@ test("public pages are complete, styled and linked in both languages without Jav
         page.locator('.landing-language-links a[href="/bg/"]'),
       ).toBeVisible();
       await expect(
-        page.getByRole("link", { name: "djilanov@gmail.com", exact: true }),
-      ).toHaveAttribute("href", "mailto:djilanov@gmail.com");
+        page.getByRole("link", { name: "sales@jilanov.com", exact: true }),
+      ).toHaveAttribute("href", "mailto:sales@jilanov.com");
       expect(
         await page
           .locator(".landing")
@@ -68,7 +68,7 @@ test("public pages are complete, styled and linked in both languages without Jav
     }
     await page.locator('footer a[href="/"]').click();
     await expect(page).toHaveURL("http://localhost:3000/");
-    await expect(page.locator("h1")).toContainText("Your home energy,");
+    await expect(page.locator("h1")).toContainText("Your home energy.");
   } finally {
     await context.close();
   }
@@ -90,7 +90,7 @@ test("public HTML hydrates without errors and the URL controls language includin
     localStorage.setItem("solarman.language", "bg"),
   );
   await page.goto("/");
-  await expect(page.locator("h1")).toContainText("Your home energy,");
+  await expect(page.locator("h1")).toContainText("Your home energy.");
   await page
     .getByRole("button", { name: "Be outage-ready", exact: true })
     .click();
@@ -99,19 +99,19 @@ test("public HTML hydrates without errors and the URL controls language includin
   await expect(page.getByRole("slider")).toHaveValue("100");
   await page.locator(".language-switch select").selectOption("bg");
   await expect(page).toHaveURL(/\/bg\/$/);
-  await expect(page.locator("h1")).toContainText("Енергията у дома,");
+  await expect(page.locator("h1")).toContainText("Енергията у дома.");
   await expect(page).toHaveTitle(/Солари и батерия/);
   await expect(page.getByRole("slider")).toHaveValue("100");
   await page.goBack();
-  await expect(page.locator("h1")).toContainText("Your home energy,");
+  await expect(page.locator("h1")).toContainText("Your home energy.");
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
     "href",
     origin + "/",
   );
   await page.goForward();
-  await expect(page.locator("h1")).toContainText("Енергията у дома,");
+  await expect(page.locator("h1")).toContainText("Енергията у дома.");
   await page.reload();
-  await expect(page.locator("h1")).toContainText("Енергията у дома,");
+  await expect(page.locator("h1")).toContainText("Енергията у дома.");
   expect(errors).toEqual([]);
 });
 
@@ -128,7 +128,7 @@ test("crawling endpoints expose only canonical public URLs and private pages sta
   const locations = [
     ...(await sitemap.text()).matchAll(/<loc>(.*?)<\/loc>/g),
   ].map((match) => match[1]);
-  expect(locations).toEqual([origin + "/", origin + "/bg/"]);
+  expect(locations).toEqual(["/", "/bg/", "/pricing/", "/bg/pricing/", "/privacy/", "/bg/privacy/", "/terms/", "/bg/terms/"].map((path) => origin + path));
   for (const path of [
     "/login",
     "/dashboard",

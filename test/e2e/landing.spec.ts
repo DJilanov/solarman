@@ -19,17 +19,26 @@ test("public landing explains the product, offers a real demo contact and previe
   });
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: /Your home energy,/ }),
+    page.getByRole("heading", { name: /Your home energy./ }),
   ).toBeVisible();
   await expect(
     page.locator("header").getByRole("link", { name: "Log in", exact: true }),
   ).toHaveAttribute("href", "/login");
   await expect(
     page.getByRole("link", { name: "Request a demo", exact: true }).first(),
-  ).toHaveAttribute("href", /^mailto:djilanov@gmail\.com\?subject=/);
+  ).toHaveAttribute("href", /^mailto:sales@jilanov\.com\?subject=/);
+  await page.getByRole("link", { name: "See the phone app", exact: true }).click();
+  await expect(page).toHaveURL(/#phone-app$/);
+  const installation = page.locator(".landing-install");
+  await expect(installation).toContainText("Add to Home Screen");
+  await expect(installation).toContainText("iOS 16.4 or later");
+  await installation.locator("summary").filter({ hasText: "Android" }).click();
+  await expect(installation).toContainText("Install app");
+  await expect(installation).toContainText("Settings → Notifications");
+  await expect(page.locator(".landing-phone-alert")).toContainText("EXAMPLE NOTIFICATION");
   await expect(
-    page.getByRole("link", { name: "djilanov@gmail.com", exact: true }),
-  ).toHaveAttribute("href", "mailto:djilanov@gmail.com");
+    page.getByRole("link", { name: "sales@jilanov.com", exact: true }),
+  ).toHaveAttribute("href", "mailto:sales@jilanov.com");
   await page
     .getByRole("button", { name: "Plan the night", exact: true })
     .click();
@@ -82,7 +91,7 @@ test("landing stays readable in both languages across phone, tablet and desktop 
     await page.locator(".language-switch select").selectOption(language);
     await expect(page.locator("html")).toHaveAttribute("lang", language);
     await expect(page).toHaveTitle(
-      language === "bg" ? /Солари и батерия/ : /Solar and battery monitoring/,
+      language === "bg" ? /Солари и батерия/ : /Solar and battery app/,
     );
     for (const detail of await page.locator(".landing-faq details").all()) {
       if ((await detail.getAttribute("open")) === null)
@@ -192,7 +201,7 @@ test("public information and demo contact remain available when session checking
     }),
   );
   await page.goto("/");
-  await expect(page.locator("h1")).toContainText("Your home energy,");
+  await expect(page.locator("h1")).toContainText("Your home energy.");
   await expect(
     page.getByRole("link", { name: "Request a demo", exact: true }).first(),
   ).toBeVisible();

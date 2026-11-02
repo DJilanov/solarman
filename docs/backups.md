@@ -59,6 +59,8 @@ The fixture also begins with an enabled retention policy. Quarantine must disabl
 
 An isolated active policy-observation fixture additionally makes evidence quarantine nonempty. Restoring invalidates every active observation run with reason `restore`, while preserving historical samples. The archive must contain the invalidated fixture, and reports require `observationsQuarantined: true`. A normal service restart preserves a live run; a restored database cannot silently continue an old observation window.
 
+Restores also seed both registration and login passkey challenges, invalidate every pending challenge and verify that registered public credentials remain intact. Reports require `passkeyChallengesQuarantined: true`. Copied challenges must never complete authentication after a restore.
+
 After an authentication/schema release, install an operational capsule for that release and prove both an older backup's isolated upgrade and a fresh backup's restore. The local drill requires explicit schema-upgrade, account-security, tenant-lifecycle, retention/observation-quarantine, archive and erasure-fence verification flags; an older receiver's basic login proof cannot stand in for these checks. The receiver synchronizes current offsite receipts independently of the old snapshot before replay. A disposable erased fixture must reject its copied browser cookie, password login, recovery key and legacy SQL session insertion. Ordinary suspended-account recovery must still work, without any provider access.
 
 Success prints one nonsecret report and saves mode 0600 local recovery metadata:

@@ -152,6 +152,10 @@ export class AccountRecovery {
 
   /** @param {import('pg').PoolClient} client @param {object} user @param {string} replacement @param {string|null} actor @returns {Promise<void>} */
   async replacePassword(client, user, replacement, actor) {
+    await client.query("DELETE FROM account_passkey_challenges WHERE user_id=$1", [user.id]);
+    const passkeys = await client.query("DELETE FROM account_passkeys WHERE user_id=$1", [user.id]);
+    if (passkeys.rowCount)
+      await recordSecurityEvent(client, user, "passkeys_reset", 0, actor);
     await client.query(
       "UPDATE users SET password_hash=$2,password_changed_at=clock_timestamp() WHERE id=$1",
       [user.id, replacement],

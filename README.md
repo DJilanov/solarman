@@ -128,6 +128,20 @@ ssh -t mitko@92.247.242.86 'cd /home/mitko/solarman/current && /opt/jilanov-node
 
 The command prompts twice without echoing the password and refuses noninteractive input. It invalidates sessions and recovery credentials, records an operator recovery event and leaves inverter intent unchanged. Sign in afterward to prepare a new saved key. No password belongs in a command argument or environment variable for this operation.
 
+## Customer launch and passkeys
+
+The public website leads with Home Screen installation on iPhone and Android, optional system alerts and energy briefings. Its phone illustration is labelled as a preview; it contains no customer readings and never requests notification permission. The installation guide links the benefit to the real Settings → Notifications flow.
+
+JILANOVI Ltd (205509804, VAT BG205509804) provides invitation-based demos and individual written quotations, with manual invoicing. English and Bulgarian services, privacy and terms pages publish sales@jilanov.com and support Monday–Friday 09:00–18:00 Sofia time, first reply by the next business day. New activations must accept the current service terms version, stored with the acceptance timestamp. This does not create a paid subscription.
+
+New accounts open Settings → Getting started, with actual connection, device and reading status, then optional planning, phone notifications, recovery and device commissioning steps. Workspaces shows a read-only annual API capacity/admission preview. The owner confirmed commercial-use approval by existing SOLARMAN correspondence; the configured 200,000-call allowance is unchanged. An additional controlled home requires a quota upgrade. Customer weather forecasts require configured commercial Open-Meteo access; the owner’s existing evaluation is separate.
+
+Settings → Account security supports passkeys as the second sign-in step after the dashboard password. Registration requires a saved recovery key and, for administrators, a changed initial password. Face ID, Touch ID, device PIN or a security key verifies the local authenticator; the server stores only its public credential. Challenges expire after five minutes, bind to the browser/password revision and are consumed once. Adding a passkey revokes old browser sessions and renews the current session with verified MFA. Password-only sessions cannot access enrolled accounts. At least one key must remain; removing an extra key revokes other browsers. Production administrators must finish password, recovery and passkey setup before customer administration changes.
+
+Account recovery removes registered passkeys and pending challenges, revokes sessions and requires passkey re-enrollment before a previously enrolled account can reopen its workspace. Restore and rollback quarantine pending passkey challenges while preserving registered public credentials. Rollback to code predating these authentication and versioned terms checks is rejected. The WebAuthn implementation uses `@simplewebauthn/server` and `@simplewebauthn/browser` for protocol generation, native browser integration and signature/origin verification.
+
+See [customer launch acceptance](docs/business-launch.md) for owner decisions and deployed evidence.
+
 ## Monitoring and source timestamps
 
 While monitoring or paused, the dashboard fetches `/device/v1.0/currentData` once every five minutes by default (`TELEMETRY_POLL_SECONDS=300`). This projects to 105,120 regular requests/year, compared with the previous 175,200 baseline from five diagnostic requests every 15 minutes. The Bluesun mapping requires the selected device identity, model BSE20KH3, protocol 2.02, a 20 kW rating and the verified point keys and units. Unknown models, changed units, offline/alarm devices and uploads older than ten minutes cannot generate fresh normalized samples. Unsupported profiles retain raw provider monitoring.

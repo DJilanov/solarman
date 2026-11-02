@@ -1,6 +1,7 @@
 import { emptyEnergyProfile, energySiteHash } from "./energy-profile.mjs";
 import { quarantineEnergy } from "./energy-lifecycle.mjs";
 import { randomBytes, randomUUID, createHash, createECDH } from "node:crypto";
+import { isoCBOR } from "@simplewebauthn/server/helpers";
 import webpush from "web-push";
 import { encryptPushSubscription, pushEndpointHash } from "./web-push.mjs";
 import { createServer } from "node:http";
@@ -17,6 +18,7 @@ import {
 } from "./notification-secrets.mjs";
 import { quarantineNotifications } from "./notification-lifecycle.mjs";
 import { quarantineOutage } from "./outage-lifecycle.mjs";
+import { quarantinePasskeyChallenges } from "./passkey-lifecycle.mjs";
 import { OUTAGE_MAPPING } from "./outage-policy.mjs";
 import { hashPassword, validPasswordHash } from "./auth.mjs";
 import {
@@ -1073,6 +1075,34 @@ export async function restoreDrill(header, dump) {
     await pool.query(
       "UPDATE device_control_state SET state='cleanup-required' WHERE state<>'clear'",
     );
+    const passkeySession = randomBytes(32).toString("hex");
+    const passkeyUser = (await pool.query("SELECT tenant_id,password_hash FROM users WHERE id=$1", [authenticationFixture.user])).rows[0];
+    await pool.query("INSERT INTO sessions(user_id,token_hash,csrf_token,expires_at) VALUES($1,$2,$3,clock_timestamp()+interval '1 hour')", [authenticationFixture.user, passkeySession, randomBytes(32).toString("hex")]);
+    for (const purpose of ["register", "login"]) {
+      await pool.query(
+        "INSERT INTO account_passkey_challenges(token_hash,tenant_id,user_id,purpose,challenge,password_fingerprint,agent_fingerprint,session_token_hash,name) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        [randomBytes(32).toString("hex"), passkeyUser.tenant_id, authenticationFixture.user, purpose, randomBytes(32).toString("base64url"), createHash("sha256").update(passkeyUser.password_hash).digest("hex"), createHash("sha256").update("restore-passkey-canary").digest("hex"), purpose === "register" ? passkeySession : null, purpose === "register" ? "Isolated restore challenge" : null],
+      );
+    }
+    assert.equal((await pool.query("SELECT count(*)::integer AS n FROM account_passkey_challenges WHERE user_id=$1", [authenticationFixture.user])).rows[0].n, 2);
+    const isolatedKey = createECDH("prime256v1");
+    isolatedKey.generateKeys();
+    const publicPoint = isolatedKey.getPublicKey();
+    const publicCredential = Buffer.from(isoCBOR.encode(new Map([
+      [1, 2], [3, -7], [-1, 1],
+      [-2, publicPoint.subarray(1, 33)], [-3, publicPoint.subarray(33, 65)],
+    ])));
+    const fixtureKey = (await pool.query(
+      "INSERT INTO account_passkeys(tenant_id,user_id,credential_id,public_key,counter,device_type,backed_up,name) VALUES($1,$2,$3,$4,0,'singleDevice',false,'Isolated restore public credential') RETURNING id",
+      [passkeyUser.tenant_id, authenticationFixture.user, randomBytes(32).toString("base64url"), publicCredential],
+    )).rows[0].id;
+    const passkeyCount = (await pool.query("SELECT count(*)::integer AS n FROM account_passkeys")).rows[0].n;
+    await quarantinePasskeyChallenges(pool);
+    assert.equal((await pool.query("SELECT count(*)::integer AS n FROM account_passkey_challenges")).rows[0].n, 0);
+    assert.equal((await pool.query("SELECT count(*)::integer AS n FROM account_passkeys")).rows[0].n, passkeyCount);
+    assert.deepEqual((await pool.query("SELECT public_key FROM account_passkeys WHERE id=$1", [fixtureKey])).rows[0].public_key, publicCredential);
+    await pool.query("DELETE FROM account_passkeys WHERE id=$1", [fixtureKey]);
+    report.passkeyChallengesQuarantined = true;
     await pool.query("DELETE FROM sessions");
     await pool.query(
       "UPDATE account_recovery_tokens SET revoked_at=now() WHERE used_at IS NULL AND revoked_at IS NULL",

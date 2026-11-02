@@ -957,6 +957,7 @@ test("successful account recovery clears a failed startup check and permits sign
     const activated = await context.request.post("/api/auth/activate", {
       headers: { origin: "http://localhost:3000" },
       data: {
+        termsVersion: "2026-11-02",
         token: new URLSearchParams(new URL(invitation.url).hash.slice(1)).get(
           "token",
         ),
@@ -1051,6 +1052,7 @@ test("account security renews the current browser and revokes other browsers wit
     const activation = await firstContext.request.post("/api/auth/activate", {
       headers: { origin: "http://localhost:3000" },
       data: {
+        termsVersion: "2026-11-02",
         token: new URLSearchParams(
           new URL(invitationData.url).hash.slice(1),
         ).get("token"),
@@ -1481,9 +1483,10 @@ test("an invitation creates an isolated user who links their own provider accoun
     await invited
       .getByLabel("Confirm password", { exact: true })
       .fill("e2e-workspace-password");
+    await invited.getByRole("checkbox").check();
     await invited.getByRole("button", { name: "Create my workspace" }).click();
     await expect(
-      invited.getByRole("heading", { name: "Your energy, at a glance." }),
+      invited.getByRole("heading", { name: "Let’s set up your home." }),
     ).toBeVisible();
     await expect(
       invited.getByRole("link", { name: "Administration", exact: true }),
@@ -3246,11 +3249,12 @@ test("saved recovery works through the public page and downloads a Bulgarian key
     await expect(user).toHaveURL("http://localhost:3000/activate");
     await user.getByLabel("Password", { exact: true }).fill(initial);
     await user.getByLabel("Confirm password", { exact: true }).fill(initial);
+    await user.getByRole("checkbox").check();
     await user
       .getByRole("button", { name: "Create my workspace", exact: true })
       .click();
     await expect(
-      user.getByRole("heading", { name: "Your energy, at a glance.", exact: true }),
+      user.getByRole("heading", { name: "Let’s set up your home.", exact: true }),
     ).toBeVisible();
     await user.goto("/settings/security");
     await user
@@ -3421,11 +3425,12 @@ test("administrators revoke and reissue invitations and provide a single-use pri
     await user.goto(current);
     await user.getByLabel("Password", { exact: true }).fill(initial);
     await user.getByLabel("Confirm password", { exact: true }).fill(initial);
+    await user.getByRole("checkbox").check();
     await user
       .getByRole("button", { name: "Create my workspace", exact: true })
       .click();
     await expect(
-      user.getByRole("heading", { name: "Your energy, at a glance.", exact: true }),
+      user.getByRole("heading", { name: "Let’s set up your home.", exact: true }),
     ).toBeVisible();
     await page.getByLabel("Account email", { exact: true }).fill(email);
     await page
@@ -3594,11 +3599,12 @@ test("a delayed identity cannot replace an activated user and recovery preserves
     await user.goto(invitation.url);
     await user.getByLabel("Password", { exact: true }).fill(initial);
     await user.getByLabel("Confirm password", { exact: true }).fill(initial);
+    await user.getByRole("checkbox").check();
     await user
       .getByRole("button", { name: "Create my workspace", exact: true })
       .click();
     await expect(
-      user.getByRole("heading", { name: "Your energy, at a glance.", exact: true }),
+      user.getByRole("heading", { name: "Let’s set up your home.", exact: true }),
     ).toBeVisible();
     release();
     await finished;
@@ -3681,6 +3687,7 @@ test("workspace suspension and resumption preserve member access and require sep
     const activated = await memberContext.request.post("/api/auth/activate", {
       headers: { origin: "http://localhost:3000" },
       data: {
+        termsVersion: "2026-11-02",
         token: new URLSearchParams(new URL(link.url).hash.slice(1)).get(
           "token",
         ),
@@ -3855,6 +3862,7 @@ test("workspace archives download complete data and retention changes remain exp
     const activated = await context.request.post("/api/auth/activate", {
       headers: { origin: "http://localhost:3000" },
       data: {
+        termsVersion: "2026-11-02",
         token: new URLSearchParams(new URL(link.url).hash.slice(1)).get(
           "token",
         ),
@@ -4082,6 +4090,7 @@ test("workspace closure uses real cookies, reports a lost response and permits c
     const activation = await context.request.post("/api/auth/activate", {
       headers: { origin: "http://localhost:3000" },
       data: {
+        termsVersion: "2026-11-02",
         token: new URLSearchParams(new URL(link.url).hash.slice(1)).get(
           "token",
         ),

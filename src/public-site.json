@@ -1,0 +1,6 @@
+{
+  "home": { "en": "/", "bg": "/bg/" },
+  "pricing": { "en": "/pricing/", "bg": "/bg/pricing/" },
+  "privacy": { "en": "/privacy/", "bg": "/bg/privacy/" },
+  "terms": { "en": "/terms/", "bg": "/bg/terms/" }
+}

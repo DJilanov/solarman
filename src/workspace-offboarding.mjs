@@ -63,6 +63,7 @@ export async function unresolvedCleanup(client, tenantId) {
 
 /** @param {import('pg').PoolClient} client @param {string} tenantId @returns {Promise<void>} */
 async function revokeAccess(client, tenantId) {
+  await client.query("DELETE FROM account_passkey_challenges WHERE tenant_id=$1", [tenantId]);
   await quarantineNotifications(client, tenantId, "closed");
   await client.query(
     "UPDATE solarman_accounts SET monitoring_admitted=false WHERE tenant_id=$1",

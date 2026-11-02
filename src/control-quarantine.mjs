@@ -1,5 +1,6 @@
 import { quarantineWorkspace } from "./tenant-lifecycle.mjs";
 import { quarantineNotifications } from "./notification-lifecycle.mjs";
+import { quarantinePasskeyChallenges } from "./passkey-lifecycle.mjs";
 
 /** @param {import('pg').Pool} pool @returns {Promise<number>} */
 export async function quarantineControlsForRollback(pool) {
@@ -21,6 +22,7 @@ export async function quarantineControlsForRollback(pool) {
         "rollback",
       );
     await quarantineNotifications(client, null, "rollback");
+    await quarantinePasskeyChallenges(client);
     await client.query("COMMIT");
     return controls.length;
   } catch (error) {

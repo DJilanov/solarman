@@ -72,6 +72,10 @@ const EXPORT_SECTIONS = {
     "SELECT id,user_agent,created_at,last_seen_at,expires_at FROM sessions WHERE user_id=$2 AND EXISTS (SELECT 1 FROM users WHERE id=$2 AND tenant_id=$1) ORDER BY created_at,id",
   security:
     "SELECT id,kind,affected_sessions,occurred_at FROM account_security_events WHERE tenant_id=$1 AND user_id=$2 ORDER BY occurred_at,id",
+  passkeys:
+    "SELECT id,name,device_type,backed_up,created_at,last_used_at FROM account_passkeys WHERE tenant_id=$1 AND user_id=$2 ORDER BY created_at,id",
+  serviceTerms:
+    "SELECT service_terms_version,service_terms_accepted_at FROM users WHERE tenant_id=$1 AND id=$2",
   recovery:
     "SELECT kind,created_at,expires_at,used_at,revoked_at FROM account_recovery_tokens WHERE user_id=$2 AND EXISTS (SELECT 1 FROM users WHERE id=$2 AND tenant_id=$1) ORDER BY created_at,id",
 };

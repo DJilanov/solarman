@@ -1,4 +1,5 @@
 import { registerEnergyIntegration } from "./energy-cases.mjs";
+import { registerPasskeyIntegration } from "./passkey-cases.mjs";
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -371,9 +372,16 @@ test("platform administration is restricted and invitation activation is single 
   const token = new URLSearchParams(
     new URL((await invite.json()).url).hash.slice(1),
   ).get("token");
+  for (const termsVersion of [undefined, "2026-01-01"]) {
+    assert.equal((await fetchApi("/auth/activate", {
+      method: "POST",
+      body: { termsVersion, token, password },
+    })).status, 400);
+    assert.equal((await pool.query("SELECT 1 FROM users WHERE email='invited@example.test'")).rowCount, 0);
+  }
   const response = await fetchApi("/auth/activate", {
     method: "POST",
-    body: { token, password },
+    body: { termsVersion: "2026-11-02", token, password },
   });
   assert.equal(response.status, 200);
   const session = await response.json();
@@ -383,7 +391,7 @@ test("platform administration is restricted and invitation activation is single 
     (
       await fetchApi("/auth/activate", {
         method: "POST",
-        body: { token, password },
+        body: { termsVersion: "2026-11-02", token, password },
       })
     ).status,
     400,
@@ -4305,7 +4313,7 @@ test("invitation history keeps bearer secrets private while revoke and reissue i
     (
       await fetchApi("/auth/activate", {
         method: "POST",
-        body: { token, password },
+        body: { termsVersion: "2026-11-02", token, password },
       })
     ).status,
     400,
@@ -4344,7 +4352,7 @@ test("invitation history keeps bearer secrets private while revoke and reissue i
     (
       await fetchApi("/auth/activate", {
         method: "POST",
-        body: { token: privateToken(final.url, "token"), password },
+        body: { termsVersion: "2026-11-02", token: privateToken(final.url, "token"), password },
       })
     ).status,
     200,
@@ -4389,7 +4397,7 @@ test(
       await lockInvitationEmail(connection, email);
       const activated = fetchApi("/auth/activate", {
         method: "POST",
-        body: { token: privateToken(first.url, "token"), password },
+        body: { termsVersion: "2026-11-02", token: privateToken(first.url, "token"), password },
       });
       const revoked = fetchApi(`/admin/invitations/${first.id}/revoke`, {
         auth: alpha,
@@ -9243,7 +9251,7 @@ test("an invited tenant completes the connected home journey through attended co
     ).get("token");
     const activation = await fetchApi("/auth/activate", {
       method: "POST",
-      body: { token: invitationToken, password: memberPassword },
+      body: { termsVersion: "2026-11-02", token: invitationToken, password: memberPassword },
     });
     assert.equal(activation.status, 200);
     const member = {
@@ -9257,7 +9265,7 @@ test("an invited tenant completes the connected home journey through attended co
       "/auth/activate",
       {
         method: "POST",
-        body: { token: invitationToken, password: memberPassword },
+        body: { termsVersion: "2026-11-02", token: invitationToken, password: memberPassword },
       },
       400,
     );
@@ -10253,3 +10261,4 @@ test('an abandoned outage operation is recovered after database access returns w
 });
 
 registerEnergyIntegration({getPool:()=>pool,getHub:()=>hub,outageFixture,fetchApi,password,getBeta:()=>beta});
+registerPasskeyIntegration({ getPool: () => pool });

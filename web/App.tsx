@@ -53,7 +53,10 @@ import type { Action, Command, OverviewData, Session } from "./types";
 import HomePage from "./home";
 import AutomationsPage, { ControlSetupPage } from "./automations";
 import { HistoryNavigation } from "./history-navigation";
-import { publicLanguage } from "./site-seo";
+import { publicLanguage, publicRoute, publicPage } from "./site-seo";
+import { business } from "./business";
+import { passkeyCancelled, passkeysSupported } from "./passkey-support";
+import type { PublicKeyCredentialRequestOptionsJSON } from "@simplewebauthn/browser";
 
 const CommandDetailsPage = lazy(() => import("./command-details"));
 const NightSavingsPage = lazy(() => import("./night-savings"));
@@ -67,6 +70,13 @@ const AccountSecurityPage = lazy(() => import("./account-security"));
 const WorkspaceDataPage = lazy(() => import("./workspace-data"));
 const RecoverAccountPage = lazy(() => import("./account-recovery"));
 const LandingPage = lazy(() => import("./landing"));
+const PublicInformationPage = lazy(() => import("./public-information"));
+const CustomerSetupPage = lazy(() => import("./customer-setup"));
+interface PasskeyLoginChallenge {
+  mfaRequired: true;
+  challengeToken: string;
+  options: PublicKeyCredentialRequestOptionsJSON;
+}
 const WriteHistoryPage = lazy(() =>
   import("./command-details").then((module) => ({
     default: module.WriteHistoryPage,
@@ -100,20 +110,46 @@ function SignIn({
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(initialError);
   const [pending, setPending] = useState(false);
+  const [challenge, setChallenge] = useState<PasskeyLoginChallenge | null>(null);
+  const authenticator = useRef<typeof import("@simplewebauthn/browser") | null>(null);
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
+    if (pending) return;
     setPending(true);
     setError(null);
     try {
-      const session = await request<Session>("/auth/login", {
+      if (challenge) {
+        if (!passkeysSupported()) {
+          setError("This browser cannot use passkeys. Open a current browser on your phone or computer, or use account recovery.");
+          return;
+        }
+        if (!authenticator.current) throw new Error("Passkey client unavailable");
+        const response = await authenticator.current.startAuthentication({ optionsJSON: challenge.options });
+        const session = await request<Session>("/auth/passkey", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ challengeToken: challenge.challengeToken, response }),
+        });
+        setChallenge(null);
+        onSignedIn(session);
+        return;
+      }
+      const session = await request<Session | PasskeyLoginChallenge>("/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
       setPassword("");
+      if ("mfaRequired" in session) {
+        // Load before the next tap so Safari can open the authenticator directly from that gesture.
+        authenticator.current = await import("@simplewebauthn/browser");
+        setChallenge(session);
+        return;
+      }
       onSignedIn(session);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to sign in");
+      setError(passkeyCancelled(cause)
+        ? "Passkey sign-in was cancelled or timed out. Try again or use account recovery."
+        : cause instanceof ApiError ? cause.message : "Unable to sign in");
     } finally {
       setPending(false);
     }
@@ -162,8 +198,8 @@ function SignIn({
             <LockKeyhole size={23} />
           </div>
           <span className="eyebrow">{tr("YOUR ENERGY WORKSPACE")}</span>
-          <h2>{tr("Welcome back")}</h2>
-          <p>{tr("Sign in to monitor your system and manage your battery.")}</p>
+          <h2>{tr(challenge ? "Confirm it’s you" : "Welcome back")}</h2>
+          <p>{tr(challenge ? "Use Face ID, Touch ID, your device PIN or a security key to finish signing in." : "Sign in to monitor your system and manage your battery.")}</p>
           <form
             onSubmit={(event) => {
               void submit(event);
@@ -177,6 +213,7 @@ function SignIn({
                   type="email"
                   autoComplete="username"
                   required
+                  disabled={pending || Boolean(challenge)}
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   placeholder="you@example.com"
@@ -184,7 +221,7 @@ function SignIn({
                 />
               </div>
             </label>
-            <label>
+            {!challenge && <label>
               {tr("Password")}
               <div className="input-with-icon">
                 <LockKeyhole size={17} />
@@ -192,22 +229,24 @@ function SignIn({
                   type="password"
                   autoComplete="current-password"
                   required
+                  disabled={pending}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   placeholder={tr("Your password")}
                 />
               </div>
-            </label>
+            </label>}
             {error && <Notice tone="danger">{error}</Notice>}
             <button className="button primary full" disabled={pending}>
               {pending ? (
                 <Loader2 size={17} className="spin" />
               ) : (
                 <>
-                  {tr("Sign in")} <ArrowRight size={17} />
+                  {tr(challenge ? "Continue with passkey" : "Sign in")} <ArrowRight size={17} />
                 </>
               )}
             </button>
+            {challenge && <button className="button secondary full" type="button" disabled={pending} onClick={() => { setChallenge(null); setError(null); }}>{tr("Start sign-in again")}</button>}
           </form>
           <div className="auth-help">
             <ShieldCheck size={16} />
@@ -244,6 +283,7 @@ function Activate({
   const [data, setData] = useState<{
     email: string;
     tenant_name: string;
+    termsVersion: string;
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -254,7 +294,7 @@ function Activate({
     let active = true;
     setLoading(true);
     setError(null);
-    request<{ email: string; tenant_name: string }>("/invitation/inspect", {
+    request<{ email: string; tenant_name: string; termsVersion: string }>("/invitation/inspect", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token }),
@@ -287,16 +327,22 @@ function Activate({
   }, [token, retry]);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [pending, setPending] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const navigate = useNavigate();
   useEffect(() => {
     setPassword("");
     setConfirm("");
+    setAcceptedTerms(false);
     setFormError(null);
   }, [token]);
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
+    if (!acceptedTerms || data?.termsVersion !== business.policyVersion) {
+      setFormError("Review and accept the current service terms before creating your workspace");
+      return;
+    }
     if (password !== confirm) {
       setFormError("The passwords do not match");
       return;
@@ -307,12 +353,12 @@ function Activate({
       const result = await request<Session>("/auth/activate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ token, password }),
+        body: JSON.stringify({ token, password, termsVersion: data.termsVersion }),
       });
       setPassword("");
       setConfirm("");
       onSignedIn(result);
-      navigate("/dashboard", { replace: true });
+      navigate("/settings/getting-started", { replace: true });
     } catch (cause) {
       setFormError(
         cause instanceof Error
@@ -386,6 +432,7 @@ function Activate({
                   />
                 </label>
                 {formError && <Notice tone="danger">{formError}</Notice>}
+                <label className="activation-terms"><input type="checkbox" required checked={acceptedTerms} onChange={(event) => setAcceptedTerms(event.target.checked)} /><span>{tr("I accept the")} <Link target="_blank" to={publicPage(document.documentElement.lang === "bg" ? "bg" : "en", "terms").path}>{tr("Terms")}</Link> {tr("and have read the")} <Link target="_blank" to={publicPage(document.documentElement.lang === "bg" ? "bg" : "en", "privacy").path}>{tr("Privacy")}</Link>. {tr("This invitation does not start a paid subscription.")}</span></label>
                 <button className="button primary full" disabled={pending}>
                   {pending ? (
                     <Loader2 size={17} className="spin" />
@@ -422,10 +469,16 @@ function Dashboard({
     commandPath?: string;
   } | null>(null);
   const generation = useRef(0);
+  const sessionVersion = useRef(0);
+  const updateSession = (next: Session): void => {
+    sessionVersion.current++;
+    onSession(next);
+  };
   const location = useLocation();
   useEffect(
     () => () => {
       generation.current++;
+      sessionVersion.current++;
     },
     [],
   );
@@ -511,7 +564,11 @@ function Dashboard({
     }
   };
   const refreshSession = async (): Promise<void> => {
-    onSession(await request<Session>("/auth/session"));
+    const version = sessionVersion.current;
+    const next = await request<Session>("/auth/session");
+    // A delayed status read must not replace a renewed password/passkey session.
+    if (version !== sessionVersion.current) return;
+    updateSession(next);
     reload();
   };
   const logout = async (): Promise<void> => {
@@ -524,6 +581,7 @@ function Dashboard({
         },
         body: "{}",
       });
+      sessionVersion.current++;
       onLogout();
     } catch (cause) {
       setToast({
@@ -561,7 +619,7 @@ function Dashboard({
         command,
         reload,
         refreshSession,
-        updateSession: onSession,
+        updateSession,
       }}
     >
       <div className="app-shell">
@@ -726,6 +784,7 @@ function Dashboard({
               />
               <Route path="/controls/energy-tools" element={<Suspense fallback={<Loading />}><EnergyToolsPage /></Suspense>} />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/settings/getting-started" element={<Suspense fallback={<Loading />}><CustomerSetupPage /></Suspense>} />
               <Route
                 path="/settings/notifications"
                 element={
@@ -871,7 +930,8 @@ export default function App(): ReactNode {
     window.matchMedia("(display-mode: standalone)").matches
   )
     return <Navigate to="/dashboard" replace />;
-  if (publicLanguage(location.pathname))
+  const websitePage = publicRoute(location.pathname);
+  if (websitePage)
     return (
       <Suspense
         fallback={
@@ -881,7 +941,7 @@ export default function App(): ReactNode {
           </main>
         }
       >
-        <LandingPage signedIn={Boolean(session)} />
+        {websitePage.kind === "home" ? <LandingPage signedIn={Boolean(session)} /> : <PublicInformationPage kind={websitePage.kind} language={websitePage.language} signedIn={Boolean(session)} />}
       </Suspense>
     );
   if (location.pathname === "/activate")
@@ -941,6 +1001,8 @@ export default function App(): ReactNode {
       </main>
     );
   if (!session) return <SignIn onSignedIn={identify} initialError={error} />;
+  if (session.security?.passkeyEnrollmentRequired && location.pathname !== "/settings/security")
+    return <Navigate to="/settings/security" replace />;
   if (location.pathname === "/login")
     return <Navigate to="/dashboard" replace />;
   return (

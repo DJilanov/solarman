@@ -16,13 +16,18 @@ import {
   Radio,
   ShieldCheck,
   SlidersHorizontal,
+  Smartphone,
   Sun,
-  Zap,
 } from "lucide-react";
 import { ChargeTarget } from "./charge-target";
 import { LanguageSwitch, tr, publicHomePath } from "./i18n";
 import { SITE_ORIGIN } from "./site-seo";
+import { publicRoute } from "./site-seo";
+import { useLocation } from "react-router-dom";
+import { ProductBrand, PublicFooter, PublicAccountLink } from "./public-layout";
+import { business } from "./business";
 import "./landing.css";
+import "./landing-mobile.css";
 
 type PreviewMode = "solar" | "night" | "reserve";
 
@@ -50,19 +55,6 @@ const modes: { id: PreviewMode; label: string; description: string }[] = [
       "Choose a battery target and keep that energy reserved until you return to normal mode.",
   },
 ];
-
-function ProductBrand(): ReactNode {
-  return (
-    <span className="landing-brand">
-      <span className="landing-brand-icon">
-        <Zap size={23} strokeWidth={1.7} aria-hidden="true" />
-      </span>
-      <strong>
-        solarman<span>.</span>
-      </strong>
-    </span>
-  );
-}
 
 function EnergyPreview(): ReactNode {
   const [mode, setMode] = useState<PreviewMode>("solar");
@@ -169,11 +161,35 @@ function EnergyPreview(): ReactNode {
   );
 }
 
+function PhonePreview(): ReactNode {
+  return (
+    <div className="landing-phone-preview">
+      <div className="landing-phone">
+        <div className="landing-phone-top" aria-hidden="true">
+          <span />
+          <ProductBrand />
+        </div>
+        <EnergyPreview />
+        <div className="landing-phone-home" aria-hidden="true" />
+      </div>
+      <div className="landing-phone-alert">
+        <span className="landing-alert-icon"><Bell size={20} aria-hidden="true" /></span>
+        <div>
+          <small>{tr("EXAMPLE NOTIFICATION")}</small>
+          <strong>{tr("Device readings are overdue")}</strong>
+          <p>{tr("Open your system status to see what needs attention.")}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function LandingPage({ signedIn }: LandingProps): ReactNode {
+  const location = useLocation();
+  const language = publicRoute(location.pathname)?.language ?? "en";
   useTranslation();
   const [target, setTarget] = useState(80);
-  const workspaceUrl = signedIn ? "/dashboard" : "/login";
-  const demoUrl = `mailto:djilanov@gmail.com?subject=${encodeURIComponent(tr("Solarman demo request"))}`;
+  const demoUrl = `mailto:${business.email}?subject=${encodeURIComponent(tr("Solarman demo request"))}`;
   return (
     <div className="landing" itemScope itemType="https://schema.org/WebSite">
       <meta itemProp="name" content="Solarman" />
@@ -192,19 +208,12 @@ export default function LandingPage({ signedIn }: LandingProps): ReactNode {
         </Link>
         <nav aria-label={tr("Product navigation")}>
           <a href="#possibilities">{tr("What you can do")}</a>
-          <a href="#getting-started">{tr("How it works")}</a>
+          <a href="#phone-app">{tr("On your phone")}</a>
           <a href="#questions">{tr("Questions")}</a>
         </nav>
         <div className="landing-header-actions">
           <LanguageSwitch />
-          <Link
-            className="button secondary landing-login"
-            to={workspaceUrl}
-            aria-label={tr(signedIn ? "Open dashboard" : "Log in")}
-          >
-            {tr(signedIn ? "Dashboard" : "Log in")}
-            <ArrowRight size={15} aria-hidden="true" />
-          </Link>
+          <PublicAccountLink signedIn={signedIn} />
         </div>
       </header>
       <main id="landing-main">
@@ -215,16 +224,16 @@ export default function LandingPage({ signedIn }: LandingProps): ReactNode {
           <div className="landing-hero-copy">
             <span className="landing-eyebrow">
               <span className="landing-signal" aria-hidden="true" />
-              {tr("A LITTLE MORE CONTROL. A LOT MORE CLARITY.")}
+              {tr("HOME ENERGY. POCKET SIZE.")}
             </span>
             <h1 id="landing-title">
-              {tr("Your home energy,")}
+              {tr("Your home energy.")}
               <br />
-              <span>{tr("working together.")}</span>
+              <span>{tr("On your phone.")}</span>
             </h1>
             <p className="landing-lead">
               {tr(
-                "Solar, battery and grid in one clear view. Understand your energy, prepare for the unexpected and make a plan for tomorrow.",
+                "Install Solarman on your phone. See your solar, battery and grid together, receive useful notifications and plan tomorrow’s energy from one app.",
               )}
             </p>
             <div className="landing-hero-actions">
@@ -232,18 +241,18 @@ export default function LandingPage({ signedIn }: LandingProps): ReactNode {
                 {tr("Request a demo")}
                 <ArrowRight size={18} aria-hidden="true" />
               </a>
-              <a className="landing-explore" href="#possibilities">
-                {tr("See what is possible")}
+              <a className="landing-explore" href="#phone-app">
+                {tr("See the phone app")}
                 <ArrowDown size={16} aria-hidden="true" />
               </a>
             </div>
             <p className="landing-hero-note">
-              <LockKeyhole size={14} aria-hidden="true" />
-              {tr("Your installation. Your own private workspace.")}
+              <Smartphone size={14} aria-hidden="true" />
+              {tr("iPhone and Android. Add to your Home Screen.")}
             </p>
           </div>
           <div className="landing-hero-visual">
-            <EnergyPreview />
+            <PhonePreview />
           </div>
         </section>
         <div
@@ -251,8 +260,8 @@ export default function LandingPage({ signedIn }: LandingProps): ReactNode {
           aria-label={tr("At a glance")}
         >
           <span>
-            <Sun size={18} aria-hidden="true" />
-            {tr("Solar monitoring")}
+            <Smartphone size={18} aria-hidden="true" />
+            {tr("An app on your phone")}
           </span>
           <span>
             <BatteryCharging size={18} aria-hidden="true" />
@@ -267,6 +276,47 @@ export default function LandingPage({ signedIn }: LandingProps): ReactNode {
             {tr("Phone notifications")}
           </span>
         </div>
+        <section
+          className="landing-section landing-wrap landing-mobile-section"
+          id="phone-app"
+          aria-labelledby="phone-app-title"
+        >
+          <div className="landing-section-heading">
+            <span className="landing-eyebrow">{tr("YOUR HOME SCREEN. YOUR HOME ENERGY.")}</span>
+            <h2 id="phone-app-title">{tr("An energy app you’ll actually keep close.")}</h2>
+            <p>{tr("Open it from your Home Screen, check your system and get on with your day. No app store download needed.")}</p>
+            <ul className="landing-mobile-benefits">
+              <li><Smartphone aria-hidden="true" /><div><strong>{tr("One tap to your dashboard")}</strong><p>{tr("Solar production, household use and your battery reserve, together on a screen made for your phone.")}</p></div></li>
+              <li><Bell aria-hidden="true" /><div><strong>{tr("Useful alerts, even when the app is closed")}</strong><p>{tr("Receive system alerts when readings are overdue or a control check needs attention. Tap the notification to review your system.")}</p></div></li>
+              <li><CloudSun aria-hidden="true" /><div><strong>{tr("Tomorrow’s energy, in a briefing")}</strong><p>{tr("Choose morning and evening energy briefings, plus reminders for your planned appliances.")}</p></div></li>
+            </ul>
+          </div>
+          <div className="landing-install">
+            <h3>{tr("Make room on your Home Screen.")}</h3>
+            <p>{tr("After you receive your workspace invitation, sign in on your phone and follow these steps.")}</p>
+            <details open>
+              <summary><span>iPhone / iPad</span><ChevronDown size={18} aria-hidden="true" /></summary>
+              <ol>
+                <li>{tr("Open your dashboard in Safari. Tap Share, or open the page menu and choose Share.")}</li>
+                <li>{tr("Choose Add to Home Screen. Keep Open as Web App enabled if shown, then tap Add.")}</li>
+                <li>{tr("Open Solarman from its new Home Screen icon and sign in.")}</li>
+              </ol>
+            </details>
+            <details>
+              <summary><span>Android</span><ChevronDown size={18} aria-hidden="true" /></summary>
+              <ol>
+                <li>{tr("Open your dashboard in Chrome and open the three-dot menu.")}</li>
+                <li>{tr("Choose Install app, or Install and create shortcut → Install. Follow the prompts.")}</li>
+                <li>{tr("Open Solarman from its new Home Screen icon and sign in.")}</li>
+              </ol>
+            </details>
+            <div className="landing-install-alerts">
+              <Bell size={20} aria-hidden="true" />
+              <div><strong>{tr("Then turn on your notifications")}</strong><p>{tr("In the app, open Settings → Notifications. Enable device notifications, allow the phone prompt and confirm the test arrives.")}</p></div>
+            </div>
+            <p className="landing-install-note">{tr("This is a web app (PWA). iPhone notifications require iOS 16.4 or later and the Home Screen app. Monitoring and controls need an internet connection; alerts depend on fresh provider data and your notification settings.")}</p>
+          </div>
+        </section>
         <section
           className="landing-section landing-wrap"
           id="possibilities"
@@ -520,6 +570,10 @@ export default function LandingPage({ signedIn }: LandingProps): ReactNode {
           <div className="landing-faq-list">
             {[
               [
+                "Can I install it on my phone?",
+                "Yes. Add Solarman to your Home Screen on iPhone or Android, then open it like an app. Enable notifications in Settings → Notifications and confirm the test on your device. No app store download is needed. An invited workspace and internet connection are required.",
+              ],
+              [
                 "Will it work with my inverter?",
                 "Monitoring requires a compatible SOLARMAN OpenAPI connection. Battery commands are available only for specifically supported and verified inverter profiles. Compatibility is checked before control is enabled.",
               ],
@@ -567,27 +621,13 @@ export default function LandingPage({ signedIn }: LandingProps): ReactNode {
               {tr("Request a demo")}
               <ArrowRight size={18} aria-hidden="true" />
             </a>
-            <a className="landing-email" href="mailto:djilanov@gmail.com">
-              djilanov@gmail.com
+            <a className="landing-email" href={`mailto:${business.email}`}>
+              {business.email}
             </a>
           </div>
         </section>
       </main>
-      <footer className="landing-footer landing-wrap">
-        <Link to={publicHomePath()} aria-label={tr("Solarman website")}>
-          <ProductBrand />
-        </Link>
-        <p>{tr("An independent home energy workspace.")}</p>
-        <nav className="landing-language-links" aria-label={tr("Language")}>
-          <a href="/" lang="en" hrefLang="en">
-            English
-          </a>
-          <a href="/bg/" lang="bg" hrefLang="bg">
-            Български
-          </a>
-        </nav>
-        <a href="#questions">{tr("Compatibility & questions")}</a>
-      </footer>
+      <PublicFooter language={language} />
     </div>
   );
 }

@@ -2,10 +2,10 @@ import i18n from "i18next";
 import { initReactI18next, useTranslation } from "react-i18next";
 import { Globe2 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import english from "./locales/en.json";
 import bulgarian from "./locales/bg.json";
-import { publicLanguage, publicPage } from "./site-seo";
+import { publicLanguage, publicPage, publicRoute } from "./site-seo";
 
 export type Language = "en" | "bg";
 const storageKey = "solarman.language";
@@ -37,7 +37,7 @@ void i18n.use(initReactI18next).init({
 export function updateDocument(language: string): void {
   if (typeof document === "undefined") return;
   const pageLanguage = publicLanguage(window.location.pathname);
-  const page = pageLanguage ? publicPage(pageLanguage) : null;
+  const page = pageLanguage ? publicRoute(window.location.pathname) : null;
   document.documentElement.lang =
     page?.language ?? (language === "bg" ? "bg" : "en");
   document.title = page?.title ?? `Solarman · ${tr("Energy dashboard")}`;
@@ -58,7 +58,15 @@ export function updateDocument(language: string): void {
   let canonical = document.querySelector<HTMLLinkElement>(
     'link[rel="canonical"]',
   );
+  document.querySelectorAll('link[rel="alternate"][hreflang]').forEach((link) => link.remove());
   if (page) {
+    for (const language of ["en", "bg", "x-default"] as const) {
+      const link = document.createElement("link");
+      link.rel = "alternate";
+      link.hreflang = language;
+      link.href = publicPage(language === "bg" ? "bg" : "en", page.kind).url;
+      document.head.append(link);
+    }
     if (!canonical) {
       canonical = document.createElement("link");
       canonical.rel = "canonical";
@@ -163,19 +171,19 @@ export { i18n };
 
 export function LanguageSwitch(): ReactNode {
   const { i18n: instance } = useTranslation();
-  const location = useLocation();
   const navigate = useNavigate();
   const change = (language: Language): void => {
+    const current = publicRoute(window.location.pathname);
+    if (current) {
+      const destination = publicPage(language, current.kind).path;
+      if (destination !== window.location.pathname)
+        navigate(destination + window.location.hash);
+    }
     void instance.changeLanguage(language);
     try {
       localStorage.setItem(storageKey, language);
     } catch {
       /* The active language still changes when storage is unavailable. */
-    }
-    if (publicLanguage(location.pathname)) {
-      const destination = publicPage(language).path;
-      if (destination !== location.pathname)
-        navigate(destination + location.hash);
     }
   };
   return (

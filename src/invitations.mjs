@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hashPassword, randomToken, tokenHash } from "./auth.mjs";
 import { requireActiveTenant } from "./tenant-lifecycle.mjs";
+import service from "./service-identity.json" with { type: "json" };
 import {
   AccountSecurity,
   SecurityError,
@@ -165,11 +166,13 @@ export class Invitations {
       )
     ).rows[0];
     if (!row) throw new SecurityError(404, "Invitation is invalid or expired");
-    return row;
+    return { ...row, termsVersion: service.policyVersion };
   }
 
-  /** @param {unknown} token @param {unknown} password @param {unknown} agent @returns {Promise<object>} */
-  async activate(token, password, agent) {
+  /** @param {unknown} token @param {unknown} password @param {unknown} agent @param {unknown} termsVersion @returns {Promise<object>} */
+  async activate(token, password, agent, termsVersion) {
+    if (termsVersion !== service.policyVersion)
+      throw new SecurityError(400, "Review and accept the current service terms before creating your workspace");
     let inspected;
     try {
       inspected = await this.inspect(token);
@@ -207,8 +210,8 @@ export class Invitations {
         invitation.tenant_name,
       ]);
       await client.query(
-        "INSERT INTO users (id,tenant_id,email,password_hash) VALUES ($1,$2,$3,$4)",
-        [id, tenant, invitation.email, replacement],
+        "INSERT INTO users (id,tenant_id,email,password_hash,service_terms_version,service_terms_accepted_at) VALUES ($1,$2,$3,$4,$5,clock_timestamp())",
+        [id, tenant, invitation.email, replacement, termsVersion],
       );
       await client.query(
         "INSERT INTO controller_state (tenant_id) VALUES ($1)",

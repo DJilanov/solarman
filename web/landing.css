@@ -822,6 +822,17 @@ html:has(.landing) {
   font-size: 11px;
   color: #a4b9ad;
 }
+.public-legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-left: auto;
+  font-size: 11px;
+  color: #a4b9ad;
+}
+@media (max-width: 760px) {
+  .public-legal-links { width: 100%; margin-left: 0; gap: 16px 22px; }
+}
 .landing-footer > a:last-child {
   margin-left: auto;
   color: #a4b9ad;

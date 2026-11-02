@@ -65,6 +65,7 @@ import {
   WorkspaceLifecyclePanel,
 } from "./tenant-lifecycle";
 import type { TenantMetadata } from "./types";
+import { CustomerLaunch } from "./customer-launch";
 
 export function AnalyticsPage(): ReactNode {
   const { session } = useWorkspace();
@@ -903,6 +904,7 @@ export function SettingsPage(): ReactNode {
         )}
       />
       <div className="settings-shortcuts">
+        <Link to="/settings/getting-started"><strong>{tr("Set up your home")}</strong><span>{tr("Connection, readings and next steps")}<ArrowRight size={15} /></span></Link>
         <Link
           aria-label={tr("External notifications")}
           to="/settings/notifications"
@@ -1505,6 +1507,7 @@ export function WorkspacesPage(): ReactNode {
           "Invite users into isolated workspaces connected to their own SOLARMAN accounts.",
         )}
       />
+      <CustomerLaunch />
       {error && <Notice tone="danger">{error}</Notice>}
       <div className="settings-grid">
         <Panel

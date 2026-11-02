@@ -1,9 +1,13 @@
 import english from "./locales/en.json";
 import bulgarian from "./locales/bg.json";
+import routes from "../src/public-site.json";
+import { publicDocuments, type InformationKind } from "./public-content";
 
 export type PublicLanguage = "en" | "bg";
+export type PublicPageKind = "home" | InformationKind;
 
 export interface PublicPage {
+  kind: PublicPageKind;
   language: PublicLanguage;
   path: string;
   url: string;
@@ -14,24 +18,48 @@ export interface PublicPage {
 
 export const SITE_ORIGIN = "https://solarman.jilanov.com";
 
-const paths: Record<PublicLanguage, string> = { en: "/", bg: "/bg/" };
+const paths: Record<PublicPageKind, Record<PublicLanguage, string>> = routes;
 const messages = { en: english, bg: bulgarian };
 
 export function publicLanguage(pathname: string): PublicLanguage | null {
-  if (pathname === "/" || pathname === "/welcome") return "en";
-  if (pathname === "/bg/" || pathname === "/bg") return "bg";
+  return publicRoute(pathname)?.language ?? null;
+}
+
+export function publicRoute(pathname: string): PublicPage | null {
+  if (pathname === "/welcome") return publicPage("en");
+  for (const kind of Object.keys(paths) as PublicPageKind[]) {
+    for (const language of ["en", "bg"] as const) {
+      const path = paths[kind][language];
+      if (path === pathname || (path !== "/" && path.slice(0, -1) === pathname))
+        return publicPage(language, kind);
+    }
+  }
   return null;
 }
 
-export function publicPage(language: PublicLanguage): PublicPage {
+export function publicPages(): PublicPage[] {
+  return (Object.keys(paths) as PublicPageKind[]).flatMap((kind) =>
+    (["en", "bg"] as const).map((language) => publicPage(language, kind)),
+  );
+}
+
+export function publicPage(
+  language: PublicLanguage,
+  kind: PublicPageKind = "home",
+): PublicPage {
+  const document = kind === "home" ? null : publicDocuments[language][kind];
   return {
+    kind,
     language,
-    path: paths[language],
-    url: SITE_ORIGIN + paths[language],
-    title: messages[language]["Solar and battery monitoring | Solarman"],
+    path: paths[kind][language],
+    url: SITE_ORIGIN + paths[kind][language],
+    title: document
+      ? `${document.eyebrow} | Solarman · JILANOVI`
+      : messages[language]["Solar and battery app with phone alerts | Solarman"],
     description:
+      document?.description ??
       messages[language][
-        "Monitor solar production, battery reserve and grid use. Plan night charging with the weather forecast. Request a demo for your installation."
+        "Install Solarman on iPhone or Android. Monitor solar, battery and grid, receive phone alerts and plan night charging. Request a demo for your home."
       ],
     locale: language === "bg" ? "bg_BG" : "en_GB",
   };

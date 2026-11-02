@@ -66,27 +66,28 @@ const server = await createServer({
 try {
   const { default: App } = await server.ssrLoadModule("/App.tsx");
   const { i18n } = await server.ssrLoadModule("/i18n.tsx");
-  const { publicPage, SITE_ORIGIN } =
+  const { publicPage, publicPages, SITE_ORIGIN } =
     await server.ssrLoadModule("/site-seo.ts");
-  const landing = Object.entries(manifest).find(
-    ([key]) => key === "landing.tsx",
-  )?.[1];
-  if (!landing)
-    throw new Error("Landing page is missing from the build manifest");
-  const css = new Set();
-  const visited = new Set();
-  function collectStyles(chunk) {
+  function collectStyles(chunk, css = new Set(), visited = new Set()) {
     if (visited.has(chunk.file)) return;
     visited.add(chunk.file);
     for (const file of chunk.css ?? []) css.add(file);
     for (const name of chunk.imports ?? []) {
       if (!manifest[name]) throw new Error(`Missing build chunk: ${name}`);
-      collectStyles(manifest[name]);
+      collectStyles(manifest[name], css, visited);
     }
+    return css;
   }
-  collectStyles(landing);
-  const pages = [publicPage("en"), publicPage("bg")];
+  const pages = publicPages();
   for (const page of pages) {
+    const entry =
+      page.kind === "home" ? "landing.tsx" : "public-information.tsx";
+    const chunk = manifest[entry];
+    if (!chunk)
+      throw new Error(
+        `Public page is missing from the build manifest: ${entry}`,
+      );
+    const css = collectStyles(chunk);
     await i18n.changeLanguage(page.language);
     const stream = await renderToReadableStream(
       createElement(
@@ -109,25 +110,23 @@ try {
       () => `<div id="root">${content}</div>`,
     );
     const links = [];
-    for (const alternate of pages)
+    for (const alternate of pages.filter(
+      (candidate) => candidate.kind === page.kind,
+    ))
       links.push(
         `<link rel="alternate" hreflang="${alternate.language}" href="${alternate.url}" />`,
       );
     links.push(
-      `<link rel="alternate" hreflang="x-default" href="${SITE_ORIGIN}/" />`,
+      `<link rel="alternate" hreflang="x-default" href="${publicPage("en", page.kind).url}" />`,
     );
     for (const file of css) {
       if (!html.includes(`href="/${file}"`))
         links.push(`<link rel="stylesheet" href="/${file}" />`);
     }
-    links.push(`<link rel="modulepreload" href="/${landing.file}" />`);
+    links.push(`<link rel="modulepreload" href="/${chunk.file}" />`);
     html = html.replace("</head>", links.join("\n    ") + "\n  </head>");
-    if (page.language === "bg")
-      await mkdir(new URL("bg/", output), { recursive: true });
-    await writeFile(
-      new URL(page.language === "bg" ? "bg/index.html" : "index.html", output),
-      html,
-    );
+    await mkdir(new URL(page.path.slice(1), output), { recursive: true });
+    await writeFile(new URL(page.path.slice(1) + "index.html", output), html);
   }
   await writeFile(
     new URL("robots.txt", output),
@@ -138,7 +137,7 @@ try {
     `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${pages.map((page) => `  <url><loc>${page.url}</loc></url>`).join("\n")}\n</urlset>\n`,
   );
   console.log(
-    "Prerendered public English and Bulgarian pages, robots.txt and sitemap.xml",
+    `Prerendered ${pages.length} public pages, robots.txt and sitemap.xml`,
   );
 } finally {
   await server.close();

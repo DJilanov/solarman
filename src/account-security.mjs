@@ -20,7 +20,7 @@ export function browserDescription(value) {
     : "";
 }
 
-/** @param {import('pg').PoolClient} client @param {string} userId @param {unknown} agent @param {{id?:string,createdAt?:Date}} [existing] @returns {Promise<{token:string,csrfToken:string}>} */
+/** @param {import('pg').PoolClient} client @param {string} userId @param {unknown} agent @param {{id?:string,createdAt?:Date,mfaVerified?:boolean}} [existing] @returns {Promise<{token:string,csrfToken:string}>} */
 export async function createBrowserSession(
   client,
   userId,
@@ -30,8 +30,8 @@ export async function createBrowserSession(
   const token = randomToken();
   const csrfToken = randomToken();
   await client.query(
-    `INSERT INTO sessions (token_hash,user_id,csrf_token,expires_at,id,user_agent,last_seen_at,created_at)
-    VALUES ($1,$2,$3,now()+interval '7 days',COALESCE($4::uuid,gen_random_uuid()),$5,now(),COALESCE($6::timestamptz,now()))`,
+    `INSERT INTO sessions (token_hash,user_id,csrf_token,expires_at,id,user_agent,last_seen_at,created_at,mfa_verified_at)
+    VALUES ($1,$2,$3,now()+interval '7 days',COALESCE($4::uuid,gen_random_uuid()),$5,now(),COALESCE($6::timestamptz,now()),CASE WHEN $7 THEN clock_timestamp() ELSE null END)`,
     [
       tokenHash(token),
       userId,
@@ -39,12 +39,13 @@ export async function createBrowserSession(
       existing.id ?? null,
       browserDescription(agent),
       existing.createdAt ?? null,
+      existing.mfaVerified === true,
     ],
   );
   return { token, csrfToken };
 }
 
-/** @param {import('pg').PoolClient} client @param {{id:string,tenant_id:string}} user @param {'signed_in'|'signed_out'|'password_changed'|'session_revoked'|'other_sessions_revoked'|'recovery_key_created'|'recovery_access_revoked'|'recovery_link_created'|'recovery_link_revoked'|'password_recovered'} kind @param {number} count @param {string|null} [actorId] @returns {Promise<void>} */
+/** @param {import('pg').PoolClient} client @param {{id:string,tenant_id:string}} user @param {'signed_in'|'signed_out'|'password_changed'|'session_revoked'|'other_sessions_revoked'|'recovery_key_created'|'recovery_access_revoked'|'recovery_link_created'|'recovery_link_revoked'|'password_recovered'|'passkey_added'|'passkey_removed'|'passkeys_reset'} kind @param {number} count @param {string|null} [actorId] @returns {Promise<void>} */
 export async function recordSecurityEvent(
   client,
   user,
@@ -92,7 +93,7 @@ export class AccountSecurity {
   async activeSession(client, session) {
     const row = (
       await client.query(
-        "SELECT id,created_at FROM sessions WHERE user_id=$1 AND token_hash=$2 AND expires_at>clock_timestamp()",
+        "SELECT id,created_at,mfa_verified_at FROM sessions WHERE user_id=$1 AND token_hash=$2 AND expires_at>clock_timestamp() AND (mfa_verified_at IS NOT NULL OR NOT EXISTS(SELECT 1 FROM account_passkeys WHERE user_id=$1))",
         [session.id, session.token_hash],
       )
     ).rows[0];
@@ -122,6 +123,8 @@ export class AccountSecurity {
       // Password verification runs outside the lock; a later change must defeat this delayed login.
       if (user.password_hash !== verified.password_hash)
         throw new SecurityError(401, "Email or password is incorrect");
+      if ((await client.query("SELECT 1 FROM account_passkeys WHERE user_id=$1 LIMIT 1", [user.id])).rowCount)
+        throw new SecurityError(403, "Passkey verification is required");
       const result = await createBrowserSession(client, user.id, agent);
       await recordSecurityEvent(client, user, "signed_in", 1);
       return result;
@@ -171,6 +174,7 @@ export class AccountSecurity {
       const result = await createBrowserSession(client, user.id, agent, {
         id: current.id,
         createdAt: current.created_at,
+        mfaVerified: Boolean(current.mfa_verified_at),
       });
       await recordSecurityEvent(
         client,
@@ -229,8 +233,8 @@ export class AccountSecurity {
 
   /** @param {{id:string,token_hash:string}} session @param {number} offset @returns {Promise<object>} */
   async list(session, offset) {
-    const [user, browsers, count, events, recovery] = await Promise.all([
-      this.pool.query("SELECT password_changed_at FROM users WHERE id=$1", [
+    const [user, browsers, count, events, recovery, passkeys] = await Promise.all([
+      this.pool.query("SELECT password_changed_at,mfa_required FROM users WHERE id=$1", [
         session.id,
       ]),
       this.pool.query(
@@ -250,9 +254,12 @@ export class AccountSecurity {
         "SELECT kind,created_at,expires_at FROM account_recovery_tokens WHERE user_id=$1 AND used_at IS NULL AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>now())",
         [session.id],
       ),
+      this.pool.query("SELECT id,name,device_type,backed_up,created_at,last_used_at FROM account_passkeys WHERE user_id=$1 ORDER BY created_at,id", [session.id]),
     ]);
     return {
       passwordChangedAt: user.rows[0]?.password_changed_at ?? null,
+      passkeys: passkeys.rows.map((row) => ({ id: row.id, name: row.name, deviceType: row.device_type, backedUp: row.backed_up, createdAt: row.created_at, lastUsedAt: row.last_used_at })),
+      mfaRequired: user.rows[0]?.mfa_required ?? false,
       recovery: {
         keyCreatedAt:
           recovery.rows.find((row) => row.kind === "saved_key")?.created_at ??

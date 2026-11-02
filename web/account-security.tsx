@@ -15,9 +15,10 @@ import { when, formatNumber } from "./format";
 import { Heading, Loading, Notice, Panel } from "./components";
 import type { AccountSecurityData, Session } from "./types";
 import { RecoverySettings } from "./account-recovery";
+import { PasskeySettings } from "./passkey-settings";
 
 export default function AccountSecurityPage(): ReactNode {
-  const { session, updateSession } = useWorkspace();
+  const { session, updateSession, refreshSession } = useWorkspace();
   const [params, setParams] = useSearchParams();
   const offsetText = params.get("offset") ?? "0";
   const offset = /^\d{1,6}$/.test(offsetText) ? Number(offsetText) : 0;
@@ -35,6 +36,10 @@ export default function AccountSecurityPage(): ReactNode {
   } | null>(null);
   const date = (value: string | null): string =>
     value ? when(value, session.tenant.timezone, "medium") : tr("Not recorded");
+  const recoveryChanged = (): void => {
+    reload();
+    void refreshSession().catch((cause: unknown) => setMessage({ text: cause instanceof Error ? cause.message : "Unable to refresh account security", error: true }));
+  };
   const changePassword = async (
     event: FormEvent<HTMLFormElement>,
   ): Promise<void> => {
@@ -128,6 +133,9 @@ export default function AccountSecurityPage(): ReactNode {
     recovery_link_created: "Administrator recovery link created",
     recovery_link_revoked: "Administrator recovery links revoked",
     password_recovered: "Dashboard password recovered",
+    passkey_added: "Passkey added",
+    passkey_removed: "Passkey removed",
+    passkeys_reset: "Passkeys reset through account recovery",
   };
   return (
     <>
@@ -155,6 +163,7 @@ export default function AccountSecurityPage(): ReactNode {
           {message.text}
         </Notice>
       )}
+      {session.security?.adminSetupRequired && <Notice>{tr("Before onboarding customers: change the test password, save a recovery key and add a passkey below.")}</Notice>}
       {!data && loading && <Loading />}
       {data && (
         <>
@@ -349,7 +358,8 @@ export default function AccountSecurityPage(): ReactNode {
               {tr("Open controls")}
             </Link>
           </Notice>
-          <RecoverySettings status={data.recovery} onChanged={reload} />
+          <RecoverySettings status={data.recovery} onChanged={recoveryChanged} />
+          <PasskeySettings data={data} onChanged={reload} />
           <Panel
             title={tr("Recent account security events")}
             subtitle={tr("The latest 20 account events.")}
