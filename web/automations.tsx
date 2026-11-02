@@ -362,7 +362,7 @@ export function ControlSetupPage(): ReactNode {
                 "You can now request a top-up or resume app automation. These are separate actions.",
               )}
             </p>
-            <Link className="button primary" to="/">
+            <Link className="button primary" to="/dashboard">
               {tr("Go to Home")} <ArrowRight size={17} />
             </Link>
           </>

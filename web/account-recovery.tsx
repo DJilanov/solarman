@@ -311,7 +311,10 @@ function RecoveryForm({
                 )}
               </Notice>
             )}
-            <Link className="button primary full" to="/">
+            <Link
+              className="button primary full"
+              to={currentSession ? "/dashboard" : "/login"}
+            >
               {tr(currentSession ? "Return to dashboard" : "Back to sign in")}
             </Link>
           </>
@@ -390,7 +393,7 @@ function RecoveryForm({
                 "Recovery signs out browsers. Inverter automation and accepted commands continue; use Controls after signing in if charging must be paused.",
               )}
             </p>
-            <Link className="text-link" to="/">
+            <Link className="text-link" to="/login">
               {tr("Back to sign in")}
             </Link>
           </>

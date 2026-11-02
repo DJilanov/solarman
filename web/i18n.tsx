@@ -29,9 +29,21 @@ void i18n.use(initReactI18next).init({
   interpolation: { escapeValue: false },
 });
 
-function updateDocument(language: string): void {
+export function updateDocument(language: string): void {
   document.documentElement.lang = language === "bg" ? "bg" : "en";
-  document.title = `Solarman · ${tr("Energy dashboard")}`;
+  const publicPage =
+    window.location.pathname === "/" ||
+    window.location.pathname === "/welcome";
+  document.title = `Solarman · ${tr(publicPage ? "Your home energy, working together" : "Energy dashboard")}`;
+  const description = document.querySelector<HTMLMetaElement>(
+    'meta[name="description"]',
+  );
+  if (description)
+    description.content = tr(
+      publicPage
+        ? "A clearer view of solar, battery and grid. Monitor your home, prepare an energy reserve and plan night charging with the weather in mind."
+        : "Private solar energy monitoring and battery control",
+    );
 }
 i18n.on("languageChanged", updateDocument);
 updateDocument(i18n.language);

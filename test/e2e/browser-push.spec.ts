@@ -6,7 +6,7 @@ async function signIn(page: Page): Promise<void> {
   const email = process.env.E2E_EMAIL;
   const password = process.env.E2E_PASSWORD;
   if (!email || !password) throw new Error("Configure private E2E credentials");
-  await page.goto("/");
+  await page.goto("/login");
   await page.getByLabel("Email address").fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();

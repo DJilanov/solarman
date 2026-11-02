@@ -25,6 +25,7 @@ test("Bulgarian covers the complete English catalogue with matching interpolatio
 test("every literal translation used by the interface exists in both catalogues", () => {
   for (const file of [
     "App.tsx",
+    "landing.tsx",
     "home.tsx",
     "energy-settings.tsx",
     "night-savings.tsx",

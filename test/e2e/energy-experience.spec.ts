@@ -5,7 +5,7 @@ import type { EnergyToolsData, OutageEstimate } from "../../web/energy-tools-typ
 import type { OutageData } from "../../web/types";
 
 async function signIn(page: Page): Promise<void> {
-  await page.goto("/");
+  await page.goto("/login");
   await page.getByLabel("Email address").fill(process.env.E2E_EMAIL!);
   await page.getByLabel("Password", { exact: true }).fill(process.env.E2E_PASSWORD!);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();

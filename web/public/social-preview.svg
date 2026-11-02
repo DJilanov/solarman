@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Solarman · Your home energy, working together</title>
+  <desc id="desc">A dark glass energy console connecting solar, a home, the grid and a battery.</desc>
+  <defs>
+    <radialGradient id="glow"><stop stop-color="#335e4f" stop-opacity=".55"/><stop offset="1" stop-color="#0d1b21" stop-opacity="0"/></radialGradient>
+    <linearGradient id="glass" x2="1" y2="1"><stop stop-color="#263d3d"/><stop offset="1" stop-color="#17292b"/></linearGradient>
+    <linearGradient id="button" x2="1" y2="1"><stop stop-color="#e0ffd6"/><stop offset="1" stop-color="#bae8af"/></linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#c5f5bd" stroke-opacity=".035"/></pattern>
+  </defs>
+  <path fill="#0d1b21" d="M0 0h1200v630H0z"/>
+  <ellipse cx="1010" cy="280" rx="600" ry="500" fill="url(#glow)"/>
+  <rect x="712" y="72" width="454" height="485" rx="30" fill="url(#grid)" stroke="#c5f5bd" stroke-opacity=".08" transform="rotate(-5 939 314)"/>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <rect x="72" y="60" width="42" height="42" rx="12" fill="#1e3230" stroke="#b5d3ab" stroke-opacity=".4"/>
+    <path d="m95 68-12 17h9l-3 12 14-19h-10z" fill="none" stroke="#c5f5bd" stroke-width="1.7" stroke-linejoin="round"/>
+    <text x="127" y="90" fill="#f0f6f1" font-size="31" font-weight="600" letter-spacing="-1.5">solarman<tspan fill="#c5f5bd">.</tspan></text>
+    <text x="74" y="172" fill="#b6cbb5" font-family="Courier New, monospace" font-size="11" letter-spacing="2">SOLAR. BATTERY. GRID. IN SYNC.</text>
+    <text x="69" y="267" fill="#f0f6f1" font-size="62" letter-spacing="-3">Your home energy,</text>
+    <text x="69" y="338" fill="#c5f5bd" font-size="62" letter-spacing="-3">working together.</text>
+    <text x="74" y="390" fill="#a9beba" font-size="18">A clearer view. A reserve. A plan for tomorrow.</text>
+    <rect x="73" y="439" width="207" height="53" rx="9" fill="url(#button)"/>
+    <text x="96" y="471" fill="#192d20" font-size="15">Request a demo</text>
+    <path d="M244 466h16m-6-6 6 6-6 6" fill="none" stroke="#192d20" stroke-width="1.6"/>
+    <text x="74" y="553" fill="#89a297" font-family="Courier New, monospace" font-size="13">solarman.jilanov.com</text>
+    <text x="74" y="580" fill="#718d83" font-size="12">Independent energy workspace · English &amp; Bulgarian</text>
+    <rect x="740" y="104" width="390" height="423" rx="18" fill="url(#glass)" stroke="#b8d4b4" stroke-opacity=".3"/>
+    <circle cx="765" cy="132" r="3" fill="#c5f5bd"/>
+    <text x="779" y="136" fill="#b2c7ae" font-family="Courier New, monospace" font-size="9" letter-spacing="1.5">HOME ENERGY / CONNECTED</text>
+    <path d="M762 154h346" stroke="#bad5bc" stroke-opacity=".15"/>
+    <g fill="none" stroke-width="1.6">
+      <path d="M833 243v25q0 18 18 18h65q19 0 19 21v36" stroke="#c2dfa0"/>
+      <path d="M1037 243v25q0 18-18 18h-65q-19 0-19 21v36" stroke="#709990"/>
+      <path d="M935 343v89" stroke="#c2dfa0"/>
+    </g>
+    <rect x="780" y="179" width="106" height="88" rx="10" fill="#223637" stroke="#9eb89d" stroke-opacity=".25"/>
+    <circle cx="833" cy="207" r="9" fill="none" stroke="#e3c582" stroke-width="1.5"/>
+    <path d="M833 192v-5m0 40v-5m15-15h5m-40 0h5m4-11-4-4m30 30-4-4m0-22 4-4m-30 30 4-4" fill="none" stroke="#e3c582" stroke-width="1.3"/>
+    <text x="833" y="248" fill="#e3c582" text-anchor="middle" font-size="12">Solar</text>
+    <rect x="984" y="179" width="106" height="88" rx="10" fill="#223637" stroke="#9eb89d" stroke-opacity=".25"/>
+    <path d="m1034 195-10 16h10l-4 11 14-18h-10l6-9" fill="none" stroke="#a7d2f4" stroke-width="1.5" stroke-linejoin="round"/>
+    <text x="1037" y="248" fill="#a7d2f4" text-anchor="middle" font-size="12">Grid</text>
+    <rect x="879" y="311" width="112" height="80" rx="10" fill="#243c36" stroke="#b7d7ab" stroke-opacity=".45"/>
+    <path d="m921 344 14-12 14 12v20h-28zm9 20v-12h10v12" fill="none" stroke="#d5edd0" stroke-width="1.5" stroke-linejoin="round"/>
+    <text x="935" y="380" fill="#d5edd0" text-anchor="middle" font-size="11">Your home</text>
+    <rect x="844" y="431" width="182" height="64" rx="10" fill="#223637" stroke="#9eb89d" stroke-opacity=".25"/>
+    <path d="M866 455h27v17h-27zm27 5h4v7h-4m-20-9v10m6-10v10m6-10v10" fill="none" stroke="#c5f5bd" stroke-width="1.5" stroke-linejoin="round"/>
+    <text x="913" y="460" fill="#d5edd0" font-size="12">Battery</text>
+    <text x="913" y="480" fill="#8da79b" font-size="9">Keep your reserve</text>
+  </g>
+</svg>

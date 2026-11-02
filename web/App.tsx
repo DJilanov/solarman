@@ -1,4 +1,4 @@
-import { tr, LanguageSwitch } from "./i18n";
+import { tr, LanguageSwitch, updateDocument } from "./i18n";
 import { useTranslation } from "react-i18next";
 import {
   useEffect,
@@ -65,6 +65,7 @@ const NotificationsPage = lazy(() => import("./notifications"));
 const AccountSecurityPage = lazy(() => import("./account-security"));
 const WorkspaceDataPage = lazy(() => import("./workspace-data"));
 const RecoverAccountPage = lazy(() => import("./account-recovery"));
+const LandingPage = lazy(() => import("./landing"));
 const WriteHistoryPage = lazy(() =>
   import("./command-details").then((module) => ({
     default: module.WriteHistoryPage,
@@ -218,6 +219,9 @@ function SignIn({
           <Link className="text-link auth-recovery-link" to="/recover">
             {tr("Forgot your dashboard password?")}
           </Link>
+          <Link className="text-link auth-recovery-link" to="/">
+            {tr("Back to the Solarman website")}
+          </Link>
           <p className="invite-note">
             {tr("New here? Ask your administrator for a workspace invitation.")}
           </p>
@@ -307,7 +311,7 @@ function Activate({
       setPassword("");
       setConfirm("");
       onSignedIn(result);
-      navigate("/", { replace: true });
+      navigate("/dashboard", { replace: true });
     } catch (cause) {
       setFormError(
         cause instanceof Error
@@ -339,7 +343,7 @@ function Activate({
                 {tr("Retry invitation check")}
               </button>
             )}
-            <Link className="button secondary full" to="/">
+            <Link className="button secondary full" to="/login">
               {tr("Back to sign in")}
             </Link>
           </>
@@ -528,14 +532,14 @@ function Dashboard({
     }
   };
   const navigation = [
-    { to: "/", label: "Home", icon: Home },
+    { to: "/dashboard", label: "Home", icon: Home },
     { to: "/controls", label: "Automations", icon: SlidersHorizontal },
     { to: "/analytics", label: "History", icon: History },
     { to: "/settings", label: "Settings", icon: Settings2 },
   ];
   const matchesSection = (to: string): boolean =>
-    to === "/"
-      ? location.pathname === "/"
+    to === "/dashboard"
+      ? location.pathname === "/dashboard"
       : to === "/analytics"
         ? location.pathname.startsWith("/analytics") ||
           location.pathname.startsWith("/activity")
@@ -561,7 +565,7 @@ function Dashboard({
     >
       <div className="app-shell">
         <aside className="sidebar">
-          <Link to="/" className="brand-link" aria-label={tr("Solarman Home")}>
+          <Link to="/dashboard" className="brand-link" aria-label={tr("Solarman Home")}>
             <Brand />
           </Link>
           <div className="workspace-label">
@@ -665,7 +669,7 @@ function Dashboard({
               <HistoryNavigation />
             )}
             <Routes>
-              <Route path="/" element={<HomePage />} />
+              <Route path="/dashboard" element={<HomePage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/controls" element={<AutomationsPage />} />
               <Route
@@ -759,14 +763,14 @@ function Dashboard({
                   session.user.platformAdmin ? (
                     <WorkspacesPage />
                   ) : (
-                    <Navigate to="/" replace />
+                    <Navigate to="/dashboard" replace />
                   )
                 }
               />
-              <Route path="*" element={<Navigate to="/" replace />} />
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
             <footer className="page-footer">
-              <span>{tr("Solarman · Your home energy")}</span>
+              <Link to="/">{tr("Solarman · Your home energy")}</Link>
               <span>
                 {tr("Times shown in")} {session.tenant.timezone}{" "}
                 {tr("· Private account data")}
@@ -805,7 +809,7 @@ function Dashboard({
 }
 
 export default function App(): ReactNode {
-  useTranslation();
+  const { i18n } = useTranslation();
   const [session, setSession] = useState<Session | null>(null);
   const [sessionCheck, setSessionCheck] = useState<
     "checking" | "complete" | "failed"
@@ -819,6 +823,10 @@ export default function App(): ReactNode {
   };
   const [error, setError] = useState<string | null>(null);
   const location = useLocation();
+  useEffect(() => updateDocument(i18n.language), [
+    location.pathname,
+    i18n.language,
+  ]);
   useEffect(() => {
     let active = true;
     const abort = new AbortController();
@@ -851,6 +859,24 @@ export default function App(): ReactNode {
       window.removeEventListener("solarman-session-expired", expired);
     };
   }, [sessionCheckAttempt]);
+  if (
+    location.pathname === "/" &&
+    window.matchMedia("(display-mode: standalone)").matches
+  )
+    return <Navigate to="/dashboard" replace />;
+  if (location.pathname === "/" || location.pathname === "/welcome")
+    return (
+      <Suspense
+        fallback={
+          <main className="app-starting">
+            <Brand />
+            <Loading />
+          </main>
+        }
+      >
+        <LandingPage signedIn={Boolean(session)} />
+      </Suspense>
+    );
   if (location.pathname === "/activate")
     return <Activate onSignedIn={identify} />;
   if (sessionCheck === "checking")
@@ -908,6 +934,8 @@ export default function App(): ReactNode {
       </main>
     );
   if (!session) return <SignIn onSignedIn={identify} initialError={error} />;
+  if (location.pathname === "/login")
+    return <Navigate to="/dashboard" replace />;
   return (
     <Dashboard
       key={session.tenant.id}

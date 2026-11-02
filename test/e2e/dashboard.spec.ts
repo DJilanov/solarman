@@ -34,7 +34,7 @@ async function signIn(page: Page): Promise<void> {
     throw new Error(
       "Configure the private E2E_EMAIL and E2E_PASSWORD environment variables",
     );
-  await page.goto("/");
+  await page.goto("/login");
   await page.getByLabel("Email address").fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
@@ -126,7 +126,7 @@ test("a recovered provider connection routes paused control to verification inst
   data.controller.error = "SOLARMAN HTTP request failed or timed out";
   data.controller.connectionRecovered = false;
   data.controller.control.canStart = false;
-  await page.goto("/");
+  await page.goto("/dashboard");
   const message = page.getByText("Readings are arriving again.", {
     exact: false,
   });
@@ -135,7 +135,7 @@ test("a recovered provider connection routes paused control to verification inst
     page.getByRole("link", { name: "Check connection", exact: false }),
   ).toHaveAttribute("href", "/settings");
   data.controller.connectionRecovered = true;
-  await page.goto("/");
+  await page.goto("/dashboard");
   await expect(message).toBeVisible();
   await expect(
     page
@@ -149,13 +149,13 @@ test("a recovered provider connection routes paused control to verification inst
   data.controller.telemetry.collectedAt = new Date(
     Date.now() - 86400000,
   ).toISOString();
-  await page.goto("/");
+  await page.goto("/dashboard");
   await expect(message).toHaveCount(0);
   await expect(
     page.getByRole("link", { name: "Check connection", exact: false }),
   ).toHaveAttribute("href", "/settings");
   data.controller.telemetry.collectedAt = new Date().toISOString();
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.locator(".language-switch select").selectOption("bg");
   await expect(
     page.getByText("Отчитанията отново пристигат.", { exact: false }),
@@ -209,9 +209,9 @@ test("night start retries show the actual blocker and next attempt in English an
     page.getByRole("status").filter({ hasText: "Следващ автоматичен опит:" }),
   ).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
-  expect(
-    await page.evaluate(() => document.documentElement.scrollWidth),
-  ).toBeLessThanOrEqual(390);
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
+    .toBeLessThanOrEqual(390);
 });
 
 test("failed night plan history explains restoration without claiming a completed trial in Bulgarian", async ({
@@ -794,7 +794,7 @@ test("the homeowner console has four navigation items and usable Bulgarian phone
         .getByLabel(language === "bg" ? "Language" : "Език")
         .selectOption(language);
       for (const path of [
-        "/",
+        "/dashboard",
         "/controls",
         "/analytics",
         "/settings",
@@ -813,14 +813,14 @@ test("the homeowner console has four navigation items and usable Bulgarian phone
     }
   }
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.getByLabel("Language").selectOption("bg");
   await page
     .getByRole("link", { name: "Подготовка за спиране на тока", exact: true })
     .click();
   await expect(page.getByRole("slider")).toBeVisible();
   await page.screenshot({ path: "test-results/home-charge-mobile-bg.png" });
-  await page.goto("/");
+  await page.goto("/dashboard");
   await page.screenshot({
     path: "test-results/home-console-mobile-bg.png",
     fullPage: true,
@@ -1061,7 +1061,7 @@ test("account security renews the current browser and revokes other browsers wit
     const first = await firstContext.newPage();
     const second = await secondContext.newPage();
     const loginSecond = async (password: string): Promise<void> => {
-      await second.goto("/");
+      await second.goto("/login");
       await second.getByLabel("Email address", { exact: true }).fill(email);
       await second.getByLabel("Password", { exact: true }).fill(password);
       await second
@@ -1603,7 +1603,7 @@ test("browser language and a saved choice select the correct login translations"
   const context = await browser.newContext({ locale: "bg-BG" });
   try {
     const page = await context.newPage();
-    await page.goto("http://localhost:3000/");
+    await page.goto("http://localhost:3000/login");
     await expect(
       page.getByRole("heading", { name: "Добре дошли отново" }),
     ).toBeVisible();
@@ -1651,7 +1651,7 @@ test("language switching works when browser storage is unavailable", async ({
         });
     });
     const page = await context.newPage();
-    await page.goto("http://localhost:3000/");
+    await page.goto("http://localhost:3000/login");
     await expect(
       page.getByRole("heading", { name: "Добре дошли отново" }),
     ).toBeVisible();
@@ -3007,7 +3007,7 @@ test("health alerts stay active after being marked seen and show resolved histor
       await route.fulfill({ json: items[0] });
     },
   );
-  await page.goto("/");
+  await page.goto("/dashboard");
   await expect(page.locator(".incident-summary")).toContainText(
     "2 active alerts",
   );

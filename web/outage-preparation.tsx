@@ -193,7 +193,7 @@ export default function OutagePreparationPage(): ReactNode {
     sample && overview && !readingIsStale(overview.controller, sample);
   return (
     <div className="outage-page">
-      <Link className="text-link" to="/">
+      <Link className="text-link" to="/dashboard">
         <ArrowLeft size={15} />
         {tr("Back to home")}
       </Link>

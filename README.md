@@ -2,6 +2,10 @@
 
 A private solar monitoring and battery control dashboard, hosted at **https://solarman.jilanov.com**. React/TypeScript renders the interface; a Node.js service stores account data and measurements in PostgreSQL and runs one coordinated scheduler under PM2.
 
+The public home page introduces monitoring, battery reserve and weather/tariff planning in English and Bulgarian. Its interactive previews do not use customer readings or send inverter commands. Prospective clients can request a demo at the published contact address; workspace access remains invitation-based.
+
+**Log in** opens `/login`, and the signed-in home is `/dashboard`. Existing control/settings deep links still return to their requested page after authentication. The installed app starts at `/dashboard`; older standalone app shortcuts at `/` also enter the panel.
+
 ## Workspaces and accounts
 
 Users sign in with a local email/password. Each workspace links its own SOLARMAN Smart email/password in **Settings**, tests that connection, and selects an inverter discovered for that account. The platform administrator creates private, single-use invitations under **Administration** (or **Settings → Manage users and homes** on a phone); each invitation expires after 24 hours. No email is sent automatically.

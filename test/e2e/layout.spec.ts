@@ -9,7 +9,7 @@ const screenshots =
   process.env.LAYOUT_SCREENSHOT_DIR ?? "test-results/layout-review";
 
 async function prepareLayout(page: Page): Promise<void> {
-  await page.goto("/");
+  await page.goto("/login");
   await page.getByLabel("Email address").fill(process.env.E2E_EMAIL!);
   await page
     .getByLabel("Password", { exact: true })
@@ -240,7 +240,7 @@ test("Bulgarian main screens remain readable and contained at phone, tablet and 
   for (const width of [390, 1024, 1440]) {
     await page.setViewportSize({ width, height: 1000 });
     for (const [name, path] of [
-      ["home", "/"],
+      ["home", "/dashboard"],
       ["automations", "/controls"],
       ["outage", "/controls/outage"],
       ["night-savings", "/controls/night-savings"],

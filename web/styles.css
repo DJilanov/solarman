@@ -3311,6 +3311,10 @@ html[lang="bg"] .segmented button {
   display: inline-block;
   margin-top: 20px;
 }
+.auth-card > .auth-recovery-link {
+  display: block;
+  width: fit-content;
+}
 .private-access-result {
   display: grid;
   gap: 16px;
