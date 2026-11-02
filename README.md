@@ -4,6 +4,8 @@ A private solar monitoring and battery control dashboard, hosted at **https://so
 
 The public home page introduces monitoring, battery reserve and weather/tariff planning in English and Bulgarian. Its interactive previews do not use customer readings or send inverter commands. Prospective clients can request a demo at the published contact address; workspace access remains invitation-based.
 
+The public pages at `/` and `/bg/` are rendered into full HTML at build time, with canonical URLs, language links, a sitemap and crawling instructions. Private panel routes remain marked noindex. See the [search discovery and content plan](docs/seo.md).
+
 **Log in** opens `/login`, and the signed-in home is `/dashboard`. Existing control/settings deep links still return to their requested page after authentication. The installed app starts at `/dashboard`; older standalone app shortcuts at `/` also enter the panel.
 
 ## Workspaces and accounts

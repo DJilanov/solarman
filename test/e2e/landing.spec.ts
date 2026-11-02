@@ -82,7 +82,7 @@ test("landing stays readable in both languages across phone, tablet and desktop 
     await page.locator(".language-switch select").selectOption(language);
     await expect(page.locator("html")).toHaveAttribute("lang", language);
     await expect(page).toHaveTitle(
-      language === "bg" ? /Енергията у дома/ : /Your home energy/,
+      language === "bg" ? /Солари и батерия/ : /Solar and battery monitoring/,
     );
     for (const detail of await page.locator(".landing-faq details").all()) {
       if ((await detail.getAttribute("open")) === null)

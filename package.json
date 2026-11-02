@@ -14,7 +14,7 @@
     "check": "tsc --noEmit && node scripts/check-syntax.mjs",
     "start:worker": "node --env-file-if-exists=.env src/main.mjs",
     "dev": "vite --config vite.config.ts",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/prerender-public.mjs",
     "test:integration": "node --env-file-if-exists=.env --test test/integration/*.test.mjs",
     "test:e2e": "playwright test"
   },

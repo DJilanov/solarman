@@ -1,4 +1,4 @@
-import { tr, LanguageSwitch, updateDocument } from "./i18n";
+import { tr, LanguageSwitch, updateDocument, publicHomePath } from "./i18n";
 import { useTranslation } from "react-i18next";
 import {
   useEffect,
@@ -53,6 +53,7 @@ import type { Action, Command, OverviewData, Session } from "./types";
 import HomePage from "./home";
 import AutomationsPage, { ControlSetupPage } from "./automations";
 import { HistoryNavigation } from "./history-navigation";
+import { publicLanguage } from "./site-seo";
 
 const CommandDetailsPage = lazy(() => import("./command-details"));
 const NightSavingsPage = lazy(() => import("./night-savings"));
@@ -219,7 +220,7 @@ function SignIn({
           <Link className="text-link auth-recovery-link" to="/recover">
             {tr("Forgot your dashboard password?")}
           </Link>
-          <Link className="text-link auth-recovery-link" to="/">
+          <Link className="text-link auth-recovery-link" to={publicHomePath()}>
             {tr("Back to the Solarman website")}
           </Link>
           <p className="invite-note">
@@ -770,7 +771,7 @@ function Dashboard({
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
             <footer className="page-footer">
-              <Link to="/">{tr("Solarman · Your home energy")}</Link>
+              <Link to={publicHomePath()}>{tr("Solarman · Your home energy")}</Link>
               <span>
                 {tr("Times shown in")} {session.tenant.timezone}{" "}
                 {tr("· Private account data")}
@@ -823,7 +824,12 @@ export default function App(): ReactNode {
   };
   const [error, setError] = useState<string | null>(null);
   const location = useLocation();
-  useEffect(() => updateDocument(i18n.language), [
+  useEffect(() => {
+    const language = publicLanguage(location.pathname);
+    if (language && i18n.resolvedLanguage !== language)
+      void i18n.changeLanguage(language);
+    else updateDocument(i18n.language);
+  }, [
     location.pathname,
     i18n.language,
   ]);
@@ -861,10 +867,11 @@ export default function App(): ReactNode {
   }, [sessionCheckAttempt]);
   if (
     location.pathname === "/" &&
+    typeof window !== "undefined" &&
     window.matchMedia("(display-mode: standalone)").matches
   )
     return <Navigate to="/dashboard" replace />;
-  if (location.pathname === "/" || location.pathname === "/welcome")
+  if (publicLanguage(location.pathname))
     return (
       <Suspense
         fallback={

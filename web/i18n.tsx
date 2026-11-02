@@ -2,13 +2,18 @@ import i18n from "i18next";
 import { initReactI18next, useTranslation } from "react-i18next";
 import { Globe2 } from "lucide-react";
 import type { ReactNode } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import english from "./locales/en.json";
 import bulgarian from "./locales/bg.json";
+import { publicLanguage, publicPage } from "./site-seo";
 
 export type Language = "en" | "bg";
 const storageKey = "solarman.language";
 
 function preferredLanguage(): Language {
+  if (typeof window === "undefined") return "en";
+  const pageLanguage = publicLanguage(window.location.pathname);
+  if (pageLanguage) return pageLanguage;
   try {
     const saved = localStorage.getItem(storageKey);
     if (saved === "en" || saved === "bg") return saved;
@@ -30,20 +35,53 @@ void i18n.use(initReactI18next).init({
 });
 
 export function updateDocument(language: string): void {
-  document.documentElement.lang = language === "bg" ? "bg" : "en";
-  const publicPage =
-    window.location.pathname === "/" ||
-    window.location.pathname === "/welcome";
-  document.title = `Solarman · ${tr(publicPage ? "Your home energy, working together" : "Energy dashboard")}`;
+  if (typeof document === "undefined") return;
+  const pageLanguage = publicLanguage(window.location.pathname);
+  const page = pageLanguage ? publicPage(pageLanguage) : null;
+  document.documentElement.lang =
+    page?.language ?? (language === "bg" ? "bg" : "en");
+  document.title = page?.title ?? `Solarman · ${tr("Energy dashboard")}`;
   const description = document.querySelector<HTMLMetaElement>(
     'meta[name="description"]',
   );
   if (description)
-    description.content = tr(
-      publicPage
-        ? "A clearer view of solar, battery and grid. Monitor your home, prepare an energy reserve and plan night charging with the weather in mind."
-        : "Private solar energy monitoring and battery control",
-    );
+    description.content =
+      page?.description ??
+      tr("Private solar energy monitoring and battery control");
+  let robots = document.querySelector<HTMLMetaElement>('meta[name="robots"]');
+  if (!robots) {
+    robots = document.createElement("meta");
+    robots.name = "robots";
+    document.head.append(robots);
+  }
+  robots.content = page ? "index, follow" : "noindex, nofollow";
+  let canonical = document.querySelector<HTMLLinkElement>(
+    'link[rel="canonical"]',
+  );
+  if (page) {
+    if (!canonical) {
+      canonical = document.createElement("link");
+      canonical.rel = "canonical";
+      document.head.append(canonical);
+    }
+    canonical.href = page.url;
+    for (const [property, content] of [
+      ["og:title", page.title],
+      ["og:description", page.description],
+      ["og:url", page.url],
+      ["og:locale", page.locale],
+    ]) {
+      let meta = document.querySelector<HTMLMetaElement>(
+        `meta[property="${property}"]`,
+      );
+      if (!meta) {
+        meta = document.createElement("meta");
+        meta.setAttribute("property", property);
+        document.head.append(meta);
+      }
+      meta.content = content;
+    }
+  } else canonical?.remove();
 }
 i18n.on("languageChanged", updateDocument);
 updateDocument(i18n.language);
@@ -117,14 +155,27 @@ export function locale(): string {
   return i18n.resolvedLanguage === "bg" ? "bg-BG" : "en-GB";
 }
 
+export function publicHomePath(): string {
+  return publicPage(i18n.resolvedLanguage === "bg" ? "bg" : "en").path;
+}
+
+export { i18n };
+
 export function LanguageSwitch(): ReactNode {
   const { i18n: instance } = useTranslation();
+  const location = useLocation();
+  const navigate = useNavigate();
   const change = (language: Language): void => {
     void instance.changeLanguage(language);
     try {
       localStorage.setItem(storageKey, language);
     } catch {
       /* The active language still changes when storage is unavailable. */
+    }
+    if (publicLanguage(location.pathname)) {
+      const destination = publicPage(language).path;
+      if (destination !== location.pathname)
+        navigate(destination + location.hash);
     }
   };
   return (

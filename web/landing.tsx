@@ -20,7 +20,8 @@ import {
   Zap,
 } from "lucide-react";
 import { ChargeTarget } from "./charge-target";
-import { LanguageSwitch, tr } from "./i18n";
+import { LanguageSwitch, tr, publicHomePath } from "./i18n";
+import { SITE_ORIGIN } from "./site-seo";
 import "./landing.css";
 
 type PreviewMode = "solar" | "night" | "reserve";
@@ -174,13 +175,16 @@ export default function LandingPage({ signedIn }: LandingProps): ReactNode {
   const workspaceUrl = signedIn ? "/dashboard" : "/login";
   const demoUrl = `mailto:djilanov@gmail.com?subject=${encodeURIComponent(tr("Solarman demo request"))}`;
   return (
-    <div className="landing">
+    <div className="landing" itemScope itemType="https://schema.org/WebSite">
+      <meta itemProp="name" content="Solarman" />
+      <meta itemProp="alternateName" content="Solarman Home Energy" />
+      <link itemProp="url" href={SITE_ORIGIN + "/"} />
       <a className="landing-skip" href="#landing-main">
         {tr("Skip to content")}
       </a>
       <header className="landing-header landing-wrap">
         <Link
-          to="/"
+          to={publicHomePath()}
           className="landing-logo"
           aria-label={tr("Solarman website")}
         >
@@ -570,10 +574,18 @@ export default function LandingPage({ signedIn }: LandingProps): ReactNode {
         </section>
       </main>
       <footer className="landing-footer landing-wrap">
-        <Link to="/" aria-label={tr("Solarman website")}>
+        <Link to={publicHomePath()} aria-label={tr("Solarman website")}>
           <ProductBrand />
         </Link>
         <p>{tr("An independent home energy workspace.")}</p>
+        <nav className="landing-language-links" aria-label={tr("Language")}>
+          <a href="/" lang="en" hrefLang="en">
+            English
+          </a>
+          <a href="/bg/" lang="bg" hrefLang="bg">
+            Български
+          </a>
+        </nav>
         <a href="#questions">{tr("Compatibility & questions")}</a>
       </footer>
     </div>

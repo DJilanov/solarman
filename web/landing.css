@@ -815,6 +815,13 @@ html:has(.landing) {
   color: #7f9a91;
   font-size: 11px;
 }
+.landing-language-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 11px;
+  color: #a4b9ad;
+}
 .landing-footer > a:last-child {
   margin-left: auto;
   color: #a4b9ad;

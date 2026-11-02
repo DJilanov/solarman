@@ -206,6 +206,7 @@ export function createApp({ pool, hub, config }) {
     });
   };
   return async (request, response) => {
+    response.setHeader("x-robots-tag", "noindex, nofollow");
     response.setHeader("x-content-type-options", "nosniff");
     response.setHeader("x-frame-options", "DENY");
     response.setHeader("referrer-policy", "same-origin");
@@ -264,7 +265,27 @@ export function createApp({ pool, hub, config }) {
         const file = path.resolve(staticRoot, `.${relative}`);
         if (!file.startsWith(`${staticRoot}${path.sep}`) && file !== staticRoot)
           throw new HttpError(404, "Not found");
+        const redirect = {
+          "/welcome": "/",
+          "/index.html": "/",
+          "/bg": "/bg/",
+          "/bg/index.html": "/bg/",
+        }[relative];
+        if (redirect) {
+          response.writeHead(308, {
+            location: redirect + url.search,
+            "cache-control": "no-cache",
+          });
+          response.end();
+          return;
+        }
         const extension = path.extname(file);
+        const publicPage = relative === "/" || relative === "/bg/";
+        const privatePage =
+          !extension &&
+          /^\/(?:login|dashboard|activate|recover|workspaces|analytics|activity|controls|settings)(?:\/|$)/.test(
+            relative,
+          );
         const mime = {
           ".js": "text/javascript",
           ".css": "text/css",
@@ -275,17 +296,36 @@ export function createApp({ pool, hub, config }) {
           ".json": "application/json",
           ".webmanifest": "application/manifest+json",
           ".html": "text/html",
+          ".txt": "text/plain",
+          ".xml": "application/xml",
         };
+        if (
+          relative === "/app.html" ||
+          relative.split("/").some((segment) => segment.startsWith(".")) ||
+          (!publicPage && !privatePage && !extension)
+        )
+          throw new HttpError(404, "Page not found");
+        const target = publicPage
+          ? path.join(
+              staticRoot,
+              relative === "/bg/" ? "bg/index.html" : "index.html",
+            )
+          : privatePage
+            ? path.join(staticRoot, "app.html")
+            : file;
         let bytes;
         try {
-          bytes = await readFile(
-            extension ? file : path.join(staticRoot, "index.html"),
-          );
+          bytes = await readFile(target);
         } catch {
           throw new HttpError(404, "Page not found");
         }
+        if (publicPage || (!privatePage && extension !== ".html"))
+          response.removeHeader("x-robots-tag");
+        const contentType = publicPage || privatePage
+          ? "text/html"
+          : (mime[extension] ?? "application/octet-stream");
         response.writeHead(200, {
-          "content-type": `${mime[extension] ?? "text/html"}; charset=utf-8`,
+          "content-type": `${contentType}; charset=utf-8`,
           "cache-control": pathname.startsWith("/assets/")
             ? "public, max-age=31536000, immutable"
             : "no-cache",
