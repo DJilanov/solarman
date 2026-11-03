@@ -2449,5 +2449,7 @@
   "Install on your phone and enable alerts": "Инсталирай на телефона и включи известията",
   "Add Solarman to your Home Screen on iPhone or Android, then enable device notifications and check the test arrives. You can choose energy briefings after your device is verified.": "Добави Solarman на началния екран на iPhone или Android, включи известията за устройството и провери дали тестът пристига. След потвърждението на устройството можеш да избереш енергийни обзори.",
   "Set up phone notifications": "Настрой известията за телефона",
-  "Phone installation guide": "Ръководство за инсталиране на телефона"
+  "Phone installation guide": "Ръководство за инсталиране на телефона",
+  "The alert closed; its pending warning was cancelled.": "Сигналът е затворен; чакащото предупреждение е отменено.",
+  "The alert cleared before any warning was sent. No recovery notification was needed.": "Сигналът е изчистен преди изпращането на предупреждение. Не е нужно известие за възстановяване."
 }

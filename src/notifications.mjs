@@ -9,6 +9,7 @@ import {
 import { sendTelegram } from "./telegram.mjs";
 import {
   incidentNotification,
+  browserNotification,
   testNotification,
 } from "./notification-messages.mjs";
 import { readBackupStatus } from "./backup-status.mjs";
@@ -297,6 +298,21 @@ export class Notifications {
   /** @param {import('pg').PoolClient} client @param {object} channel @param {object} incident @param {'opened'|'escalated'|'resolved'} kind @returns {Promise<void>} */
   async captureForChannel(client, channel, incident, kind) {
     const id = randomUUID();
+    let attempted = true;
+    if (kind === "resolved") {
+      attempted = (await client.query(
+        "SELECT EXISTS(SELECT 1 FROM notification_outbox WHERE channel_id=$1 AND channel_revision=$2 AND incident_id=$3 AND kind IN('opened','escalated') AND attempts>0) AS attempted",
+        [channel.id, channel.revision, incident.id],
+      )).rows[0].attempted;
+      // Never replay an old warning after its recovery, including an uncertain in-flight send.
+      await client.query(
+        `UPDATE notification_outbox SET cancel_requested_at=clock_timestamp(),last_code='incident_resolved',
+         state=CASE WHEN state='sending' THEN state ELSE 'cancelled' END,
+         completed_at=CASE WHEN state='sending' THEN completed_at ELSE clock_timestamp() END
+         WHERE channel_id=$1 AND channel_revision=$2 AND incident_id=$3 AND kind IN('opened','escalated') AND state IN('queued','retry','sending')`,
+        [channel.id, channel.revision, incident.id],
+      );
+    }
     const payload = incidentNotification(incident, kind, {
       language: channel.language,
       name: channel.name,
@@ -310,6 +326,11 @@ export class Notifications {
       eventKey: `${incident.id}:${incident.revision}:${kind}`,
       payload,
     });
+    if (!attempted)
+      await client.query(
+        "UPDATE notification_outbox SET state='cancelled',last_code='incident_cleared_before_delivery',completed_at=clock_timestamp() WHERE id=$1 AND state='queued'",
+        [id],
+      );
   }
 
   /** @param {boolean} [restarting] @returns {Promise<number>} */
@@ -499,6 +520,8 @@ export class Notifications {
       const retry = retryCandidate && withinDeadline;
       const code = row.push_displayed_at
         ? "push_displayed"
+        : cancelled && row.last_code === "incident_resolved" && !delivered
+          ? "incident_resolved"
         : retryCandidate && !withinDeadline
           ? "retry_after_deadline"
           : result.code;
@@ -634,35 +657,11 @@ export class Notifications {
                   result = { state: "rejected", code: "invalid_configuration" };
                 else {
                   dispatched = true;
-                  const bg = job.channel.language === "bg";
                   result = await this.sendPush({
                     subscription,
                     vapid: this.push.configuration,
                     signal: abort.signal,
-                    payload: {
-                      title: job.payload.title,
-                      body:
-                        job.kind === "test"
-                          ? bg
-                            ? "Проверка на известията. Настройките на инвертора не са променени."
-                            : "Notification test. Inverter settings have not changed."
-                          : bg
-                            ? "Отворете таблото за подробности за събитието."
-                            : "Open the dashboard for event details.",
-                      url:
-                        ["energy-briefing", "energy-reminder"].includes(job.kind)
-                          ? "/controls/energy-tools"
-                          : job.kind === "test"
-                          ? "/settings/notifications"
-                          : "/settings/health",
-                      language: job.channel.language,
-                      reference: job.id,
-                      receipt: {
-                        id: job.id,
-                        attempt: job.attemptId,
-                        token: job.receiptToken,
-                      },
-                    },
+                    payload: browserNotification(job),
                   });
                 }
               }

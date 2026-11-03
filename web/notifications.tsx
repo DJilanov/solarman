@@ -74,6 +74,8 @@ const codes: Record<string, string> = {
   dispatch_check_failed:
     "Delivery permissions could not be checked. A retry is scheduled without sending a message.",
   cancelled_before_dispatch: "The request was cancelled before dispatch.",
+  incident_resolved: "The alert closed; its pending warning was cancelled.",
+  incident_cleared_before_delivery: "The alert cleared before any warning was sent. No recovery notification was needed.",
   settings_changed: "Settings changed; future delivery was cancelled.",
   closed: "Workspace closure cancelled future delivery.",
   restore: "Delivery was disabled by a database restore.",

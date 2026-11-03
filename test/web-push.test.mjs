@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createECDH, randomBytes } from "node:crypto";
+import { createECDH, randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import webpush from "web-push";
@@ -343,4 +343,38 @@ test("energy notifications open the energy assistant while rejecting external or
     await f.dispatch("notificationclick", { notification: { close() {}, data: { url: path } } });
     assert.equal(f.opened.at(-1), `https://solarman.example.test${expected}`);
   }
+});
+
+test("push updates replace the incident card quietly while genuine escalation can alert again", async () => {
+  const f = await workerFixture();
+  const reference = "11111111-1111-4111-a111-111111111111";
+  for (const payload of [
+    { title: "Fault", silent: false, renotify: false },
+    { title: "Critical fault", silent: false, renotify: true },
+    { title: "Recovered", silent: true, renotify: false },
+    { title: "Recovered", silent: true, renotify: true },
+  ]) await f.dispatch("push", { data: { json: () => ({ ...payload, incidentReference: reference, reference: randomUUID(), body: "Review the dashboard" }) } });
+  assert.equal(new Set(f.notifications.map(item => item.options.tag)).size, 1);
+  assert.equal(f.notifications[0].options.silent, false);
+  assert.equal(f.notifications[1].options.renotify, true);
+  assert.equal(f.notifications[2].options.silent, true);
+  assert.equal(f.notifications[2].options.renotify, false);
+  assert.equal(f.notifications[3].options.renotify, false);
+});
+
+test("push services coalesce pending updates for the same incident without combining unrelated messages", async () => {
+  const f = fixture();
+  const topics = [];
+  const transport = async (_url, options) => {
+    topics.push(new Headers(options.headers).get("topic"));
+    return new Response(null, { status: 201 });
+  };
+  const incident = randomUUID();
+  for (const incidentReference of [incident, incident, randomUUID(), undefined, "invalid\r\nTopic: forged"])
+    assert.equal((await sendWebPush({ ...f, payload: { ...f.payload, incidentReference } }, transport)).state, "delivered");
+  assert.match(topics[0], /^[A-Za-z0-9_-]{32}$/);
+  assert.equal(topics[0], topics[1]);
+  assert.notEqual(topics[0], topics[2]);
+  assert.equal(topics[3], null);
+  assert.equal(topics[4], null);
 });

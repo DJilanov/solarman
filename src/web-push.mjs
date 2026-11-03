@@ -111,6 +111,10 @@ export async function sendWebPush(input, transport = fetch) {
     return { state: "cancelled", code: "cancelled_before_dispatch" };
   let details;
   try {
+    const incident = input.payload?.incidentReference;
+    const topic = typeof incident === "string" && /^[a-f0-9-]{36}$/.test(incident)
+      ? createHash("sha256").update(incident).digest("base64url").slice(0, 32)
+      : null;
     details = webpush.generateRequestDetails(
       normalizePushSubscription(input.subscription),
       JSON.stringify(input.payload),
@@ -119,6 +123,7 @@ export async function sendWebPush(input, transport = fetch) {
         TTL: 300,
         urgency: "high",
         contentEncoding: "aes128gcm",
+        ...(topic ? { topic } : {}),
       },
     );
   } catch {

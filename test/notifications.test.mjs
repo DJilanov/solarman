@@ -9,7 +9,7 @@ import {
   validTelegramToken,
 } from "../src/notification-secrets.mjs";
 import { decryptCredentials } from "../src/credentials.mjs";
-import { incidentNotification } from "../src/notification-messages.mjs";
+import { incidentNotification, browserNotification } from "../src/notification-messages.mjs";
 import { Notifications } from "../src/notifications.mjs";
 
 const botToken = "123456789:" + "f".repeat(35);
@@ -271,4 +271,41 @@ test("notification text uses fixed incident messages and never renders provider 
     incidentNotification(incident, "resolved", options).text,
     /Възстановено/,
   );
+});
+
+test("every incident recovery has a distinct translated title and no continuing-failure instructions", () => {
+  for (const kind of ["telemetry_stale", "device_offline", "request_failures", "auth_failure", "control_fault", "cleanup_pending", "api_quota", "api_capacity"])
+    for (const language of ["en", "bg"]) {
+      const incident = { id: randomUUID(), kind, severity: "critical", device: "Fixture inverter", detail_code: "exhausted", last_seen_at: new Date(), resolved_at: new Date() };
+      const options = { language, origin: "https://solarman.example.test", name: "Home", reference: randomUUID() };
+      const opened = incidentNotification(incident, "opened", options);
+      const resolved = incidentNotification(incident, "resolved", options);
+      assert.notEqual(opened.title, resolved.title);
+      assert.doesNotMatch(resolved.text, /Tracked allowance is exhausted|Check Controls and the inverter|Отчетеният лимит е изчерпан|Проверете управлението и инвертора/);
+      assert.match(resolved.text, language === "bg" ? /Възстановено/ : /Recovered/);
+      const changed = incidentNotification({ ...incident, resolution_reason: "binding_changed" }, "resolved", options);
+      assert.equal(changed.title, language === "bg" ? "Наблюдаваното устройство е сменено" : "Monitoring target changed");
+      assert.doesNotMatch(changed.text, /Recovered|Възстановено/);
+    }
+});
+
+test("browser incident updates collapse by incident, preserve each receipt and keep critical escalations audible", () => {
+  const incident = randomUUID();
+  const base = { kind: "opened", id: randomUUID(), incident_id: incident, channel: { language: "en" }, payload: { title: "Alert" }, attemptId: randomUUID(), receiptToken: "a".repeat(64) };
+  const opened = browserNotification(base);
+  const recovery = browserNotification({ ...base, id: randomUUID(), kind: "resolved", payload: { title: "Recovered" } });
+  const escalation = browserNotification({ ...base, id: randomUUID(), kind: "escalated" });
+  assert.equal(opened.incidentReference, incident);
+  assert.equal(recovery.incidentReference, opened.incidentReference);
+  assert.notEqual(recovery.reference, opened.reference);
+  assert.notEqual(escalation.reference, opened.reference);
+  assert.equal(recovery.silent, true);
+  assert.equal(recovery.renotify, false);
+  assert.match(recovery.body, /closed/);
+  assert.notEqual(recovery.receipt.id, opened.receipt.id);
+  assert.equal(opened.receipt.id, base.id);
+  assert.equal(escalation.silent, false);
+  assert.equal(escalation.renotify, true);
+  assert.equal(opened.silent, false);
+  assert.equal(browserNotification({ ...base, incident_id: null, kind: "test" }).reference, base.id);
 });

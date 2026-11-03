@@ -8469,8 +8469,10 @@ test("incident notifications enqueue atomically once per episode revision and in
         .map((j) => j.kind),
       ["opened"],
     );
+    await f.service.runOnce();
     await f.issue("critical");
     await f.issue("critical");
+    await f.service.runOnce();
     await hub.operations.reconcile(
       f.target.tenant,
       [],
@@ -8488,6 +8490,80 @@ test("incident notifications enqueue atomically once per episode revision and in
     assert.equal(f.sent.length, 4);
   } finally {
     await f.dispose();
+  }
+});
+
+test("transient incidents retain their history without sending obsolete warnings or standalone recoveries", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.configure();
+    await f.issue();
+    await hub.operations.reconcile(f.target.tenant, [], new Set([`${f.target.account}:${f.target.device}`]));
+    await f.service.runOnce();
+    const jobs = (await f.state()).deliveries.filter(job => job.kind !== "test");
+    assert.equal(jobs.length, 2);
+    assert.ok(jobs.every(job => job.state === "cancelled" && job.attempts === 0));
+    assert.equal(jobs.find(job => job.kind === "opened").lastCode, "incident_resolved");
+    assert.equal(jobs.find(job => job.kind === "resolved").lastCode, "incident_cleared_before_delivery");
+    assert.equal(f.sent.length, 1);
+  } finally { await f.dispose(); }
+});
+
+test("an uncertain warning stops retrying after recovery and browser updates keep the same incident identity", async () => {
+  const f = await browserPushFixture();
+  try {
+    await f.subscribe(); await f.service.runOnce(); await f.acknowledge(f.pushed[0].payload.receipt);
+    f.service.sendPush = async input => { f.pushed.push(input); return { state: "unconfirmed", code: "delivery_timeout" }; };
+    await f.issue(); await f.service.runOnce();
+    const opened = f.pushed[1].payload;
+    await hub.operations.reconcile(f.target.tenant, [], new Set([`${f.target.account}:${f.target.device}`]));
+    f.service.sendPush = async input => { f.pushed.push(input); return { state: "delivered", code: "push_accepted", messageId: null }; };
+    await f.service.runOnce();
+    const resolved = f.pushed[2].payload;
+    assert.equal(resolved.incidentReference, opened.incidentReference);
+    assert.notEqual(resolved.reference, opened.reference);
+    assert.notEqual(resolved.title, opened.title);
+    assert.equal(resolved.silent, true);
+    assert.equal(resolved.renotify, false);
+    assert.equal(opened.silent, false);
+    await f.acknowledge(resolved.receipt);
+    const jobs = (await pool.query("SELECT kind,state,attempts,had_unconfirmed,last_code FROM notification_outbox WHERE tenant_id=$1 AND kind IN('opened','resolved')", [f.target.tenant])).rows;
+    assert.deepEqual(jobs.find(job => job.kind === "opened"), { kind: "opened", state: "cancelled", attempts: 1, had_unconfirmed: true, last_code: "incident_resolved" });
+    assert.equal(jobs.find(job => job.kind === "resolved").state, "delivered");
+    await f.service.runOnce(); assert.equal(f.pushed.length, 3);
+  } finally { await f.dispose(); }
+});
+
+test("recovery cancels in-flight warning retries without concealing a delivery already accepted", async () => {
+  for (const result of [
+    { state: "unconfirmed", code: "delivery_timeout" },
+    { state: "delivered", code: "delivered", messageId: 93 },
+  ]) {
+    const f = await notificationFixture();
+    let release;
+    let worker;
+    try {
+      await f.configure();
+      let entered;
+      const started = new Promise(resolve => { entered = resolve; });
+      const gate = new Promise(resolve => { release = resolve; });
+      f.service.send = async () => { entered(); await gate; return result; };
+      await f.issue();
+      worker = f.service.runOnce();
+      await started;
+      await hub.operations.reconcile(f.target.tenant, [], new Set([`${f.target.account}:${f.target.device}`]));
+      release(); await worker;
+      const opened = (await f.state()).deliveries.find(job => job.kind === "opened");
+      assert.equal(opened.attempts, 1);
+      assert.equal(opened.state, result.state === "delivered" ? "delivered" : "cancelled");
+      if (result.state === "unconfirmed") {
+        assert.equal(opened.hadUnconfirmed, true);
+        assert.equal(opened.lastCode, "incident_resolved");
+      }
+      f.service.send = async () => ({ state: "delivered", code: "delivered", messageId: 94 });
+      await f.service.runOnce();
+      assert.equal((await f.state()).deliveries.find(job => job.kind === "resolved").state, "delivered");
+    } finally { release?.(); await worker; await f.dispose(); }
   }
 });
 

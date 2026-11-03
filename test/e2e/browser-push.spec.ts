@@ -21,6 +21,7 @@ interface BrowserProof {
   subscriptions: number;
   unsubscriptions: number;
   registrations: number;
+  workerUpdates: number;
 }
 
 async function pushFixture(
@@ -31,6 +32,7 @@ async function pushFixture(
     denied?: boolean;
     loseResponse?: boolean;
     expired?: boolean;
+    workerUnavailable?: boolean;
   } = {},
 ): Promise<{
   data: BrowserPushSettingsData;
@@ -53,6 +55,7 @@ async function pushFixture(
         subscriptions: 0,
         unsubscriptions: 0,
         registrations: 0,
+        workerUpdates: 0,
       };
       let active: PushSubscription | null = null;
       let permission: NotificationPermission = options.denied
@@ -112,7 +115,14 @@ async function pushFixture(
           return active;
         },
       };
-      const registration = { pushManager };
+      const registration = { pushManager, update: async (): Promise<void> => { proof.workerUpdates++; } };
+      Object.defineProperty(navigator.serviceWorker, "getRegistration", {
+        configurable: true,
+        value: (): Promise<unknown> => {
+          if (options.workerUnavailable) throw new DOMException("Worker access is blocked", "SecurityError");
+          return Promise.resolve(options.standalone ? registration : undefined);
+        },
+      });
       if (options.expired) {
         void pushManager.subscribe({ userVisibleOnly: true });
         proof.subscriptions = 0;
@@ -223,6 +233,18 @@ async function pushFixture(
   return { data, actions, proof };
 }
 
+test("a blocked background notification worker cannot stop dashboard access or request permission", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  const f = await pushFixture(page, { standalone: true, workerUnavailable: true });
+  await expect(page.getByRole("heading", { name: "Your energy, at a glance.", exact: true })).toBeVisible();
+  const proof = await f.proof();
+  expect(proof.workerUpdates).toBe(0);
+  expect(proof.permissionRequests).toBe(0);
+  expect(proof.registrations).toBe(0);
+  expect(errors).toEqual([]);
+});
+
 test("iPhone install instructions translate on mobile and never request notification permission from a Safari tab", async ({
   page,
 }) => {
@@ -262,6 +284,7 @@ test("iPhone install instructions translate on mobile and never request notifica
   await page.screenshot({ path: "test-results/iphone-push-install-bg-viewport.png" });
   expect((await f.proof()).permissionRequests).toBe(0);
   expect((await f.proof()).registrations).toBe(0);
+  expect((await f.proof()).workerUpdates).toBe(0);
   expect(f.actions).toEqual([]);
 });
 
@@ -269,6 +292,9 @@ test("a Home Screen app requests permission from the tap, waits for display, pre
   page,
 }) => {
   const f = await pushFixture(page, { iphone: true, standalone: true });
+  await expect.poll(async () => (await f.proof()).workerUpdates).toBeGreaterThan(0);
+  expect((await f.proof()).permissionRequests).toBe(0);
+  expect((await f.proof()).registrations).toBe(0);
   const commands: string[] = [];
   page.on("request", (request) => {
     if (

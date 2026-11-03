@@ -31,6 +31,11 @@ self.addEventListener("push", (event) => {
         /^[a-f0-9-]{36}$/.test(payload.reference)
           ? payload.reference
           : "alert";
+      const incidentReference =
+        typeof payload?.incidentReference === "string" &&
+        /^[a-f0-9-]{36}$/.test(payload.incidentReference)
+          ? payload.incidentReference
+          : null;
       await self.registration.showNotification(
         valid ? payload.title : "Solarman",
         {
@@ -39,7 +44,9 @@ self.addEventListener("push", (event) => {
             : "Open Solarman to review your notifications.",
           icon: "/icons/app-192.png",
           badge: "/icons/app-192.png",
-          tag: "solarman-" + reference,
+          tag: "solarman-" + (incidentReference ?? reference),
+          silent: payload?.silent === true,
+          renotify: payload?.renotify === true && payload?.silent !== true,
           data: { url },
         },
       );

@@ -475,6 +475,18 @@ function Dashboard({
     onSession(next);
   };
   const location = useLocation();
+  useEffect(() => {
+    if (!isSecureContext || !("serviceWorker" in navigator)) return;
+    // Refresh an existing push worker on app entry without installing one or asking permission.
+    void Promise.resolve()
+      .then(() => navigator.serviceWorker.getRegistration())
+      .then((registration) => registration?.update())
+      .catch(() => {
+        console.warn(
+          "Unable to check for a notification worker update; the browser will retry on a later visit.",
+        );
+      });
+  }, []);
   useEffect(
     () => () => {
       generation.current++;
