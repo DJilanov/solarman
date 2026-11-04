@@ -20,6 +20,7 @@ import {
 } from "./notification-store.mjs";
 import { PushSubscriptions } from "./push-subscriptions.mjs";
 import { decryptPushSubscription, sendWebPush } from "./web-push.mjs";
+import { captureCommunication } from "./notification-communication.mjs";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const RETRY_SECONDS = [60, 300, 900];
@@ -297,6 +298,7 @@ export class Notifications {
 
   /** @param {import('pg').PoolClient} client @param {object} channel @param {object} incident @param {'opened'|'escalated'|'resolved'} kind @returns {Promise<void>} */
   async captureForChannel(client, channel, incident, kind) {
+    if (await captureCommunication(client, channel, incident, kind, this.origin)) return;
     const id = randomUUID();
     let attempted = true;
     if (kind === "resolved") {
@@ -520,8 +522,8 @@ export class Notifications {
       const retry = retryCandidate && withinDeadline;
       const code = row.push_displayed_at
         ? "push_displayed"
-        : cancelled && row.last_code === "incident_resolved" && !delivered
-          ? "incident_resolved"
+        : cancelled && ["incident_resolved", "communication_escalated"].includes(row.last_code) && !delivered
+          ? row.last_code
         : retryCandidate && !withinDeadline
           ? "retry_after_deadline"
           : result.code;

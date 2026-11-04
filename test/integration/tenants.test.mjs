@@ -8120,7 +8120,7 @@ async function notificationFixture(base) {
     await service.runOnce();
     if (enable) assert.equal((await change("enable")).status, 200);
   };
-  const issue = async (severity = "warning") =>
+  const issue = async (severity = "warning", kind = "api_quota") =>
     hub.operations.reconcile(
       f.target.tenant,
       [
@@ -8128,7 +8128,7 @@ async function notificationFixture(base) {
           account_id: f.target.account,
           device: f.target.device,
           binding: `${f.target.account}:${f.target.device}`,
-          kind: "telemetry_stale",
+          kind,
           severity,
           at: new Date(),
         },
@@ -8170,6 +8170,180 @@ async function browserPushFixture() {
   const acknowledge = (receipt, patch = {}) => fetchApi("/notifications/push/receipt", { method: "POST", body: { ...receipt, ...patch }, csrf: false });
   return { ...f, pushed, subscription, pushState, pushChange, subscribe, acknowledge };
 }
+
+async function communicationIssues(f, issues) {
+  const binding = `${f.target.account}:${f.target.device}`;
+  await hub.operations.reconcile(f.target.tenant, issues.map(issue => ({
+    account_id: f.target.account, device: f.target.device, binding,
+    severity: "warning", at: new Date(), ...issue,
+  })), new Set([binding]));
+}
+
+async function connectionDue(f) {
+  await pool.query("UPDATE notification_outbox SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1 AND state IN('queued','retry') AND payload ? 'communicationReference'", [f.target.tenant]);
+}
+
+test("midnight stale, control and offline reports clearing within eleven minutes send no push burst", async () => {
+  const f = await browserPushFixture();
+  try {
+    await f.subscribe(); await f.service.runOnce(); await f.acknowledge(f.pushed[0].payload.receipt);
+    const issues = [];
+    for (const kind of ["telemetry_stale", "control_fault", "device_offline"]) {
+      issues.push({ kind });
+      await communicationIssues(f, issues);
+      await f.service.runOnce();
+    }
+    assert.equal(f.pushed.length, 1);
+    assert.equal((await hub.operations.list(f.target.tenant)).total, 3);
+    const before = (await pool.query("SELECT state,payload,extract(epoch FROM next_attempt_at-created_at)::float AS delay FROM notification_outbox WHERE tenant_id=$1 AND kind='opened' ORDER BY created_at,id", [f.target.tenant])).rows;
+    assert.equal(before.filter(job => job.state === "queued").length, 1);
+    assert.ok(Math.abs(before.find(job => job.state === "queued").delay - 900) < 1);
+    assert.equal(new Set(before.map(job => job.payload.communicationReference)).size, 1);
+    await communicationIssues(f, []);
+    await connectionDue(f);
+    for (let i = 0; i < 6; i++) await f.service.runOnce();
+    assert.equal(f.pushed.length, 1);
+    const history = (await pool.query("SELECT state,attempts,payload FROM notification_outbox WHERE tenant_id=$1 AND incident_id IS NOT NULL", [f.target.tenant])).rows;
+    assert.equal(history.length, 6);
+    assert.ok(history.every(job => job.state === "cancelled" && job.attempts === 0));
+    assert.equal(history.filter(job => job.payload.communicationClosed).length, 1);
+  } finally { await f.dispose(); }
+});
+
+test("persistent related communication faults send one warning and one recovery, even if the first fault clears earlier", async () => {
+  const f = await browserPushFixture();
+  try {
+    await f.subscribe(); await f.service.runOnce(); await f.acknowledge(f.pushed[0].payload.receipt);
+    await communicationIssues(f, [{ kind: "telemetry_stale" }, { kind: "control_fault" }, { kind: "device_offline" }]);
+    await communicationIssues(f, [{ kind: "control_fault" }, { kind: "device_offline" }]);
+    await f.service.runOnce(); assert.equal(f.pushed.length, 1);
+    await connectionDue(f); await f.service.runOnce();
+    assert.equal(f.pushed.length, 2);
+    const warning = f.pushed[1].payload;
+    assert.equal(warning.title, "Връзката със SOLARMAN изисква внимание");
+    await f.acknowledge(warning.receipt);
+    await communicationIssues(f, [{ kind: "device_offline" }]);
+    await f.service.runOnce(); assert.equal(f.pushed.length, 2);
+    await communicationIssues(f, []);
+    for (let i = 0; i < 4; i++) await f.service.runOnce();
+    assert.equal(f.pushed.length, 3);
+    const recovery = f.pushed[2].payload;
+    assert.equal(recovery.title, "Сигналът за връзката със SOLARMAN е изчистен");
+    assert.equal(recovery.incidentReference, warning.incidentReference);
+    assert.notEqual(recovery.reference, warning.reference);
+    assert.equal(recovery.silent, true);
+    assert.equal((await hub.operations.list(f.target.tenant, "resolved")).total, 3);
+  } finally { await f.dispose(); }
+});
+
+test("a reported alarm escalates a pending connection group immediately and cleanup alerts remain separate", async () => {
+  const f = await browserPushFixture();
+  try {
+    await f.subscribe(); await f.service.runOnce(); await f.acknowledge(f.pushed[0].payload.receipt);
+    await communicationIssues(f, [{ kind: "device_offline" }, { kind: "telemetry_stale" }]);
+    await communicationIssues(f, [{ kind: "device_offline", severity: "critical" }, { kind: "telemetry_stale" }, { kind: "cleanup_pending", severity: "critical" }]);
+    for (let i = 0; i < 3; i++) await f.service.runOnce();
+    assert.equal(f.pushed.length, 3);
+    const alarm = f.pushed.find(job => job.payload.renotify).payload;
+    assert.equal(alarm.title, "Инверторът е офлайн или подава аларма");
+    assert.equal(alarm.silent, false);
+    assert.ok(f.pushed.some(job => job.payload.title === "Изключването на зареждането по график не е потвърдено"));
+    const cancelled = (await pool.query("SELECT last_code FROM notification_outbox WHERE tenant_id=$1 AND kind='opened' AND state='cancelled'", [f.target.tenant])).rows;
+    assert.ok(cancelled.some(job => job.last_code === "communication_escalated"));
+    await communicationIssues(f, []);
+    for (let i = 0; i < 5; i++) await f.service.runOnce();
+    assert.equal(f.pushed.length, 5);
+  } finally { await f.dispose(); }
+});
+
+test("connection groups survive worker restart, keep retries honest and start a new episode after recovery", async () => {
+  const f = await notificationFixture();
+  try {
+    await f.configure();
+    await communicationIssues(f, [{ kind: "telemetry_stale" }]);
+    const restarted = new Notifications(pool, hub, { send: async input => { f.sent.push(input); return { state: "unconfirmed", code: "transport_unconfirmed" }; } });
+    restarted.platformAt = Date.now();
+    await connectionDue(f); await restarted.runOnce();
+    await communicationIssues(f, [{ kind: "telemetry_stale" }, { kind: "request_failures" }]);
+    await communicationIssues(f, []);
+    restarted.send = async input => { f.sent.push(input); return { state: "delivered", code: "delivered", messageId: 92 }; };
+    for (let i = 0; i < 3; i++) await restarted.runOnce();
+    const first = (await pool.query("SELECT state,had_unconfirmed,last_code,payload FROM notification_outbox WHERE tenant_id=$1 AND kind='opened' ORDER BY created_at,id", [f.target.tenant])).rows[0];
+    assert.equal(first.state, "cancelled"); assert.equal(first.had_unconfirmed, true); assert.equal(first.last_code, "incident_resolved");
+    assert.equal(f.sent.length, 3);
+    await communicationIssues(f, [{ kind: "telemetry_stale" }]);
+    const next = (await pool.query("SELECT payload,next_attempt_at>clock_timestamp() AS waiting FROM notification_outbox WHERE tenant_id=$1 AND state='queued'", [f.target.tenant])).rows[0];
+    assert.equal(next.waiting, true);
+    assert.notEqual(next.payload.communicationReference, first.payload.communicationReference);
+    await restarted.stop();
+  } finally { await f.dispose(); }
+});
+
+test("communication grouping is independent for every opted-in browser destination", async () => {
+  const f = await browserPushFixture();
+  try {
+    for (let i = 0; i < 2; i++) {
+      await f.subscribe(); await f.service.runOnce(); await f.acknowledge(f.pushed[i].payload.receipt);
+    }
+    await communicationIssues(f, [{ kind: "telemetry_stale" }, { kind: "request_failures" }]);
+    await connectionDue(f);
+    for (let i = 0; i < 3; i++) await f.service.runOnce();
+    assert.equal(f.pushed.length, 4);
+    await communicationIssues(f, []);
+    for (let i = 0; i < 4; i++) await f.service.runOnce();
+    assert.equal(f.pushed.length, 6);
+    const attempts = (await pool.query("SELECT channel_id,count(*)::int AS count FROM notification_outbox WHERE tenant_id=$1 AND incident_id IS NOT NULL AND attempts>0 GROUP BY channel_id", [f.target.tenant])).rows;
+    assert.deepEqual(attempts.map(row => row.count), [2, 2]);
+  } finally { await f.dispose(); }
+});
+
+test("communication classification persists without weakening control fault recovery or hiding later unknown faults", async () => {
+  const { runtime } = await controlFixture();
+  try {
+    await runtime.health.controlFault(true, true);
+    await hub.operations.refresh();
+    assert.equal((await hub.operations.list(runtime.tenantId)).items.find(issue => issue.kind === "control_fault").severity, "warning");
+    const restarted = new DeviceHealth(pool, runtime.journal.context);
+    assert.equal((await restarted.initialize()).control_fault_communication, true);
+    await restarted.controlFault(true);
+    await hub.operations.refresh();
+    const urgent = (await hub.operations.list(runtime.tenantId)).items.find(issue => issue.kind === "control_fault");
+    assert.equal(urgent.severity, "critical"); assert.equal(urgent.revision, 2);
+    await restarted.controlFault(true, true);
+    await restarted.run(async () => {}, () => true, () => true);
+    assert.equal((await restarted.initialize()).control_fault_communication, true);
+    await restarted.run(async () => {}, () => true);
+    assert.equal((await restarted.initialize()).control_fault_communication, false);
+    assert.equal((await restarted.initialize()).control_fault, true);
+    await restarted.controlFault(false);
+    assert.equal((await restarted.initialize()).control_fault_communication, false);
+  } finally { await runtime.close(); }
+});
+
+test("native charging supervision classifies stale and offline cloud readings without suppressing alarm reports", async () => {
+  const f = await notificationFixture(await outageFixture());
+  try {
+    await f.configure(); await f.prepare();
+    assert.equal(f.runtime.outage.row.state, "active");
+    await pool.query("UPDATE outage_preparations SET test=false,last_verified_at=clock_timestamp() WHERE id=$1", [f.runtime.outage.row.id]);
+    for (const [state, age, expected] of [[1, 30 * 60000, true], [3, 0, true], [1, 0, true], [2, 0, false]]) {
+      f.runtime.client.api = async () => providerPayload({ device: f.target.device, collectedAt: Date.now() - age, state });
+      await f.runtime.evaluate();
+      const health = (await pool.query("SELECT control_fault,control_fault_communication FROM device_health WHERE tenant_id=$1", [f.target.tenant])).rows[0];
+      assert.equal(health.control_fault, true);
+      assert.equal(health.control_fault_communication, expected);
+      await hub.operations.refresh();
+      await f.service.runOnce();
+      if (expected) assert.equal(f.sent.length, 1);
+    }
+    assert.ok(f.sent.some(message => message.text.includes("Критично")));
+    assert.equal(f.runtime.outage.row.state, "active");
+  } finally {
+    f.runtime.client.api = async () => providerPayload({ device: f.target.device });
+    await f.restore();
+    await f.dispose();
+  }
+});
 
 test("independent push permission requires a verified live subscription and invalidates removed, changed or restored targets", async () => {
   const f = await browserPushFixture();
@@ -9620,8 +9794,9 @@ test("an invited tenant completes the connected home journey through attended co
       "resolved",
       "test",
     ]);
-    assert.ok(alerts.deliveries.every((item) => item.state === "delivered"));
-    assert.equal(cloud.deliveries.length, 3);
+    assert.equal(alerts.deliveries.find(item => item.kind === "test").state, "delivered");
+    assert.ok(alerts.deliveries.filter(item => item.kind !== "test").every(item => item.state === "cancelled" && item.attempts === 0));
+    assert.equal(cloud.deliveries.length, 1);
     assert.equal((await json("/notifications", { auth: admin })).channel, null);
     assert.equal(JSON.stringify(alerts).includes(fixture.botToken), false);
 

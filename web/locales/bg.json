@@ -2451,5 +2451,7 @@
   "Set up phone notifications": "Настрой известията за телефона",
   "Phone installation guide": "Ръководство за инсталиране на телефона",
   "The alert closed; its pending warning was cancelled.": "Сигналът е затворен; чакащото предупреждение е отменено.",
-  "The alert cleared before any warning was sent. No recovery notification was needed.": "Сигналът е изчистен преди изпращането на предупреждение. Не е нужно известие за възстановяване."
+  "The alert cleared before any warning was sent. No recovery notification was needed.": "Сигналът е изчистен преди изпращането на предупреждение. Не е нужно известие за възстановяване.",
+  "This event is included in the connection alert. No separate notification was sent.": "Събитието е включено в сигнала за връзката. Не е изпратено отделно известие.",
+  "An urgent alert replaced the pending connection warning.": "Спешен сигнал замени чакащото предупреждение за връзката."
 }

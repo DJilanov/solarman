@@ -76,6 +76,8 @@ const codes: Record<string, string> = {
   cancelled_before_dispatch: "The request was cancelled before dispatch.",
   incident_resolved: "The alert closed; its pending warning was cancelled.",
   incident_cleared_before_delivery: "The alert cleared before any warning was sent. No recovery notification was needed.",
+  communication_related: "This event is included in the connection alert. No separate notification was sent.",
+  communication_escalated: "An urgent alert replaced the pending connection warning.",
   settings_changed: "Settings changed; future delivery was cancelled.",
   closed: "Workspace closure cancelled future delivery.",
   restore: "Delivery was disabled by a database restore.",

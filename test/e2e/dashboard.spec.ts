@@ -5522,6 +5522,13 @@ test("notifications preserve configuration drafts across language changes, disti
       .filter({ hasText: "Fixture incident" })
       .locator("tbody tr"),
   ).toHaveCount(2);
+  data.deliveries.unshift({
+    ...incident, id: randomUUID(), state: "cancelled", attempts: 0,
+    hadUnconfirmed: false, messageId: null, history: [], lastCode: "communication_related",
+    payload: { title: "Related connection event", text: "Included in the connection alert" },
+  });
+  await page.getByRole("button", { name: "Обнови състоянието на доставянето", exact: true }).click();
+  await expect(page.getByText("Събитието е включено в сигнала за връзката. Не е изпратено отделно известие.", { exact: true })).toBeVisible();
   await page
     .getByLabel("Текуща парола за таблото", { exact: true })
     .fill("notification-browser-fixture");

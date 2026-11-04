@@ -2451,5 +2451,7 @@
   "Set up phone notifications": "Set up phone notifications",
   "Phone installation guide": "Phone installation guide",
   "The alert closed; its pending warning was cancelled.": "The alert closed; its pending warning was cancelled.",
-  "The alert cleared before any warning was sent. No recovery notification was needed.": "The alert cleared before any warning was sent. No recovery notification was needed."
+  "The alert cleared before any warning was sent. No recovery notification was needed.": "The alert cleared before any warning was sent. No recovery notification was needed.",
+  "This event is included in the connection alert. No separate notification was sent.": "This event is included in the connection alert. No separate notification was sent.",
+  "An urgent alert replaced the pending connection warning.": "An urgent alert replaced the pending connection warning."
 }

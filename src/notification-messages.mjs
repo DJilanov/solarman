@@ -51,7 +51,7 @@ function plain(value, maximum) {
     .slice(0, maximum);
 }
 
-/** @param {{id:string,kind:string,severity:string,device:string,detail_code?:string|null,resolution_reason?:string|null,last_seen_at:Date|string,resolved_at:Date|string|null}} incident @param {'opened'|'escalated'|'resolved'} event @param {{name:string,language:'en'|'bg',origin:string,reference:string}} options @returns {{text:string,title:string}} */
+/** @param {{id:string,kind:string,severity:string,device:string,detail_code?:string|null,resolution_reason?:string|null,last_seen_at:Date|string,resolved_at:Date|string|null}} incident @param {'opened'|'escalated'|'resolved'} event @param {{name:string,language:'en'|'bg',origin:string,reference:string}} options @returns {{text:string,title:string,communicationReference?:string,communicationClosed?:boolean}} */
 export function incidentNotification(incident, event, options) {
   const bg = options.language === "bg";
   const originalTitle = titles[incident.kind]?.[bg ? 1 : 0];
@@ -131,7 +131,7 @@ export function browserNotification(job) {
       ? "/controls/energy-tools" : job.kind === "test" ? "/settings/notifications" : "/settings/health",
     language: job.channel.language,
     reference: job.id,
-    incidentReference: job.incident_id ?? null,
+    incidentReference: job.payload.communicationReference ?? job.incident_id ?? null,
     silent: job.kind === "resolved",
     renotify: job.kind === "escalated",
     receipt: { id: job.id, attempt: job.attemptId, token: job.receiptToken },

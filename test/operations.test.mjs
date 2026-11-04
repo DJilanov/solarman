@@ -76,7 +76,7 @@ test("successful communication never makes an old upload fresh", () => {
 test("offline status, consecutive failures and control faults are independent evidence", () => {
   assert.deepEqual(deviceIssues({ ...recent, failures: 2 }, now, 300000), []);
   const issues = deviceIssues(
-    { ...recent, failures: 3, device_state: 3, control_fault: true },
+    { ...recent, failures: 3, device_state: 2, control_fault: true },
     now,
     300000,
   );
@@ -86,6 +86,15 @@ test("offline status, consecutive failures and control faults are independent ev
   );
   assert.equal(issues[0].severity, "critical");
   assert.equal(issues[1].severity, "warning");
+});
+
+test("communication warnings remain distinct from reported alarms and unknown control faults", () => {
+  const communication = deviceIssues({ ...recent, device_state: 3, control_fault: true, control_fault_communication: true }, now, 300000);
+  assert.deepEqual(communication.map(issue => [issue.kind, issue.severity]), [
+    ["device_offline", "warning"], ["control_fault", "warning"],
+  ]);
+  const urgent = deviceIssues({ ...recent, device_state: 2, control_fault: true, control_fault_communication: false }, now, 300000);
+  assert.ok(urgent.every(issue => issue.severity === "critical"));
 });
 
 test("failed retries do not invent a newer offline report or move the original control fault time", () => {

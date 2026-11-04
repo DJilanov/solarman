@@ -39,7 +39,7 @@ const EXPORT_SECTIONS = {
   cleanup:
     "SELECT account_id,device,state,confirmed_off_at,updated_at FROM device_control_state WHERE tenant_id=$1 ORDER BY account_id,device",
   deviceHealth:
-    "SELECT account_id,device,created_at,attempted_at,succeeded_at,failed_at,uploaded_at,reported_at,device_state,failures,control_fault,control_fault_at,auth_fault,auth_fault_at FROM device_health WHERE tenant_id=$1 ORDER BY account_id,device",
+    "SELECT account_id,device,created_at,attempted_at,succeeded_at,failed_at,uploaded_at,reported_at,device_state,failures,control_fault,control_fault_communication,control_fault_at,auth_fault,auth_fault_at FROM device_health WHERE tenant_id=$1 ORDER BY account_id,device",
   controller:
     "SELECT paused,manual_topup,control_enabled,verification,topup_expires_at,control_epoch::text,updated_at FROM controller_state WHERE tenant_id=$1",
   incidents:

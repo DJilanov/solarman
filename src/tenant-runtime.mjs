@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { loadConfig } from "./config.mjs";
-import { SolarmanClient } from "./solarman.mjs";
+import { SolarmanClient, SolarmanTransportError } from "./solarman.mjs";
 import { BatteryController, decide } from "./controller.mjs";
 import { decryptCredentials } from "./credentials.mjs";
 import { saveMeasurement } from "./database.mjs";
@@ -1053,6 +1053,7 @@ export class TenantRuntime {
           decision: { charge: false, reason: "monitoring_capacity_waiting" },
         };
     }
+    const previousProfileError = this.profileError;
     return this.health.run(
       () => this.collectReadings(inspectOnly, forceControl),
       () =>
@@ -1063,6 +1064,10 @@ export class TenantRuntime {
               this.outage.row.state,
             )),
         ),
+      // Fresh cloud telemetry may leave the same fault awaiting its native audit.
+      () => this.profileError !== null && this.profileError === previousProfileError &&
+        this.telemetry?.deviceState !== 2 && !this.cleanupRequired && !this.journal.pending &&
+        !(this.outage.active && ["recovery-required", "quarantined"].includes(this.outage.row.state)),
     );
   }
 
@@ -1304,6 +1309,7 @@ export class TenantRuntime {
   async fail(id, error, disable = true) {
     const budgetLimited = error instanceof ApiBudgetError;
     let pauseUnrecorded = false;
+    let cleanupCheckPassed = false;
     const controlFailed = disable && this.writesEnabled && this.controlEnabled;
     if (
       (budgetLimited || controlFailed) &&
@@ -1328,6 +1334,7 @@ export class TenantRuntime {
     if (budgetLimited ? this.cleanupRequired : disable) {
       try {
         await this.clearScheduledPermission();
+        cleanupCheckPassed = true;
         pauseUnrecorded = false;
       } catch {
         this.lastError +=
@@ -1338,7 +1345,14 @@ export class TenantRuntime {
       this.lastError += "; automation pause could not be recorded";
     if (controlFailed) {
       try {
-        await this.health.controlFault(true);
+        const communication =
+          cleanupCheckPassed && !pauseUnrecorded && !this.cleanupRequired && !this.journal.pending &&
+          this.telemetry?.deviceState !== 2 &&
+          (error instanceof SolarmanTransportError ||
+            this.lastError === "The provider has not supplied fresh device readings" ||
+            (this.lastError === "The inverter is offline or reporting an alarm" &&
+              this.telemetry?.deviceState === 3));
+        await this.health.controlFault(true, communication);
       } catch {
         console.error(JSON.stringify({ event: "device_health_update_failed" }));
       }

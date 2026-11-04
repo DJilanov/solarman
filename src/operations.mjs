@@ -42,17 +42,17 @@ export class DeviceHealth {
     );
   }
 
-  /** @param {boolean} fault @returns {Promise<void>} */
-  async controlFault(fault) {
+  /** @param {boolean} fault @param {boolean} [communication] @returns {Promise<void>} */
+  async controlFault(fault, communication = false) {
     if (!this.context.accountId || !this.context.device) return;
     await this.pool.query(
-      "UPDATE device_health SET control_fault=$4,control_fault_at=CASE WHEN $4 THEN COALESCE(control_fault_at,now()) ELSE null END WHERE tenant_id=$1 AND account_id=$2 AND device=$3",
-      [...this.values, fault],
+      "UPDATE device_health SET control_fault=$4,control_fault_communication=$4 AND $5,control_fault_at=CASE WHEN $4 THEN COALESCE(control_fault_at,now()) ELSE null END WHERE tenant_id=$1 AND account_id=$2 AND device=$3",
+      [...this.values, fault, communication],
     );
   }
 
-  /** @template T @param {() => Promise<T>} operation @param {() => boolean} fault @returns {Promise<T>} */
-  async run(operation, fault) {
+  /** @template T @param {() => Promise<T>} operation @param {() => boolean} fault @param {() => boolean} [preserveCommunication] @returns {Promise<T>} */
+  async run(operation, fault, preserveCommunication = () => false) {
     await this.pool.query(
       "UPDATE device_health SET attempted_at=now() WHERE tenant_id=$1 AND account_id=$2 AND device=$3",
       this.values,
@@ -60,15 +60,15 @@ export class DeviceHealth {
     try {
       const result = await operation();
       await this.pool.query(
-        "UPDATE device_health SET succeeded_at=now(),failures=0,auth_fault=false,auth_fault_at=null,control_fault=$4,control_fault_at=CASE WHEN $4 THEN COALESCE(control_fault_at,now()) ELSE null END WHERE tenant_id=$1 AND account_id=$2 AND device=$3",
-        [...this.values, fault()],
+        "UPDATE device_health SET succeeded_at=now(),failures=0,auth_fault=false,auth_fault_at=null,control_fault=$4,control_fault_communication=$4 AND $5 AND control_fault_communication,control_fault_at=CASE WHEN $4 THEN COALESCE(control_fault_at,now()) ELSE null END WHERE tenant_id=$1 AND account_id=$2 AND device=$3",
+        [...this.values, fault(), preserveCommunication()],
       );
       return result;
     } catch (error) {
       if (!(error instanceof ApiBudgetError)) {
         try {
           await this.pool.query(
-            "UPDATE device_health SET failed_at=now(),failures=LEAST(failures::bigint+1,2147483647),auth_fault=auth_fault OR $5,auth_fault_at=CASE WHEN $5 THEN COALESCE(auth_fault_at,now()) ELSE auth_fault_at END,control_fault=$4,control_fault_at=CASE WHEN $4 THEN COALESCE(control_fault_at,now()) ELSE null END WHERE tenant_id=$1 AND account_id=$2 AND device=$3",
+            "UPDATE device_health SET failed_at=now(),failures=LEAST(failures::bigint+1,2147483647),auth_fault=auth_fault OR $5,auth_fault_at=CASE WHEN $5 THEN COALESCE(auth_fault_at,now()) ELSE auth_fault_at END,control_fault=$4,control_fault_communication=$4 AND control_fault_communication,control_fault_at=CASE WHEN $4 THEN COALESCE(control_fault_at,now()) ELSE null END WHERE tenant_id=$1 AND account_id=$2 AND device=$3",
             [
               ...this.values,
               fault(),
@@ -123,7 +123,8 @@ export function deviceIssues(row, now, pollMs) {
   )
     issues.push({
       kind: "device_offline",
-      severity: "critical",
+      // SOLARMAN reports 2 for an alarm and 3 for offline.
+      severity: row.device_state === 3 ? "warning" : "critical",
       at: row.reported_at ?? row.created_at,
     });
   if (!capacityWaiting && row.failures >= 3)
@@ -135,7 +136,7 @@ export function deviceIssues(row, now, pollMs) {
   if (row.control_fault)
     issues.push({
       kind: "control_fault",
-      severity: "critical",
+      severity: row.control_fault_communication ? "warning" : "critical",
       at:
         row.control_fault_at ??
         row.succeeded_at ??
@@ -226,7 +227,7 @@ export class Operations {
     const now = Date.now();
     const [accounts, debts, tenants] = await Promise.all([
       this.pool
-        .query(`SELECT a.tenant_id,a.id AS account_id,a.device_sn AS device,a.monitoring_admitted,h.created_at,h.attempted_at,h.succeeded_at,h.failed_at,h.uploaded_at,h.reported_at,h.device_state,h.failures,h.control_fault,h.control_fault_at,h.auth_fault,h.auth_fault_at
+        .query(`SELECT a.tenant_id,a.id AS account_id,a.device_sn AS device,a.monitoring_admitted,h.created_at,h.attempted_at,h.succeeded_at,h.failed_at,h.uploaded_at,h.reported_at,h.device_state,h.failures,h.control_fault,h.control_fault_communication,h.control_fault_at,h.auth_fault,h.auth_fault_at
         FROM solarman_accounts a JOIN tenants t ON t.id=a.tenant_id LEFT JOIN device_health h ON h.tenant_id=a.tenant_id AND h.account_id=a.id AND h.device=a.device_sn WHERE a.device_sn IS NOT NULL AND t.lifecycle IN('active','suspended')`),
       this.pool.query(
         "SELECT tenant_id,account_id,device,updated_at FROM device_control_state WHERE state IN ('uncertain','cleanup-required') AND updated_at<now()-interval '2 minutes'",

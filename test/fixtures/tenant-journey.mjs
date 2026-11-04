@@ -183,7 +183,7 @@ export class TenantJourneyCloud {
           ...providerPayload({
             device: this.config.device,
             collectedAt: this.collectedAt,
-            state: this.online ? 1 : 2,
+            state: this.online ? 1 : 3,
             values: {
               PVTP: String(this.telemetry.pvW),
               EP: String(this.telemetry.loadW),
