@@ -64,6 +64,7 @@ export function PublicFooter({
         className="public-legal-links"
         aria-label={tr("Service information")}
       >
+        <Link to={publicPage(language, "demo").path}>{tr("Try the interactive demo")}</Link>
         <Link to={publicPage(language, "pricing").path}>
           {tr("Services & support")}
         </Link>

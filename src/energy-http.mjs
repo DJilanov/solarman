@@ -17,17 +17,45 @@ export async function energyRoute({
   if (pathname !== "/api/energy" && !pathname.startsWith("/api/energy/"))
     return false;
   try {
+    if (pathname === "/api/energy/tools/away/preview" && request.method === "POST") {
+      await requireActiveTenant(hub.pool, session.tenant_id);
+      json(response, 200, await hub.energy.experience.away.preview(runtime, await bodyJson(request)));
+      return true;
+    }
     if (pathname === "/api/energy/tools" && request.method === "GET") {
       json(response, 200, await hub.energy.experience.status(runtime));
       return true;
     }
-    if (request.method === "POST" && ["/api/energy/tools/preferences", "/api/energy/tools/outage", "/api/energy/tools/task"].includes(pathname)) {
+    if (pathname.startsWith("/api/energy/tools/outage-notices/") && request.method === "GET") {
+      json(response, 200, await hub.energy.experience.outageWatch.notice(runtime, pathname.split("/").at(-1)));
+      return true;
+    }
+    if (request.method === "POST" && ["/api/energy/tools/replan", "/api/energy/tools/insight", "/api/energy/tools/outage-watch", "/api/energy/tools/outage-watch/check", "/api/energy/tools/outage-watch/areas"].includes(pathname)) {
+      await requireActiveTenant(hub.pool, session.tenant_id);
+      const body = await bodyJson(request), experience = hub.energy.experience;
+      let result;
+      if (pathname.endsWith("/replan")) result = await experience.replan(session, runtime, body);
+      else if (pathname.endsWith("/insight")) result = await experience.insights.acknowledge(session, runtime, body);
+      else if (pathname.endsWith("/check")) result = await experience.outageWatch.check(runtime, true);
+      else if (pathname.endsWith("/areas")) {
+        limitSecurity(response, session);
+        const notices = await experience.outageWatch.provider.publications();
+        result = [...new Map(notices.map(notice => [`${notice.municipality}:${notice.area}`, { municipality: notice.municipality, area: notice.area }])).values()];
+      } else {
+        limitSecurity(response, session);
+        result = await experience.outageWatch.change(session, runtime, body);
+      }
+      json(response, 200, result);
+      return true;
+    }
+    if (request.method === "POST" && ["/api/energy/tools/preferences", "/api/energy/tools/outage", "/api/energy/tools/task", "/api/energy/tools/away"].includes(pathname)) {
       await requireActiveTenant(hub.pool, session.tenant_id);
       const body = await bodyJson(request), action = pathname.split("/").at(-1);
-      if (action === "preferences") limitSecurity(response, session);
+      if (["preferences", "away"].includes(action)) limitSecurity(response, session);
       const result = action === "preferences"
         ? await hub.energy.experience.changePreferences(session, runtime, body)
-        : action === "outage" ? await hub.energy.experience.outage(runtime, body)
+        : action === "away" ? await hub.energy.experience.away.change(session, runtime, body, request.headers["idempotency-key"])
+          : action === "outage" ? await hub.energy.experience.outage(runtime, body)
           : await hub.energy.experience.task(session, runtime, body);
       json(response, 200, result);
       return true;

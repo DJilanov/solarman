@@ -410,14 +410,14 @@ export class Notifications {
         return null;
       }
       const cancelled =
-        (["energy-briefing", "energy-reminder"].includes(job.kind) && job.lifecycle !== "active") ||
+        (["energy-briefing", "energy-reminder", "energy-insight", "outage-notice"].includes(job.kind) && job.lifecycle !== "active") ||
         !["active", "suspended"].includes(job.lifecycle) ||
         channel.quarantined ||
         String(channel.revision) !== String(job.channel_revision) ||
         job.cancel_requested_at ||
         (!channel.enabled && job.kind !== "test");
       const expired =
-        (["energy-briefing", "energy-reminder"].includes(job.kind) && (!Number.isFinite(Date.parse(job.payload.expiresAt)) || Date.parse(job.payload.expiresAt) <= Date.now())) ||
+        (["energy-briefing", "energy-reminder", "energy-insight", "outage-notice"].includes(job.kind) && (!Number.isFinite(Date.parse(job.payload.expiresAt)) || Date.parse(job.payload.expiresAt) <= Date.now())) ||
         Date.now() - new Date(job.created_at).getTime() > 86400000 ||
         job.attempts >= 4;
       if (cancelled || expired) {
@@ -628,7 +628,7 @@ export class Notifications {
             await this.pool.query(
               `SELECT 1 FROM notification_outbox j JOIN notification_channels c ON c.id=j.channel_id JOIN tenants t ON t.id=j.tenant_id
             WHERE j.id=$1 AND j.state='sending' AND j.cancel_requested_at IS NULL AND c.revision=j.channel_revision AND NOT c.quarantined AND c.secret IS NOT NULL AND(c.enabled OR j.kind='test') AND t.lifecycle IN('active','suspended')
-              AND(j.kind NOT IN('energy-briefing','energy-reminder') OR t.lifecycle='active')
+              AND(j.kind NOT IN('energy-briefing','energy-reminder','energy-insight','outage-notice') OR t.lifecycle='active')
               AND(j.kind<>'energy-briefing' OR EXISTS(SELECT 1 FROM energy_experience_settings s WHERE s.tenant_id=j.tenant_id AND s.briefings_enabled))`,
               [job.id],
             )
@@ -636,6 +636,8 @@ export class Notifications {
           if (
             !allowed ||
             (job.kind === "energy-reminder" && !(await this.hub.energy.experience.reminderCurrent(job))) ||
+            (job.kind === "energy-insight" && !(await this.hub.energy.experience.insights.current(job))) ||
+            (job.kind === "outage-notice" && !(await this.hub.energy.experience.outageWatch.current(job))) ||
             abort.signal.aborted ||
             this.stopping ||
             this.hub.stopping

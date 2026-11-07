@@ -9,6 +9,7 @@ function runEnergyWorker(input, signal) {
     }
     const worker = new Worker(new URL("./energy-worker.mjs", import.meta.url), {
       workerData: input,
+      ...(input.action === "publication" ? { resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 32, stackSizeMb: 4 } } : {}),
     });
     let settled = false;
     const finish = (error, plan) => {
@@ -47,7 +48,7 @@ export function calculateEnergyOutcomes(input, signal) {
   return runEnergyWorker({ kind: "outcomes", input }, signal);
 }
 
-/** @param {'outage'|'load'} action @param {object} input @param {AbortSignal} [signal] @returns {Promise<object>} */
+/** @param {'outage'|'load'|'schedule'|'away'|'normal-demand'|'insights'|'publication'} action @param {object} input @param {AbortSignal} [signal] @returns {Promise<object>} */
 export function calculateEnergyTool(action, input, signal) {
   return runEnergyWorker({ kind: "experience", action, input }, signal);
 }

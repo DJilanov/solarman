@@ -723,12 +723,17 @@ export class EnergyPlanning {
           ],
         );
       }
+      const occupancy = await this.experience.away.context(runtime, settings.profile);
       const model = learnEnergyDemand(
         rows,
         settings.profile,
         now,
         forecast.payload.slots,
+        occupancy.history,
+        occupancy.normalModel,
       );
+      model.awayRevision = occupancy.revision;
+      model.awayPeriods = occupancy.future;
       if (!model.ready) throw new Error("demand-history-missing");
       const windows = energyNightWindows(settings.profile, now),
         to = windows[1]?.start;
@@ -739,6 +744,7 @@ export class EnergyPlanning {
         forecast.payload.slots,
         now,
         to,
+        occupancy.future,
       );
       const prediction = await calculateEnergyPlan(
         {
@@ -762,7 +768,7 @@ export class EnergyPlanning {
           at: new Date(latest.observed_at).toISOString(),
         };
       const saved = await this.pool.query(
-        "INSERT INTO energy_plans(id,tenant_id,account_id,device,binding,forecast_id,settings_revision,profile_hash,profile,demand,reading,prediction,state,starts_at,ends_at) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'recommended',$13,$14 FROM energy_settings s JOIN tenants t ON t.id=s.tenant_id JOIN solarman_accounts a ON a.tenant_id=t.id WHERE s.tenant_id=$2 AND s.revision=$7 AND t.lifecycle='active' AND a.id=$3 AND a.device_sn=$4 RETURNING *",
+        "INSERT INTO energy_plans(id,tenant_id,account_id,device,binding,forecast_id,settings_revision,profile_hash,profile,demand,reading,prediction,state,starts_at,ends_at) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'recommended',$13,$14 FROM energy_settings s JOIN tenants t ON t.id=s.tenant_id JOIN solarman_accounts a ON a.tenant_id=t.id WHERE s.tenant_id=$2 AND s.revision=$7 AND t.lifecycle='active' AND a.id=$3 AND a.device_sn=$4 AND COALESCE((SELECT away_revision::text FROM energy_experience_settings WHERE tenant_id=$2),'0')=$15 RETURNING *",
         [
           id,
           tenantId,
@@ -778,11 +784,12 @@ export class EnergyPlanning {
           prediction,
           new Date(prediction.night.start + (settings.profile.planning.nightBufferMinutes ?? 0) * 60000),
           new Date(prediction.night.releaseAt),
+          occupancy.revision,
         ],
       );
       await this.pool.query(
-        "UPDATE energy_settings SET last_code='ready' WHERE tenant_id=$1 AND revision=$2",
-        [tenantId, settings.revision],
+        "UPDATE energy_settings SET last_code=$3,attempted_at=CASE WHEN $3='ready' THEN attempted_at ELSE null END WHERE tenant_id=$1 AND revision=$2",
+        [tenantId, settings.revision, saved.rowCount ? "ready" : "calculation-unavailable"],
       );
       return saved.rows[0] ?? null;
     } catch (error) {
@@ -862,7 +869,7 @@ export class EnergyPlanning {
     await expireDueNightTrial(this.pool, preparation.tenant_id);
     const row = (
       await this.pool.query(
-        "SELECT p.*,s.revision AS current_revision,s.profile AS current_profile,s.approval_binding,s.approved_by AS policy_owner,f.expires_at,t.lifecycle FROM energy_plans p JOIN energy_settings s ON s.tenant_id=p.tenant_id JOIN energy_forecasts f ON f.tenant_id=p.tenant_id AND f.id=p.forecast_id JOIN tenants t ON t.id=p.tenant_id WHERE p.tenant_id=$1 AND p.id=$2",
+        "SELECT p.*,s.revision AS current_revision,s.profile AS current_profile,s.approval_binding,s.approved_by AS policy_owner,f.expires_at,t.lifecycle,COALESCE(x.away_revision::text,'0') AS away_revision FROM energy_plans p JOIN energy_settings s ON s.tenant_id=p.tenant_id JOIN energy_forecasts f ON f.tenant_id=p.tenant_id AND f.id=p.forecast_id JOIN tenants t ON t.id=p.tenant_id LEFT JOIN energy_experience_settings x ON x.tenant_id=p.tenant_id WHERE p.tenant_id=$1 AND p.id=$2",
         [preparation.tenant_id, preparation.energy_plan_id],
       )
     ).rows[0];
@@ -876,6 +883,7 @@ export class EnergyPlanning {
       row.approval_binding !== row.binding ||
       String(row.settings_revision) !== String(row.current_revision) ||
       row.profile_hash !== energyProfileHash(row.current_profile) ||
+      String(row.demand.awayRevision ?? "0") !== row.away_revision ||
       row.prediction.targetSoc !== preparation.target_soc ||
       new Date(row.expires_at).getTime() <= Date.now() ||
       new Date(row.ends_at).getTime() <= Date.now() ||
@@ -1204,13 +1212,14 @@ export class EnergyPlanning {
               recommendation.ends_at,
             );
             await client.query(
-              "UPDATE energy_plans SET state='scheduled',approved_by=$3,approved_snapshot=jsonb_build_object('profile',profile,'demand',demand,'reading',reading,'forecastId',forecast_id,'prediction',prediction),code=null WHERE tenant_id=$1 AND id=$2 AND EXISTS(SELECT 1 FROM energy_settings s WHERE s.tenant_id=$1 AND s.automatic AND s.revision=$4 AND s.approval_binding=$5)",
+              "UPDATE energy_plans SET state='scheduled',approved_by=$3,approved_snapshot=jsonb_build_object('profile',profile,'demand',demand,'reading',reading,'forecastId',forecast_id,'prediction',prediction),code=null WHERE tenant_id=$1 AND id=$2 AND state='recommended' AND COALESCE((SELECT away_revision::text FROM energy_experience_settings WHERE tenant_id=$1),'0')=$6 AND EXISTS(SELECT 1 FROM energy_settings s WHERE s.tenant_id=$1 AND s.automatic AND s.revision=$4 AND s.approval_binding=$5)",
               [
                 settings.tenant_id,
                 recommendation.id,
                 settings.approved_by,
                 settings.revision,
                 settings.approval_binding,
+                String(recommendation.demand.awayRevision ?? "0"),
               ],
             );
             await client.query("COMMIT");

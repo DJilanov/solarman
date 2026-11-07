@@ -127,7 +127,7 @@ export function browserNotification(job) {
       : job.kind === "resolved"
         ? bg ? "Сигналът е затворен. Отворете таблото за подробности." : "This alert is closed. Open the dashboard for details."
         : bg ? "Отворете таблото за подробности за събитието." : "Open the dashboard for event details.",
-    url: ["energy-briefing", "energy-reminder"].includes(job.kind)
+    url: ["energy-briefing", "energy-reminder", "energy-insight", "outage-notice"].includes(job.kind)
       ? "/controls/energy-tools" : job.kind === "test" ? "/settings/notifications" : "/settings/health",
     language: job.channel.language,
     reference: job.id,

@@ -27,7 +27,8 @@ test("public landing explains the product, offers a real demo contact and previe
   await expect(
     page.getByRole("link", { name: "Request a demo", exact: true }).first(),
   ).toHaveAttribute("href", /^mailto:sales@jilanov\.com\?subject=/);
-  await page.getByRole("link", { name: "See the phone app", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Try the interactive demo", exact: true }).first()).toHaveAttribute("href", "/demo/");
+  await page.locator("header").getByRole("link", { name: "On your phone", exact: true }).click();
   await expect(page).toHaveURL(/#phone-app$/);
   const installation = page.locator(".landing-install");
   await expect(installation).toContainText("Add to Home Screen");

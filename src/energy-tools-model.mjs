@@ -99,8 +99,8 @@ export function validateLoadTask(body, now = Date.now()) {
   return { name: body.name.trim(), powerKw, durationMinutes, earliest, deadline, reminderEnabled: body.reminderEnabled };
 }
 
-/** @param {object} profile @param {object[]} solar @param {object[]} rows @param {object} task @returns {object} */
-export function planLoadTask(profile, solar, rows, task) {
+/** @param {object} profile @param {object[]} solar @param {object[]} rows @param {object} task @param {object[]} [reservations] @returns {object} */
+export function planLoadTask(profile, solar, rows, task, reservations = []) {
   const measured = energyMeasuredBuckets(rows).filter(b => b.coverage >= 0.9);
   const baseKw = energyQuantile(measured.map(b => b.loadKwh * 4), 0.65);
   if (baseKw === null) throw new Error("More household readings are required before scheduling an appliance");
@@ -119,16 +119,49 @@ export function planLoadTask(profile, solar, rows, task) {
       const slot = solar.find(s => s.start <= interval.start && s.end >= interval.end);
       if (!slot) { covered = false; break; }
       const batteryPlan = baseline.timeline.find(s => s.start <= interval.start && s.end >= interval.end);
-      const surplus = batteryPlan?.surplusKw ?? 0, solarKw = Math.min(task.powerKw, surplus);
-      solarKwh += solarKw * interval.hours;
-      const tariff = energyTariff(profile, interval.start);
-      cost += ((task.powerKw - solarKw) * tariff.buy + solarKw * tariff.export) * interval.hours;
+      const cuts = [...new Set([interval.start, interval.end, ...reservations.flatMap(r => [r.start, r.end])
+        .filter(at => at > interval.start && at < interval.end)])].sort((a, b) => a - b);
+      for (let i = 1; i < cuts.length; i++) {
+        const from = cuts[i - 1], to = cuts[i], hours = (to - from) / 3600000;
+        const reservedKw = reservations.filter(r => r.start < to && r.end > from).reduce((sum, r) => sum + r.powerKw, 0);
+        const surplus = Math.max(0, (batteryPlan?.surplusKw ?? 0) - reservedKw);
+        const solarKw = Math.min(task.powerKw, surplus), tariff = energyTariff(profile, from);
+        solarKwh += solarKw * hours;
+        cost += ((task.powerKw - solarKw) * tariff.buy + solarKw * tariff.export) * hours;
+      }
     }
     if (covered && (!best || cost < best.estimatedCost - 1e-9 || (Math.abs(cost - best.estimatedCost) <= 1e-9 && solarKwh > best.solarKwh)))
       best = { suggestedAt: new Date(start).toISOString(), finishesAt: new Date(start + task.durationMinutes * 60000).toISOString(), estimatedCost: cost, solarKwh };
   }
   if (!best) throw new Error("Refresh the solar forecast to cover the appliance window");
-  return { ...best, energyKwh: task.powerKw * task.durationMinutes / 60, householdBaselineKw: baseKw, batteryPriority: true, estimated: true, switchesAppliance: false };
+  return { ...best, energyKwh: task.powerKw * task.durationMinutes / 60, householdBaselineKw: baseKw,
+    coordinatedWith: reservations.length, batteryPriority: true, estimated: true, switchesAppliance: false };
+}
+
+/** @param {object} profile @param {object[]} solar @param {object[]} rows @param {object[]} tasks @param {number} [now] @returns {object} */
+export function planApplianceSchedule(profile, solar, rows, tasks, now = Date.now()) {
+  if (tasks.length > 20) throw new Error("Plan up to twenty appliances at a time");
+  const reservations = [], scheduled = [];
+  const ordered = [...tasks].sort((a, b) => a.deadline - b.deadline || String(a.id).localeCompare(String(b.id)));
+  for (const task of ordered) {
+    const previousStart = Date.parse(task.suggestedAt ?? ""), previousEnd = previousStart + task.durationMinutes * 60000;
+    if (Number.isFinite(previousStart) && (previousStart <= now || task.remindedAt)) {
+      if (previousEnd > now) reservations.push({ start: previousStart, end: previousEnd, powerKw: task.powerKw });
+      scheduled.push({ id: task.id, fixed: true, code: previousEnd <= now ? "elapsed" : "already-suggested", recommendation: task.recommendation });
+    }
+  }
+  for (const task of ordered) {
+    if (scheduled.some(item => item.id === task.id)) continue;
+    const earliest = Math.max(task.earliest, Math.ceil(now / 900000) * 900000);
+    if (earliest + task.durationMinutes * 60000 > task.deadline) {
+      scheduled.push({ id: task.id, fixed: false, code: "window-missed", recommendation: null });
+      continue;
+    }
+    const recommendation = planLoadTask(profile, solar, rows, { ...task, earliest }, reservations);
+    reservations.push({ start: Date.parse(recommendation.suggestedAt), end: Date.parse(recommendation.finishesAt), powerKw: task.powerKw });
+    scheduled.push({ id: task.id, fixed: false, code: "ready", recommendation });
+  }
+  return { tasks: scheduled, generatedAt: new Date(now).toISOString(), coordinated: true, switchesAppliances: false };
 }
 
 /** @param {object} profile @param {object[]} rows @param {object[]} plans @param {number} now @returns {object} */

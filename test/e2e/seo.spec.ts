@@ -128,7 +128,7 @@ test("crawling endpoints expose only canonical public URLs and private pages sta
   const locations = [
     ...(await sitemap.text()).matchAll(/<loc>(.*?)<\/loc>/g),
   ].map((match) => match[1]);
-  expect(locations).toEqual(["/", "/bg/", "/pricing/", "/bg/pricing/", "/privacy/", "/bg/privacy/", "/terms/", "/bg/terms/"].map((path) => origin + path));
+  expect(locations).toEqual(["/", "/bg/", "/demo/", "/bg/demo/", "/pricing/", "/bg/pricing/", "/privacy/", "/bg/privacy/", "/terms/", "/bg/terms/"].map((path) => origin + path));
   for (const path of [
     "/login",
     "/dashboard",

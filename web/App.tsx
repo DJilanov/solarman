@@ -70,6 +70,7 @@ const AccountSecurityPage = lazy(() => import("./account-security"));
 const WorkspaceDataPage = lazy(() => import("./workspace-data"));
 const RecoverAccountPage = lazy(() => import("./account-recovery"));
 const LandingPage = lazy(() => import("./landing"));
+const DemoPage = lazy(() => import("./demo"));
 const PublicInformationPage = lazy(() => import("./public-information"));
 const CustomerSetupPage = lazy(() => import("./customer-setup"));
 interface PasskeyLoginChallenge {
@@ -895,6 +896,7 @@ export default function App(): ReactNode {
   };
   const [error, setError] = useState<string | null>(null);
   const location = useLocation();
+  const publicDemo = publicRoute(location.pathname)?.kind === "demo";
   useEffect(() => {
     const language = publicLanguage(location.pathname);
     if (language && i18n.resolvedLanguage !== language)
@@ -905,6 +907,7 @@ export default function App(): ReactNode {
     i18n.language,
   ]);
   useEffect(() => {
+    if (publicDemo) { setSessionCheck("checking"); return; }
     let active = true;
     const abort = new AbortController();
     const version = authenticationVersion.current;
@@ -919,7 +922,7 @@ export default function App(): ReactNode {
       .catch((cause: unknown) => {
         if (!active || version !== authenticationVersion.current) return;
         if (cause instanceof ApiError && cause.status === 401) {
-          setSessionCheck("complete");
+          identify(null);
           return;
         }
         setError(cause instanceof Error ? cause.message : "Unable to connect");
@@ -935,7 +938,7 @@ export default function App(): ReactNode {
       abort.abort();
       window.removeEventListener("solarman-session-expired", expired);
     };
-  }, [sessionCheckAttempt]);
+  }, [sessionCheckAttempt, publicDemo]);
   if (
     location.pathname === "/" &&
     typeof window !== "undefined" &&
@@ -953,7 +956,7 @@ export default function App(): ReactNode {
           </main>
         }
       >
-        {websitePage.kind === "home" ? <LandingPage signedIn={Boolean(session)} /> : <PublicInformationPage kind={websitePage.kind} language={websitePage.language} signedIn={Boolean(session)} />}
+        {websitePage.kind === "home" ? <LandingPage signedIn={Boolean(session)} /> : websitePage.kind === "demo" ? <DemoPage language={websitePage.language} signedIn={Boolean(session)} /> : <PublicInformationPage kind={websitePage.kind} language={websitePage.language} signedIn={Boolean(session)} />}
       </Suspense>
     );
   if (location.pathname === "/activate")

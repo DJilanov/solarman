@@ -3,8 +3,12 @@ import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import { historyEvidence } from "./command-history.mjs";
 
 const EXPORT_SECTIONS = {
-  energyExperience: "SELECT revision::text,briefings_enabled,morning_minute,evening_minute,updated_at FROM energy_experience_settings WHERE tenant_id=$1",
-  energyLoadTasks: "SELECT id,account_id,device,revision::text,name,power_kw,duration_minutes,earliest_at,deadline_at,suggested_at,recommendation,reminder_enabled,reminded_at,state,created_at,updated_at FROM energy_load_tasks WHERE tenant_id=$1 ORDER BY created_at,id",
+  awayPeriods: "SELECT id,account_id,device,starts_at,returns_at,baseline_w,normal_model,state,cancelled_at,created_at,updated_at FROM energy_away_periods WHERE tenant_id=$1 ORDER BY starts_at,id",
+  energyInsights: "SELECT id,account_id,device,kind,evidence,first_seen_at,last_seen_at,resolved_at,resolution_reason,seen_at,snoozed_until,notified_at FROM energy_insights WHERE tenant_id=$1 ORDER BY first_seen_at,id",
+  outageWatches: "SELECT id,account_id,device,provider,reference_kind,reference_hint,enabled,quarantined,revision::text,checked_at,attempted_at,last_code,created_at,updated_at FROM energy_outage_watches WHERE tenant_id=$1",
+  outageNotices: "SELECT id,watch_id,source_key,starts_at,ends_at,detail,scope,source_url,fetched_at,withdrawn_at,seen_at,notified_at FROM energy_outage_notices WHERE tenant_id=$1 ORDER BY starts_at,id",
+  energyExperience: "SELECT revision::text,briefings_enabled,morning_minute,evening_minute,insights_enabled,auto_replan,load_revision::text,away_revision::text,last_replan_at,replan_code,replan_forecast_at,insights_checked_at,insights_assessment,updated_at FROM energy_experience_settings WHERE tenant_id=$1",
+  energyLoadTasks: "SELECT id,account_id,device,revision::text,name,power_kw,duration_minutes,earliest_at,deadline_at,suggested_at,recommendation,schedule_code,reminder_enabled,reminded_at,state,created_at,updated_at FROM energy_load_tasks WHERE tenant_id=$1 ORDER BY created_at,id",
   energyBriefings: "SELECT day,kind,payload,created_at FROM energy_briefing_receipts WHERE tenant_id=$1 ORDER BY day,kind",
   energySettings:
     "SELECT revision::text,profile,automatic,approval_binding,approved_by,updated_at,attempted_at,last_code FROM energy_settings WHERE tenant_id=$1",

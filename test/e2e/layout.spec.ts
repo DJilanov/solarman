@@ -107,6 +107,7 @@ async function prepareLayout(page: Page): Promise<void> {
     preparation: null,
   };
   const tools: EnergyToolsData = {
+    away: { revision: "0", periods: [], canChange: true },
     ready: true,
     energyRevision: "1",
     forecastFresh: true,

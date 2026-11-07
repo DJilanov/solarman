@@ -1,17 +1,36 @@
 import { useState, type ReactNode, type FormEvent } from "react";
-import { Link } from "react-router-dom";
-import { request } from "./api";
+import { Link, useSearchParams } from "react-router-dom";
+import { request, useData } from "./api";
 import { useWorkspace } from "./context";
 import { tr } from "./i18n";
 import { formatNumber, when } from "./format";
-import { Notice } from "./components";
+import { Notice, Loading } from "./components";
 import { localDateTimeInput, localDateTimeInstant } from "./local-date-time";
-import type { OutageEstimate } from "./energy-tools-types";
+import type { OutageEstimate, OutageNotice } from "./energy-tools-types";
 
 export function OutageCalculator({ onTarget }: { onTarget: (target: number) => void }): ReactNode {
+  const [search] = useSearchParams(), notice = search.get("notice");
+  return notice ? <NoticeCalculator key={notice} id={notice} onTarget={onTarget} /> : <CalculatorForm onTarget={onTarget} />;
+}
+
+function NoticeCalculator({ id, onTarget }: { id: string; onTarget: (target: number) => void }): ReactNode {
+  const { data, loading, error } = useData<OutageNotice>(`/energy/tools/outage-notices/${encodeURIComponent(id)}`, 60000);
+  const [confirmed, setConfirmed] = useState(false), { session } = useWorkspace();
+  if (!data) return loading ? <Loading /> : <Notice tone="danger">{tr(error ?? "Outage notice is unavailable")} <Link to="/controls/energy-tools">{tr("Review published power cuts")}</Link></Notice>;
+  return <div className="energy-notice-review">
+    <strong>{tr("Review this published notice")}</strong><p>{data.detail}</p><p>{when(data.startsAt, session.tenant.timezone)} → {when(data.endsAt, session.tenant.timezone)}</p>
+    <a className="text-link" href={data.sourceUrl} target="_blank" rel="noreferrer">{tr("Confirm your property in the official portal")}</a>
+    <p className="fine-print">{tr(data.scope === "area" ? "Only part of this area may be affected. Confirm your property in the official portal before preparing." : "Confirm this notice and its times with the provider before preparing.")}</p>
+    {error && <Notice tone="danger">{tr(error)}</Notice>}
+    <label className="check-label"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />{tr("I confirmed that this notice applies to my property")}</label>
+    {confirmed && !error && <CalculatorForm key={`${data.startsAt}:${data.endsAt}`} onTarget={onTarget} notice={data} />}
+  </div>;
+}
+
+function CalculatorForm({ onTarget, notice }: { onTarget: (target: number) => void; notice?: OutageNotice }): ReactNode {
   const { session } = useWorkspace(), timezone = session.tenant.timezone;
-  const [start, setStart] = useState(() => localDateTimeInput(Date.now() + 4 * 3600000, timezone));
-  const [hours, setHours] = useState("10"), [mode, setMode] = useState<"household" | "essential">("household");
+  const [start, setStart] = useState(() => localDateTimeInput(notice ? Math.max(Date.now(), Date.parse(notice.startsAt)) : Date.now() + 4 * 3600000, timezone));
+  const [hours, setHours] = useState(() => notice ? String(Math.max(0.25, Math.round((Date.parse(notice.endsAt) - Math.max(Date.now(), Date.parse(notice.startsAt))) / 3600000 * 100) / 100)) : "10"), [mode, setMode] = useState<"household" | "essential">("household");
   const [essential, setEssential] = useState("500"), [result, setResult] = useState<OutageEstimate | null>(null);
   const [pending, setPending] = useState(false), [error, setError] = useState<string | null>(null);
   const calculate = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
@@ -23,12 +42,12 @@ export function OutageCalculator({ onTarget }: { onTarget: (target: number) => v
     } catch (cause: unknown) { setError(cause instanceof Error ? cause.message : "Unable to calculate an outage plan"); }
     finally { setPending(false); }
   };
-  return <details className="energy-outage-calculator">
+  return <details className="energy-outage-calculator" open={notice ? true : undefined}>
     <summary>{tr("Plan an outage by hours")}</summary>
     <p className="fine-print">{tr("Enter the expected power cut and choose the loads you want to support.")} {timezone}</p>
     <form onSubmit={event => { void calculate(event); }} className="energy-tools-form">
       <label>{tr("Outage starts")}<input type="datetime-local" required value={start} onChange={event => { setStart(event.target.value); setResult(null); }} /></label>
-      <label>{tr("Outage duration · hours")}<input type="number" min="0.25" max="72" step="0.25" required value={hours} onChange={event => { setHours(event.target.value); setResult(null); }} /></label>
+      <label>{tr("Outage duration · hours")}<input type="number" min="0.25" max="72" step="0.01" required value={hours} onChange={event => { setHours(event.target.value); setResult(null); }} /></label>
       <label>{tr("Loads to support")}<select value={mode} onChange={event => { setMode(event.target.value as typeof mode); setResult(null); }}>
         <option value="household">{tr("Normal household use")}</option><option value="essential">{tr("Essential loads only")}</option>
       </select></label>

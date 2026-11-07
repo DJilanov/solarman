@@ -1,6 +1,7 @@
 import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import { invalidateCommissioning } from "./commissioning-state.mjs";
 import { quarantineOutage } from "./outage-lifecycle.mjs";
+import { quarantineEnergyAssistantExpansion } from "./energy-experience-lifecycle.mjs";
 
 export const SUSPENDED_MESSAGE =
   "This workspace is suspended. New automation and administration are unavailable.";
@@ -23,6 +24,7 @@ export async function quarantineWorkspace(
   enabled,
   reason = "workspace_changed",
 ) {
+  await quarantineEnergyAssistantExpansion(client, tenantId);
   await quarantineOutage(client, tenantId, reason);
   await invalidateCommissioning(client, tenantId, reason);
   await client.query(

@@ -1,5 +1,5 @@
 import { hasEnergyStorage } from "./energy-lifecycle.mjs";
-import { hasEnergyExperience } from "./energy-experience-lifecycle.mjs";
+import { hasEnergyExperience, hasEnergyAssistantExpansion } from "./energy-experience-lifecycle.mjs";
 import { AccountSecurity, SecurityError } from "./account-security.mjs";
 import {
   quarantineWorkspace,
@@ -17,6 +17,10 @@ import { hasOutageStorage, outageCleanupPending } from "./outage-lifecycle.mjs";
 
 const LIMIT = 500;
 const ERASE = {
+  assistantNotices: `DELETE FROM energy_outage_notices WHERE id IN(SELECT id FROM energy_outage_notices WHERE tenant_id=$1 LIMIT ${LIMIT})`,
+  assistantWatches: "DELETE FROM energy_outage_watches WHERE tenant_id=$1 AND NOT EXISTS(SELECT 1 FROM energy_outage_notices WHERE tenant_id=$1)",
+  assistantInsights: `DELETE FROM energy_insights WHERE id IN(SELECT id FROM energy_insights WHERE tenant_id=$1 LIMIT ${LIMIT})`,
+  assistantAway: `DELETE FROM energy_away_periods WHERE id IN(SELECT id FROM energy_away_periods WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   experienceTasks: `DELETE FROM energy_load_tasks WHERE id IN(SELECT id FROM energy_load_tasks WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   experienceBriefings: `DELETE FROM energy_briefing_receipts WHERE (tenant_id,day,kind) IN(SELECT tenant_id,day,kind FROM energy_briefing_receipts WHERE tenant_id=$1 LIMIT ${LIMIT})`,
   experienceSettings: "DELETE FROM energy_experience_settings WHERE tenant_id=$1",
@@ -737,6 +741,8 @@ export class WorkspaceOffboarding {
         "UPDATE notification_channels SET secret=null WHERE tenant_id=$1",
         [tenantId],
       );
+      if (await hasEnergyAssistantExpansion(client))
+        await client.query("UPDATE energy_outage_watches SET secret=null,enabled=false,quarantined=true WHERE tenant_id=$1", [tenantId]);
       await client.query(
         "UPDATE workspace_offboarding SET erasure_started_at=COALESCE(erasure_started_at,clock_timestamp()),last_failed_at=null WHERE tenant_id=$1",
         [tenantId],
@@ -747,7 +753,9 @@ export class WorkspaceOffboarding {
       const outageStorage = await hasOutageStorage(client);
       const energyStorage = await hasEnergyStorage(client);
       const experienceStorage = await hasEnergyExperience(client);
+      const assistantStorage = await hasEnergyAssistantExpansion(client);
       for (const [section, sql] of Object.entries(ERASE)) {
+        if (!assistantStorage && section.startsWith("assistant")) continue;
         if (!experienceStorage && section.startsWith("experience")) continue;
         if (!energyStorage && section.startsWith("energy")) continue;
         if (!outageStorage && section.startsWith("outage")) continue;
@@ -796,7 +804,8 @@ export class WorkspaceOffboarding {
             [tenantId],
           )
         ).rows[0].remains;
-        if (!pending) {
+        const assistantRemains = assistantStorage && (await client.query("SELECT EXISTS(SELECT 1 FROM energy_away_periods WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM energy_insights WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM energy_outage_watches WHERE tenant_id=$1) OR EXISTS(SELECT 1 FROM energy_outage_notices WHERE tenant_id=$1) AS remains", [tenantId])).rows[0].remains;
+        if (!pending && !assistantRemains) {
           await client.query(
             "DELETE FROM workspace_retention WHERE tenant_id=$1",
             [tenantId],

@@ -81,7 +81,7 @@ try {
   const pages = publicPages();
   for (const page of pages) {
     const entry =
-      page.kind === "home" ? "landing.tsx" : "public-information.tsx";
+      page.kind === "home" ? "landing.tsx" : page.kind === "demo" ? "demo.tsx" : "public-information.tsx";
     const chunk = manifest[entry];
     if (!chunk)
       throw new Error(

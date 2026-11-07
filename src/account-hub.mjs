@@ -12,6 +12,8 @@ import { Commissioning } from "./commissioning.mjs";
 import { Notifications } from "./notifications.mjs";
 import { invalidateCommissioning } from "./commissioning-state.mjs";
 import { SecurityError } from "./account-security.mjs";
+import { quarantineEnergyAssistantExpansion } from "./energy-experience-lifecycle.mjs";
+import { verifyStoredOutageReferences } from "./energy-outage-watch.mjs";
 
 export class AccountHub {
   constructor(pool, env, key) {
@@ -102,6 +104,7 @@ export class AccountHub {
   }
 
   async initialize() {
+    await verifyStoredOutageReferences(this.pool, this.key);
     this.lock = await this.pool.connect();
     const result = await this.lock.query(
       "SELECT pg_try_advisory_lock(193401,2) AS acquired",
@@ -315,6 +318,14 @@ export class AccountHub {
     runtime.inhibitStarts = true;
     runtime.enableEpoch++;
     await runtime.journal.requestCleanup({ pause: true, cancelStarts: true });
+    const assistant = await this.pool.connect();
+    try {
+      await assistant.query("BEGIN");
+      await assistant.query("SELECT id FROM tenants WHERE id=$1 FOR UPDATE", [runtime.tenantId]);
+      await quarantineEnergyAssistantExpansion(assistant, runtime.tenantId);
+      await assistant.query("COMMIT");
+    } catch (error) { await assistant.query("ROLLBACK"); throw error; }
+    finally { assistant.release(); }
     await invalidateCommissioning(
       this.pool,
       runtime.tenantId,

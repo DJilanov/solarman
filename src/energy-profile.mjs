@@ -9,6 +9,11 @@ export const BULGARIAN_NIGHT_WINDOWS = Object.freeze([
   { months: [4, 5, 6, 7, 8, 9, 10], startMinute: 23 * 60, endMinute: 7 * 60 },
 ]);
 
+/** @param {string|null} accountId @param {string|null} device @param {object} profile @returns {string} */
+export function energyInstallationBinding(accountId, device, profile) {
+  return createHash("sha256").update(JSON.stringify({ account: accountId, device, profile: energyProfileHash(profile) })).digest("hex");
+}
+
 /** @param {unknown} value @returns {value is Record<string,unknown>} */
 function record(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));

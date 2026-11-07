@@ -1,4 +1,5 @@
 import { test, expect, type Page, type BrowserContext } from "@playwright/test";
+import serviceIdentity from "../../src/service-identity.json" with { type: "json" };
 
 async function administrator(page: Page): Promise<void> {
   const email = process.env.E2E_EMAIL,
@@ -196,7 +197,7 @@ test("a customer accepts versioned terms, starts the guided setup and enrolls a 
     });
     expect(archive.status()).toBe(200);
     expect(await archive.text()).toContain(
-      '"service_terms_version":"2026-11-02"',
+      `"service_terms_version":"${serviceIdentity.policyVersion}"`,
     );
     await customer
       .getByRole("link", { name: "Open account security", exact: true })

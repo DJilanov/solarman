@@ -28,6 +28,8 @@ import { EnergySettings } from "./energy-settings";
 import { ChargeTarget } from "./charge-target";
 
 const reasons: Record<string, string> = {
+  "away-mode": "The household demand forecast includes your Away dates and essential-load estimate.",
+  "saved-normal-estimate": "Saved normal-use estimates fill the gaps after a long absence. Fresh household readings will refine them.",
   "night-not-cheaper":
     "The night tariff is not cheaper. Extra grid charging is not recommended.",
   "no-economic-topup":
@@ -62,6 +64,7 @@ const states: Record<string, string> = {
   quarantined: "Plan requires review",
 };
 const codes: Record<string, string> = {
+  "occupancy-changed": "Away dates changed. Automatic planning will calculate a fresh plan.",
   "waiting-connection":
     "SOLARMAN is temporarily unreachable. The saved night plan will retry automatically.",
   "waiting-clock":

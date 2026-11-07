@@ -13,7 +13,7 @@ async function signIn(page: Page): Promise<void> {
 }
 
 function fixture(): EnergyToolsData {
-  return { ready: true, energyRevision: "1", forecastFresh: true,
+  return { ready: true, energyRevision: "1", forecastFresh: true, away: { revision: "0", periods: [], canChange: true },
     preferences: { revision: "0", briefingsEnabled: false, morningMinute: 435, eveningMinute: 1140 },
     tasks: [], briefings: [], nextBriefing: null,
     learning: { forecastDays: 2, forecastStage: "learning", meanAbsoluteErrorKwh: 0.7, forecastBiasKwh: -0.4,
@@ -55,8 +55,8 @@ test("energy assistant preserves briefing drafts across language changes and exp
   await page.locator(".language-switch select").selectOption("bg");
   await expect(page.getByLabel("Сутрешен отчет", { exact: true })).toHaveValue("08:10");
   await page.getByLabel("Текуща парола за таблото", { exact: true }).fill("energy-browser-fixture");
-  await page.getByRole("button", { name: "Запиши настройките на известията", exact: true }).click();
-  await expect(page.getByText("Енергийните известия са обновени", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Запиши енергийните настройки", exact: true }).click();
+  await expect(page.getByText("Енергийните настройки са обновени", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Текуща парола за таблото", { exact: true })).toHaveValue("");
   expect(mutations).toHaveLength(1);
   for (const width of [320, 390, 1440]) {
@@ -143,11 +143,133 @@ test("an unconfirmed energy preference change requires reading saved state befor
   await page.route("**/api/energy/tools/preferences", async route => { mutations++; await route.abort("failed"); });
   await page.goto("/controls/energy-tools");
   await page.getByLabel("Current dashboard password", { exact: true }).fill("energy-browser-fixture");
-  await page.getByRole("button", { name: "Save briefing preferences", exact: true }).click();
+  await page.getByRole("button", { name: "Save energy preferences", exact: true }).click();
   await expect(page.getByText("The change is unconfirmed. Refresh the saved state before trying again.", { exact: true })).toBeVisible();
   await page.getByLabel("Current dashboard password", { exact: true }).fill("energy-browser-fixture");
-  await expect(page.getByRole("button", { name: "Save briefing preferences", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Save energy preferences", exact: true })).toBeDisabled();
   expect(mutations).toBe(1);
   await page.getByRole("button", { name: "Refresh saved state", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Save briefing preferences", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Save energy preferences", exact: true })).toBeEnabled();
+});
+
+test("Away planning previews actual dates, keeps the reviewed revisions and confirms a private save on mobile", async ({ page }) => {
+  await signIn(page);
+  const data = fixture(), changes: Record<string, unknown>[] = [];
+  await page.route("**/api/energy/tools", route => route.fulfill({ json: data }));
+  const now = Math.ceil((Date.now() + 3600000) / 900000) * 900000;
+  await page.route("**/api/energy/tools/away/preview", async route => {
+    const body = route.request().postDataJSON() as { startsAt: string; returnsAt: string; baselineW: number };
+    expect(body.baselineW).toBe(200);
+    await route.fulfill({ json: { energyRevision: "1", awayRevision: "0", from: body.startsAt, through: body.returnsAt, normalLoadKwh: 24, awayLoadKwh: 4.8,
+      targetBefore: 75, targetAfter: 50, appliesInHorizon: true, reserveSoc: 50, timeline: [{ at: body.startsAt, normalKw: 1, awayKw: 0.2, away: true }], estimated: true, changesInverter: false } });
+  });
+  await page.route("**/api/energy/tools/away", async route => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    changes.push(body);
+    expect(body.revision).toBe("0"); expect(body.energyRevision).toBe("1");
+    expect(route.request().headers()["idempotency-key"]).toBeTruthy();
+    expect(route.request().headers()["x-csrf-token"]).toBeTruthy();
+    expect(body.currentPassword).toBe("private-away-browser-fixture");
+    data.away.periods.push({ id: String(body.id), startsAt: String(body.startsAt), returnsAt: String(body.returnsAt), baselineW: 200, state: "planned", cancelledAt: null, currentBinding: true });
+    data.away.revision = "1";
+    await route.fulfill({ json: { accepted: true } });
+  });
+  await page.setViewportSize({ width: 390, height: 1000 });
+  await page.goto("/controls/energy-tools");
+  const panel = page.locator(".energy-away-panel");
+  await panel.getByRole("button", { name: "Plan Away dates" }).click();
+  await panel.getByLabel("Departure", { exact: true }).fill(localDateTimeInput(now, "Europe/Sofia"));
+  await panel.getByLabel("Return home", { exact: true }).fill(localDateTimeInput(now + 86400000, "Europe/Sofia"));
+  await panel.getByLabel("Essential household demand · W", { exact: true }).fill("200");
+  await panel.getByRole("button", { name: "Preview Away plan", exact: true }).click();
+  await expect(panel.getByRole("heading", { name: "Review Away planning" })).toBeFocused();
+  await expect(panel.locator(".energy-costs")).toContainText("Normal forecast demand");
+  expect(changes).toHaveLength(0);
+  await page.locator(".language-switch select").selectOption("bg");
+  await expect(panel.locator(".energy-costs")).toContainText("С това отсъствие");
+  await panel.getByLabel("Текуща парола за таблото", { exact: true }).fill("private-away-browser-fixture");
+  await page.screenshot({ path: "test-results/away-review-bg-mobile.png", fullPage: true });
+  await panel.getByRole("button", { name: "Потвърди отсъствието", exact: true }).click();
+  await expect(panel.getByText("Отсъствието е записано. Нормалното планиране се възстановява автоматично.", { exact: true })).toBeVisible();
+  expect(changes).toHaveLength(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test("a published area notice requires property confirmation before it prefills the outage calculator", async ({ page }) => {
+  await signIn(page);
+  const data = fixture(), startsAt = new Date(Date.now() + 4 * 3600000).toISOString(), endsAt = new Date(Date.now() + 6 * 3600000).toISOString();
+  const notice = { id: "11111111-1111-4111-8111-111111111111", startsAt, endsAt, detail: "Synthetic published area", scope: "area" as const,
+    sourceUrl: "https://ermzapad.bg/bg/za-klienta/prekusvania/", fetchedAt: new Date().toISOString(), seenAt: null };
+  data.outageWatch = { sourceUrl: notice.sourceUrl, watch: { id: "22222222-2222-4222-8222-222222222222", revision: "1", kind: "area", hint: "Synthetic area", enabled: true, quarantined: false, checkedAt: new Date().toISOString(), attemptedAt: new Date().toISOString(), code: "ready" }, notices: [notice] };
+  data.insights = { enabled: true, checkedAt: new Date().toISOString(), assessment: { at: new Date().toISOString(), consumption: { state: "learning" }, solar: { state: "curtailment-possible" } }, incidents: [] };
+  const outage = await (await page.request.get("/api/outage")).json() as OutageData;
+  Object.assign(outage, { supported: true, needsCommissioning: false, canPrepare: true, canTest: false, minTarget: 50, maxTarget: 100, preparation: null });
+  await page.route("**/api/outage", route => route.fulfill({ json: outage }));
+  await page.route("**/api/energy/tools", route => route.fulfill({ json: data }));
+  await page.route(`**/api/energy/tools/outage-notices/${notice.id}`, route => route.fulfill({ json: notice }));
+  const writes: string[] = [];
+  page.on("request", request => { if (request.method() === "POST" && ["/api/outage/prepare", "/api/commands", "/api/energy/apply"].includes(new URL(request.url()).pathname)) writes.push(request.url()); });
+  await page.route("**/api/energy/tools/outage", async route => {
+    const body = route.request().postDataJSON() as { startsAt: string; hours: number };
+    expect(body.startsAt.slice(0, 16)).toBe(startsAt.slice(0, 16)); expect(body.hours).toBeCloseTo(2, 1);
+    await route.fulfill({ json: { startsAt: body.startsAt, endsAt, mode: "essential", targetSoc: 72, currentSoc: 50, shortfallKwh: 0, currentShortfallKwh: 1,
+      powerShortfallKwh: 0, loadKwh: 2, conservativeSolarKwh: 0, solarCoverage: 0, chargingHours: 2, chargingKwh: 4, readyAt: startsAt, readyBeforeStart: true, feasible: true, powerAssumed: false, estimated: true } satisfies OutageEstimate });
+  });
+  await page.goto("/controls/energy-tools");
+  await page.setViewportSize({ width: 390, height: 1000 });
+  await expect(page.getByText("Learning your usual household use", { exact: true })).toBeVisible();
+  await expect(page.getByText("Solar comparison paused: a full battery may limit production", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Review battery preparation", exact: true }).click();
+  await expect(page.getByText("Synthetic published area", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Outage starts", { exact: true })).toHaveCount(0);
+  await page.getByLabel("I confirmed that this notice applies to my property", { exact: true }).check();
+  await expect(page.getByLabel("Outage starts", { exact: true })).toHaveValue(localDateTimeInput(Date.parse(startsAt), "Europe/Sofia"));
+  await page.getByRole("combobox", { name: "Loads to support", exact: true }).selectOption("essential");
+  await page.getByRole("button", { name: "Calculate outage coverage", exact: true }).click();
+  await page.getByRole("button", { name: "Use this target in the charging controls", exact: true }).click();
+  await expect(page.getByRole("slider", { name: "Battery target", exact: true })).toHaveValue("72");
+  expect(writes).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test("coordinated appliance replan shows revised timing and handles fresh-data failures without losing saved tasks", async ({ page }) => {
+  await signIn(page);
+  const data = fixture(), start = Date.now() + 3600000;
+  data.preferences.loadRevision = "4";
+  data.tasks.push({ id: "11111111-1111-4111-8111-111111111111", revision: "1", name: "Solar washing", powerKw: 1, durationMinutes: 60,
+    earliestAt: new Date(start).toISOString(), deadlineAt: new Date(start + 4 * 3600000).toISOString(), suggestedAt: new Date(start).toISOString(), reminderEnabled: true, remindedAt: null, state: "planned", currentBinding: true,
+    recommendation: { finishesAt: new Date(start + 3600000).toISOString(), estimatedCost: 0.1, solarKwh: 0.5, energyKwh: 1 } });
+  await page.route("**/api/energy/tools", route => route.fulfill({ json: data }));
+  let calls = 0;
+  await page.route("**/api/energy/tools/replan", async route => {
+    calls++; expect(route.request().postDataJSON()).toEqual({ revision: calls === 1 ? "4" : "5" });
+    if (calls > 1) { await route.fulfill({ status: 409, json: { error: "Fresh readings and a solar forecast are required before replanning" } }); return; }
+    data.preferences.loadRevision = "5"; data.tasks[0].revision = "2"; data.tasks[0].suggestedAt = new Date(start + 3600000).toISOString();
+    data.tasks[0].recommendation.finishesAt = new Date(start + 2 * 3600000).toISOString();
+    await route.fulfill({ json: { accepted: true, changed: 1, switchesAppliances: false } });
+  });
+  await page.goto("/controls/energy-tools");
+  await page.getByRole("button", { name: "Replan all future appliances", exact: true }).click();
+  await expect(page.getByText("Appliance schedule recalculated. Started and reminded tasks keep their times.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Replan all future appliances", exact: true }).click();
+  await expect(page.getByText("Fresh readings and a solar forecast are required before replanning", { exact: true })).toBeVisible();
+  await expect(page.getByText("Solar washing", { exact: true })).toBeVisible();
+});
+
+test("a preference draft cannot silently overwrite a newer saved revision", async ({ page }) => {
+  await signIn(page);
+  await page.clock.install();
+  const data = fixture();
+  await page.route("**/api/energy/tools", route => route.fulfill({ json: data }));
+  await page.goto("/controls/energy-tools");
+  await page.getByLabel("Morning briefing", { exact: true }).fill("08:10");
+  await page.getByLabel("Current dashboard password", { exact: true }).fill("private-preferences-fixture");
+  data.preferences.revision = "1"; data.preferences.morningMinute = 500;
+  await page.clock.fastForward(31000);
+  await expect(page.getByText("Preferences changed while you were editing. Reload them before saving.", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Morning briefing", { exact: true })).toHaveValue("08:10");
+  await expect(page.getByRole("button", { name: "Save energy preferences", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Reload preferences", exact: true }).click();
+  await expect(page.getByLabel("Morning briefing", { exact: true })).toHaveValue("08:20");
+  await expect(page.getByLabel("Current dashboard password", { exact: true })).toHaveValue("");
 });

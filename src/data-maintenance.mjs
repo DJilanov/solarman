@@ -1,6 +1,10 @@
 const BATCH = 500;
 
 const PRUNE = {
+  insightAssessment: "UPDATE energy_experience_settings SET insights_assessment=null WHERE tenant_id=$1 AND insights_assessment IS NOT NULL AND insights_checked_at<clock_timestamp()-$2*interval '1 day'",
+  awayPeriods: `DELETE FROM energy_away_periods WHERE id IN(SELECT id FROM energy_away_periods WHERE tenant_id=$1 AND LEAST(returns_at,COALESCE(cancelled_at,returns_at))<clock_timestamp()-$2*interval '1 day' LIMIT ${BATCH})`,
+  energyInsights: `DELETE FROM energy_insights WHERE id IN(SELECT id FROM energy_insights WHERE tenant_id=$1 AND resolved_at<clock_timestamp()-$2*interval '1 day' LIMIT ${BATCH})`,
+  outageNotices: `DELETE FROM energy_outage_notices WHERE id IN(SELECT id FROM energy_outage_notices WHERE tenant_id=$1 AND ends_at<clock_timestamp()-$2*interval '1 day' LIMIT ${BATCH})`,
   energyLoadTasks: `DELETE FROM energy_load_tasks WHERE id IN(SELECT id FROM energy_load_tasks WHERE tenant_id=$1 AND (state<>'planned' OR deadline_at<clock_timestamp()) AND updated_at<clock_timestamp()-$2*interval '1 day' LIMIT ${BATCH})`,
   energyBriefings: `DELETE FROM energy_briefing_receipts WHERE (tenant_id,day,kind) IN(SELECT tenant_id,day,kind FROM energy_briefing_receipts WHERE tenant_id=$1 AND created_at<clock_timestamp()-$2*interval '1 day' LIMIT ${BATCH})`,
   outageWrites: `DELETE FROM outage_write_intents WHERE id IN(SELECT w.id FROM outage_write_intents w JOIN outage_preparations p ON p.tenant_id=w.tenant_id AND p.id=w.preparation_id WHERE w.tenant_id=$1 AND p.state IN('restored','failed') AND p.approved_at IS NULL AND p.ended_at<clock_timestamp()-$2*interval '1 day' AND (w.status='verified' OR w.reconciled_at IS NOT NULL) ORDER BY w.created_at,w.id LIMIT ${BATCH})`,
@@ -134,7 +138,8 @@ export class DataMaintenance {
       id = policy.tenant_id;
       const counts = {};
       for (const [section, sql] of Object.entries(PRUNE)) {
-        const days = ["measurements", "providerReadings"].includes(section)
+        const days = section === "awayPeriods" ? Math.max(policy.measurement_days, policy.activity_days)
+          : ["measurements", "providerReadings"].includes(section)
           ? policy.measurement_days
           : policy.activity_days;
         counts[section] = (await client.query(sql, [id, days])).rowCount;

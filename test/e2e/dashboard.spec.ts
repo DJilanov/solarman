@@ -1,3 +1,4 @@
+import serviceIdentity from "../../src/service-identity.json" with { type: "json" };
 import { energyDashboardFixture } from "./energy.fixture";
 import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
@@ -957,7 +958,7 @@ test("successful account recovery clears a failed startup check and permits sign
     const activated = await context.request.post("/api/auth/activate", {
       headers: { origin: "http://localhost:3000" },
       data: {
-        termsVersion: "2026-11-02",
+        termsVersion: serviceIdentity.policyVersion,
         token: new URLSearchParams(new URL(invitation.url).hash.slice(1)).get(
           "token",
         ),
@@ -1052,7 +1053,7 @@ test("account security renews the current browser and revokes other browsers wit
     const activation = await firstContext.request.post("/api/auth/activate", {
       headers: { origin: "http://localhost:3000" },
       data: {
-        termsVersion: "2026-11-02",
+        termsVersion: serviceIdentity.policyVersion,
         token: new URLSearchParams(
           new URL(invitationData.url).hash.slice(1),
         ).get("token"),
@@ -3687,7 +3688,7 @@ test("workspace suspension and resumption preserve member access and require sep
     const activated = await memberContext.request.post("/api/auth/activate", {
       headers: { origin: "http://localhost:3000" },
       data: {
-        termsVersion: "2026-11-02",
+        termsVersion: serviceIdentity.policyVersion,
         token: new URLSearchParams(new URL(link.url).hash.slice(1)).get(
           "token",
         ),
@@ -3862,7 +3863,7 @@ test("workspace archives download complete data and retention changes remain exp
     const activated = await context.request.post("/api/auth/activate", {
       headers: { origin: "http://localhost:3000" },
       data: {
-        termsVersion: "2026-11-02",
+        termsVersion: serviceIdentity.policyVersion,
         token: new URLSearchParams(new URL(link.url).hash.slice(1)).get(
           "token",
         ),
@@ -4090,7 +4091,7 @@ test("workspace closure uses real cookies, reports a lost response and permits c
     const activation = await context.request.post("/api/auth/activate", {
       headers: { origin: "http://localhost:3000" },
       data: {
-        termsVersion: "2026-11-02",
+        termsVersion: serviceIdentity.policyVersion,
         token: new URLSearchParams(new URL(link.url).hash.slice(1)).get(
           "token",
         ),

@@ -163,6 +163,7 @@ async function main() {
       report.commissioningQuarantined !== true ||
       report.notificationsQuarantined !== true ||
       report.energyExperienceQuarantined !== true ||
+      report.energyAssistantQuarantined !== true ||
       report.notificationAccessAttempts !== 0 ||
       report.recoveryQuarantined !== true ||
       report.schemaUpgradeVerified !== true ||

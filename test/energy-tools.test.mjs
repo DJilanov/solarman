@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { energyProfile } from "./fixtures/energy.mjs";
-import { validateOutageRequest, planOutage, validateLoadTask, planLoadTask, weeklyEnergyReport, energyLearning, hourlySolarLearning } from "../src/energy-tools-model.mjs";
+import { validateOutageRequest, planOutage, validateLoadTask, planLoadTask, planApplianceSchedule, weeklyEnergyReport, energyLearning, hourlySolarLearning } from "../src/energy-tools-model.mjs";
 
 const now = Date.parse("2026-10-30T08:00:00Z");
 function readings(from, to, values = {}) {
@@ -73,6 +73,40 @@ test("appliance planning chooses conservative solar surplus and respects an exac
   assert.equal(planLoadTask(profile, forecasts, rows, narrow).suggestedAt, new Date(now + 60000).toISOString());
   assert.throws(() => planLoadTask(profile, [], rows, input), /forecast/);
   assert.throws(() => validateLoadTask({ ...input, name: "", earliestAt: "invalid" }, now), /Name/);
+});
+
+test("coordinated appliance plans reserve the same solar energy only once", () => {
+  const profile = energyProfile(), rows = readings(now - 86400000, now, { soc: 100 });
+  const forecasts = solar(now, now + 4 * 3600000, 3);
+  const tasks = ["dishwasher", "washer"].map(id => ({ id, name: id, powerKw: 2, durationMinutes: 120,
+    earliest: now, deadline: now + 4 * 3600000 }));
+  const schedule = planApplianceSchedule(profile, forecasts, rows, tasks, now);
+  const [a, b] = schedule.tasks.map(t => t.recommendation);
+  assert.notEqual(a.suggestedAt, b.suggestedAt);
+  assert.equal(a.solarKwh + b.solarKwh, 8);
+  assert.equal(a.estimatedCost + b.estimatedCost, 0);
+  assert.equal(b.coordinatedWith, 1);
+  assert.equal(schedule.switchesAppliances, false);
+});
+
+test("shared appliance reservations respect partial intervals and already-suggested tasks", () => {
+  const profile = energyProfile(), rows = readings(now - 86400000, now, { soc: 100 });
+  const forecasts = solar(now, now + 3600000, 3);
+  const reservation = { start: now, end: now + 7 * 60000, powerKw: 2 };
+  const task = { name: "Load", powerKw: 2, durationMinutes: 15, earliest: now, deadline: now + 15 * 60000 };
+  const partial = planLoadTask(profile, forecasts, rows, task, [reservation]);
+  assert.ok(Math.abs(partial.solarKwh - 2 * 8 / 60) < 1e-8);
+  const schedule = planApplianceSchedule(profile, forecasts, rows, [
+    { id: "started", ...task, earliest: now - 60000, deadline: now + 3600000,
+      durationMinutes: 60, suggestedAt: new Date(now - 60000).toISOString(), recommendation: { suggestedAt: new Date(now - 60000).toISOString() } },
+    { id: "future", ...task },
+  ], now);
+  assert.equal(schedule.tasks.find(t => t.id === "started").fixed, true);
+  assert.ok(schedule.tasks.find(t => t.id === "future").recommendation.estimatedCost > 0);
+  assert.equal(schedule.tasks.find(t => t.id === "future").recommendation.solarKwh, 0);
+  const missed = planApplianceSchedule(profile, forecasts, rows, [{ id: "late", ...task, earliest: now, deadline: now + 60000 }], now);
+  assert.equal(missed.tasks[0].code, "window-missed");
+  assert.equal(missed.tasks[0].recommendation, null);
 });
 
 test("weekly reporting keeps real coverage and accounts for the 25-hour clock-change day", () => {

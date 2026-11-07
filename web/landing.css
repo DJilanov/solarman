@@ -28,15 +28,20 @@ html:has(.landing) {
 .landing-skip {
   position: fixed;
   z-index: 20;
-  top: -100px;
+  top: 12px;
   left: 20px;
   padding: 16px;
   border-radius: 10px;
   background: var(--landing-mint);
   color: #10261c !important;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-150%);
 }
 .landing-skip:focus {
-  top: 12px;
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
 }
 .landing-header {
   min-height: 102px;

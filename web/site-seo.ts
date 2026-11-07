@@ -4,7 +4,7 @@ import routes from "../src/public-site.json";
 import { publicDocuments, type InformationKind } from "./public-content";
 
 export type PublicLanguage = "en" | "bg";
-export type PublicPageKind = "home" | InformationKind;
+export type PublicPageKind = "home" | "demo" | InformationKind;
 
 export interface PublicPage {
   kind: PublicPageKind;
@@ -47,17 +47,17 @@ export function publicPage(
   language: PublicLanguage,
   kind: PublicPageKind = "home",
 ): PublicPage {
-  const document = kind === "home" ? null : publicDocuments[language][kind];
+  const document = kind === "home" || kind === "demo" ? null : publicDocuments[language][kind];
   return {
     kind,
     language,
     path: paths[kind][language],
     url: SITE_ORIGIN + paths[kind][language],
-    title: document
+    title: kind === "demo" ? (language === "bg" ? "Интерактивно соларно демо | Solarman" : "Interactive solar and battery demo | Solarman") : document
       ? `${document.eyebrow} | Solarman · JILANOVI`
       : messages[language]["Solar and battery app with phone alerts | Solarman"],
     description:
-      document?.description ??
+      (kind === "demo" ? (language === "bg" ? "Опитайте без регистрация: променете времето и заряда на примерна батерия и разгледайте плана за дома при спиране на тока." : "Try solar and battery planning without signing up. Change the weather, choose a charge target and explore a simulated household power cut.") : document?.description) ??
       messages[language][
         "Install Solarman on iPhone or Android. Monitor solar, battery and grid, receive phone alerts and plan night charging. Request a demo for your home."
       ],

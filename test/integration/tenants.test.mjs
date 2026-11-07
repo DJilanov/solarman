@@ -1,4 +1,5 @@
 import { registerEnergyIntegration } from "./energy-cases.mjs";
+import serviceIdentity from "../../src/service-identity.json" with { type: "json" };
 import { registerPasskeyIntegration } from "./passkey-cases.mjs";
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -381,7 +382,7 @@ test("platform administration is restricted and invitation activation is single 
   }
   const response = await fetchApi("/auth/activate", {
     method: "POST",
-    body: { termsVersion: "2026-11-02", token, password },
+    body: { termsVersion: serviceIdentity.policyVersion, token, password },
   });
   assert.equal(response.status, 200);
   const session = await response.json();
@@ -391,7 +392,7 @@ test("platform administration is restricted and invitation activation is single 
     (
       await fetchApi("/auth/activate", {
         method: "POST",
-        body: { termsVersion: "2026-11-02", token, password },
+        body: { termsVersion: serviceIdentity.policyVersion, token, password },
       })
     ).status,
     400,
@@ -4313,7 +4314,7 @@ test("invitation history keeps bearer secrets private while revoke and reissue i
     (
       await fetchApi("/auth/activate", {
         method: "POST",
-        body: { termsVersion: "2026-11-02", token, password },
+        body: { termsVersion: serviceIdentity.policyVersion, token, password },
       })
     ).status,
     400,
@@ -4352,7 +4353,7 @@ test("invitation history keeps bearer secrets private while revoke and reissue i
     (
       await fetchApi("/auth/activate", {
         method: "POST",
-        body: { termsVersion: "2026-11-02", token: privateToken(final.url, "token"), password },
+        body: { termsVersion: serviceIdentity.policyVersion, token: privateToken(final.url, "token"), password },
       })
     ).status,
     200,
@@ -4397,7 +4398,7 @@ test(
       await lockInvitationEmail(connection, email);
       const activated = fetchApi("/auth/activate", {
         method: "POST",
-        body: { termsVersion: "2026-11-02", token: privateToken(first.url, "token"), password },
+        body: { termsVersion: serviceIdentity.policyVersion, token: privateToken(first.url, "token"), password },
       });
       const revoked = fetchApi(`/admin/invitations/${first.id}/revoke`, {
         auth: alpha,
@@ -9501,7 +9502,7 @@ test("an invited tenant completes the connected home journey through attended co
     ).get("token");
     const activation = await fetchApi("/auth/activate", {
       method: "POST",
-      body: { termsVersion: "2026-11-02", token: invitationToken, password: memberPassword },
+      body: { termsVersion: serviceIdentity.policyVersion, token: invitationToken, password: memberPassword },
     });
     assert.equal(activation.status, 200);
     const member = {
@@ -9515,7 +9516,7 @@ test("an invited tenant completes the connected home journey through attended co
       "/auth/activate",
       {
         method: "POST",
-        body: { termsVersion: "2026-11-02", token: invitationToken, password: memberPassword },
+        body: { termsVersion: serviceIdentity.policyVersion, token: invitationToken, password: memberPassword },
       },
       400,
     );

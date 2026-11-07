@@ -23,6 +23,7 @@ import {
 import { createPool } from "./database.mjs";
 import { dashboardConfig } from "./dashboard-config.mjs";
 import { verifyStoredCredentials, encryptionKey } from "./credentials.mjs";
+import { verifyStoredOutageReferences } from "./energy-outage-watch.mjs";
 import { verifyStoredNotificationSecrets } from "./notification-secrets.mjs";
 import {
   atomicJson,
@@ -275,6 +276,7 @@ export async function runBackup(client, config) {
     const contents = await inventory(connection);
     const accountCount = await verifyStoredCredentials(connection, key);
     await verifyStoredNotificationSecrets(connection, key);
+    await verifyStoredOutageReferences(connection, key);
     const snapshot = (
       await connection.query("SELECT pg_export_snapshot() AS id")
     ).rows[0].id;

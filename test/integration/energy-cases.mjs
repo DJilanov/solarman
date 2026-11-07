@@ -19,6 +19,7 @@ import { expireNightTrial, expireDueNightTrial, remindNightTrial, registerNightT
 import { encryptPushSubscription } from "../../src/web-push.mjs";
 import { createECDH, randomBytes } from "node:crypto";
 import { providerPayload } from "../fixtures/provider.mjs";
+import { registerEnergyAssistantIntegration } from "./energy-assistant-cases.mjs";
 
 /** @param {object} context @returns {void} */
 export function registerEnergyIntegration({
@@ -128,6 +129,8 @@ export function registerEnergyIntegration({
     };
     return { ...f, pool, hub, state, call, refresh, approve, dispose };
   }
+  registerEnergyAssistantIntegration({ fixture, fetchApi, password, getBeta });
+
   async function trialFixture() {
     const f = await fixture();
     await f.approve();

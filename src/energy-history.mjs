@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { positiveEnergy } from "./analytics.mjs";
 import { energyIntervals, energyLocalTime } from "./energy-time.mjs";
+import { awayAt, overlapsAway } from "./energy-occupancy.mjs";
 
 /** @param {number[]} values @param {number} fraction @returns {number|null} */
 export function energyQuantile(values, fraction) {
@@ -104,8 +105,8 @@ export function energyMeasuredBuckets(rows) {
   }));
 }
 
-/** @param {object[]} rows @param {object} profile @param {number} now @returns {object} */
-export function learnEnergyDemand(rows, profile, now, weather = []) {
+/** @param {object[]} rows @param {object} profile @param {number} now @param {object[]} [weather] @param {object[]} [away] @param {object|null} [previous] @returns {object} */
+export function learnEnergyDemand(rows, profile, now, weather = [], away = [], previous = null) {
   const buckets = energyMeasuredBuckets(
     rows.filter((row) => new Date(row.observed_at).getTime() <= now),
   );
@@ -116,7 +117,7 @@ export function learnEnergyDemand(rows, profile, now, weather = []) {
   let energy = 0,
     coveredHours = 0;
   for (const bucket of buckets) {
-    if (bucket.coverage < 0.5) continue;
+    if (bucket.coverage < 0.5 || overlapsAway(away, bucket.start, bucket.end)) continue;
     const local = energyLocalTime(bucket.start, profile.timezone),
       hour = Math.floor(local.minute / 60),
       weekend = local.weekday === 0 || local.weekday === 6;
@@ -145,7 +146,9 @@ export function learnEnergyDemand(rows, profile, now, weather = []) {
     for (let hour = 0; hour < 24; hour++) {
       const own = groups.get(`${weekend}:${hour}`) ?? [],
         values = own.length >= 4 ? own : (hours.get(hour) ?? []);
-      const kw = energyQuantile(values, 0.5) ?? fallback;
+      const prior = Array.isArray(previous?.observations) ? previous.observations.find(value => value.hour === hour && value.weekend === Boolean(weekend) && Number.isFinite(value.kw) && value.kw >= 0) : null;
+      const observedKw = energyQuantile(values, 0.5) ?? fallback;
+      const kw = observedKw ?? prior?.kw ?? null;
       if (!values.length) imputed++;
       observations.push({
         weekend: Boolean(weekend),
@@ -154,10 +157,12 @@ export function learnEnergyDemand(rows, profile, now, weather = []) {
         referenceTemperatureC: energyQuantile(
           temperatures.get(hour) ?? [],
           0.5,
-        ),
+        ) ?? (observedKw === null ? prior?.referenceTemperatureC ?? null : null),
         samples: values.length,
         source:
-          own.length >= 4
+          observedKw === null && prior
+            ? "previous-normal-estimate"
+            : own.length >= 4
             ? "day-type"
             : values.length
               ? "all-days"
@@ -194,8 +199,8 @@ export function learnEnergyDemand(rows, profile, now, weather = []) {
   };
 }
 
-/** @param {object} model @param {object} profile @param {object[]} weather @param {number} from @param {number} to @returns {object[]} */
-export function predictEnergyDemand(model, profile, weather, from, to) {
+/** @param {object} model @param {object} profile @param {object[]} weather @param {number} from @param {number} to @param {object[]} [away] @returns {object[]} */
+export function predictEnergyDemand(model, profile, weather, from, to, away = []) {
   if (!model.ready)
     throw new Error(
       "More household readings or a daily consumption estimate are required",
@@ -223,7 +228,8 @@ export function predictEnergyDemand(model, profile, weather, from, to) {
         : profile.planning.heatingKwPerDegree *
           (Math.max(0, profile.planning.heatingBaseC - forecast.temperatureC) -
             Math.max(0, profile.planning.heatingBaseC - reference));
-    const expectedKw = Math.max(0, observed.kw + heating),
+    const occupancy = awayAt(away, interval.start);
+    const expectedKw = occupancy ? occupancy.baselineW / 1000 : Math.max(0, observed.kw + heating),
       margin =
         profile.planning.loadMargin + (model.quality === "limited" ? 0.15 : 0);
     return {
@@ -231,7 +237,8 @@ export function predictEnergyDemand(model, profile, weather, from, to) {
       expectedKw,
       lowKw: Math.max(0, expectedKw * (1 - margin)),
       highKw: expectedKw * (1 + margin),
-      source: observed.source,
+      source: occupancy ? "away-estimate" : observed.source,
+      ...(occupancy ? { awayPeriodId: occupancy.id } : {}),
     };
   });
 }

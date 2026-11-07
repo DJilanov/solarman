@@ -8,6 +8,9 @@ import { formatNumber, when } from "./format";
 import { Heading, Loading, Notice, Panel } from "./components";
 import { localDateTimeInput, localDateTimeInstant } from "./local-date-time";
 import type { EnergyToolsData } from "./energy-tools-types";
+import { AwayMode } from "./away-mode";
+import { EnergyInsights } from "./energy-insights";
+import { OutageWatch } from "./outage-watch";
 
 function minuteInput(minute: number): string {
   return `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
@@ -34,6 +37,8 @@ export default function EnergyToolsPage(): ReactNode {
   const [pending, setPending] = useState(false), [uncertain, setUncertain] = useState(false);
   const [message, setMessage] = useState<string | null>(null), [failed, setFailed] = useState(false);
   const [dirty, setDirty] = useState(false), [enabled, setEnabled] = useState(false);
+  const [preferenceRevision, setPreferenceRevision] = useState("0");
+  const [insightsEnabled, setInsightsEnabled] = useState(false), [autoReplan, setAutoReplan] = useState(false);
   const [morning, setMorning] = useState("07:15"), [evening, setEvening] = useState("19:00"), [password, setPassword] = useState("");
   const [name, setName] = useState(""), [power, setPower] = useState("2"), [duration, setDuration] = useState("120");
   const [earliest, setEarliest] = useState(() => localDateTimeInput(Date.now() + 15 * 60000, timezone));
@@ -42,6 +47,8 @@ export default function EnergyToolsPage(): ReactNode {
   useEffect(() => {
     if (!data || dirty) return;
     setEnabled(data.preferences.briefingsEnabled);
+    setPreferenceRevision(data.preferences.revision);
+    setInsightsEnabled(data.preferences.insightsEnabled ?? false); setAutoReplan(data.preferences.autoReplan ?? false);
     setMorning(minuteInput(data.preferences.morningMinute)); setEvening(minuteInput(data.preferences.eveningMinute));
   }, [data, dirty]);
   const onError = (cause: unknown): void => {
@@ -64,9 +71,9 @@ export default function EnergyToolsPage(): ReactNode {
     event.preventDefault(); if (!data || pending || uncertain) return;
     setPending(true); setMessage(null);
     try {
-      await post("/energy/tools/preferences", { revision: data.preferences.revision, briefingsEnabled: enabled,
-        morningMinute: parseMinute(morning), eveningMinute: parseMinute(evening), currentPassword: password });
-      setDirty(false); setFailed(false); setMessage("Energy briefings updated"); reload();
+      await post("/energy/tools/preferences", { revision: preferenceRevision, briefingsEnabled: enabled,
+        morningMinute: parseMinute(morning), eveningMinute: parseMinute(evening), insightsEnabled, autoReplan, currentPassword: password });
+      setDirty(false); setFailed(false); setMessage("Energy preferences updated"); reload();
     } catch (cause: unknown) { onError(cause); }
     finally { setPassword(""); setPending(false); }
   };
@@ -87,6 +94,12 @@ export default function EnergyToolsPage(): ReactNode {
     catch (cause: unknown) { onError(cause); }
     finally { setPending(false); }
   };
+  const replan = async (): Promise<void> => {
+    if (!data || pending || uncertain) return; setPending(true); setMessage(null);
+    try { await post("/energy/tools/replan", { revision: data.preferences.loadRevision ?? "0" }); setFailed(false); setMessage("Appliance schedule recalculated. Started and reminded tasks keep their times."); reload(); }
+    catch (cause: unknown) { onError(cause); }
+    finally { setPending(false); }
+  };
   if (!data) return loading ? <Loading /> : <Notice tone="danger">{loadError ?? tr("Energy tools are unavailable")}</Notice>;
   const locked = pending || uncertain, report = data.report, learning = data.learning;
   return <div className="energy-assistant">
@@ -97,26 +110,33 @@ export default function EnergyToolsPage(): ReactNode {
     {message && <Notice tone={failed ? "danger" : undefined}>{tr(message)}</Notice>}
     {uncertain && <Notice><p>{tr("The change is unconfirmed. Refresh the saved state before trying again.")}</p><button className="button secondary" disabled={pending} onClick={() => { void refreshConfirmed(); }}>{tr("Refresh saved state")}</button></Notice>}
     {!data.ready && <Notice>{tr("Complete your installation and tariff settings to use energy planning.")} <Link to="/controls/night-savings">{tr("Review installation settings")}</Link></Notice>}
+    {data.insights && <EnergyInsights data={data.insights} reload={reload} />}
     <div className="energy-tools-grid">
       <Panel title={tr("Plan a power cut")} action={<CalendarClock size={22} />}>
         <p>{tr("Choose the expected start, duration and essential loads. Get a charge target and review it in the normal charging controls.")}</p>
         <Link className="button secondary" to="/controls/outage">{tr("Plan an outage by hours")}</Link>
       </Panel>
-      <Panel title={tr("Daily energy briefings")} action={<Bell size={22} />}>
+      <Panel title={tr("Planning preferences")} action={<Bell size={22} />}>
         <p className="fine-print">{tr("An evening plan and a morning result, delivered to your verified notification devices.")} {timezone}</p>
+        {dirty && preferenceRevision !== data.preferences.revision && <Notice><p>{tr("Preferences changed while you were editing. Reload them before saving.")}</p><button className="button secondary" type="button" disabled={locked} onClick={() => { setDirty(false); setPassword(""); }}>{tr("Reload preferences")}</button></Notice>}
         <form className="energy-tools-form" onSubmit={event => { void savePreferences(event); }}>
           <label className="check-label"><input type="checkbox" checked={enabled} onChange={event => { setEnabled(event.target.checked); setDirty(true); }} />{tr("Send daily energy briefings")}</label>
+          <label className="check-label"><input type="checkbox" checked={insightsEnabled} onChange={event => { setInsightsEnabled(event.target.checked); setDirty(true); }} />{tr("Check sustained energy deviations and send bounded advisories")}</label>
+          <label className="check-label"><input type="checkbox" checked={autoReplan} onChange={event => { setAutoReplan(event.target.checked); setDirty(true); }} />{tr("Replan future appliances when the forecast changes")}</label>
           <label>{tr("Morning briefing")}<input required type="time" value={morning} onChange={event => { setMorning(event.target.value); setDirty(true); }} /></label>
           <label>{tr("Evening briefing")}<input required type="time" value={evening} onChange={event => { setEvening(event.target.value); setDirty(true); }} /></label>
           <label>{tr("Current dashboard password")}<input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} /></label>
-          <button className="button secondary" type="submit" disabled={locked || !password}>{tr("Save briefing preferences")}</button>
+          <button className="button secondary" type="submit" disabled={locked || !password || (dirty && preferenceRevision !== data.preferences.revision)}>{tr("Save energy preferences")}</button>
         </form>
         <Link className="text-link" to="/settings/notifications">{tr("Manage notification devices")}</Link>
       </Panel>
     </div>
+    {data.outageWatch && <OutageWatch data={data.outageWatch} reload={reload} />}
     <Panel title={tr("Appliance planner")} action={<Lightbulb size={22} />}>
       <p>{tr("Choose a deadline and running time. The planner compares conservative solar surplus and your tariff. Reminders prompt you to start the appliance manually.")}</p>
-      <p className="fine-print">{tr("Plans are calculated individually. Avoid overlapping appliances when relying on the same solar surplus.")}</p>
+      <p className="fine-print">{tr("Plans share the available solar after household and battery needs. Started or already-reminded tasks keep their times. Appliances are switched on manually.")}</p>
+      <button className="button secondary" disabled={locked || !data.ready || !data.forecastFresh || !data.tasks.some(task => task.state === "planned" && task.currentBinding)} onClick={() => { void replan(); }}>{tr("Replan all future appliances")}</button>
+      {data.preferences.lastReplanAt && <p className="fine-print">{tr("Last schedule check")}: {when(data.preferences.lastReplanAt, timezone)} · {tr(data.preferences.replanCode === "unavailable" ? "Waiting for fresh readings and forecast coverage" : "Shared solar budget recalculated")}</p>}
       {!data.forecastFresh && <Notice>{tr("Refresh the solar forecast before saving an appliance plan.")} <Link to="/controls/night-savings">{tr("Review night savings")}</Link></Notice>}
       <form className="energy-tools-form energy-tools-appliance" onSubmit={event => { void saveTask(event); }}>
         <label>{tr("Appliance name")}<input required maxLength={80} value={name} onChange={event => setName(event.target.value)} /></label>
@@ -128,7 +148,7 @@ export default function EnergyToolsPage(): ReactNode {
         <button className="button secondary" type="submit" disabled={locked || !data.ready || !data.forecastFresh}>{tr("Find the best time")}</button>
       </form>
       {!data.tasks.length ? <p className="fine-print">{tr("Your appliance plans will appear here.")}</p> : <div className="energy-tools-task-list">{data.tasks.map(task => <article className="energy-tools-task" key={task.id}>
-        <strong>{task.name}</strong><span>{when(task.suggestedAt, timezone)} → {when(task.recommendation.finishesAt, timezone)}</span>
+        <strong>{task.name}</strong>{task.scheduleCode === "window-missed" ? <p>{tr("There is no time left to finish within this window. Create a new plan.")}</p> : <span>{when(task.suggestedAt, timezone)} → {when(task.recommendation.finishesAt, timezone)}</span>}
         <span>{formatNumber(task.recommendation.energyKwh, 1)} kWh · {tr("Estimated cost")}: {money(task.recommendation.estimatedCost, report?.currency ?? "EUR")}</span>
         {!task.currentBinding && <p className="fine-print">{tr("This appliance plan belongs to earlier installation settings. Create a new plan before using its timing.")}</p>}
         <span className="fine-print">{tr(task.state === "done" ? "Marked as completed" : task.state === "cancelled" ? "Cancelled" : task.remindedAt ? "Reminder processed" : task.reminderEnabled ? "Reminder enabled" : "Manual reminder off")}</span>
@@ -141,6 +161,7 @@ export default function EnergyToolsPage(): ReactNode {
       <p className="fine-print">{tr("Costs cover recorded periods at your configured tariffs. Savings compare completed plans with a modelled baseline.")} {!report.wearIncluded && tr("Battery wear is not priced in these estimates.")}</p>
       <div className="readings-table" role="region" aria-label={tr("Weekly energy report")} tabIndex={0}><table><thead><tr>{["Date", "Coverage", "Solar · kWh", "House · kWh", "Grid import · kWh", "Recorded grid cost"].map(label => <th key={label}>{tr(label)}</th>)}</tr></thead><tbody>{report.days.map(day => <tr key={day.day}><td>{day.day}</td><td>{formatNumber(day.coverage * 100, 1)}%</td>{[day.solarKwh, day.loadKwh, day.importKwh].map((value, index) => <td key={index}>{day.coverage > 0 ? formatNumber(value, 1) : "—"}</td>)}<td>{day.coverage > 0 ? money(day.gridCost, report.currency) : "—"}</td></tr>)}</tbody></table></div>
     </Panel>}
+    <AwayMode data={data.away} ready={data.ready} onSaved={reload} />
     {learning && <Panel title={tr("How the estimates are learning")} action={<TrendingUp size={22} />}>
       <div className="energy-costs"><span>{tr("Qualifying forecast days")} <b>{learning.forecastDays} / 7</b></span><span>{tr("Average absolute solar error")} <b>{learning.meanAbsoluteErrorKwh === null ? "—" : `${formatNumber(learning.meanAbsoluteErrorKwh, 1)} kWh`}</b></span><span>{tr("Observed battery capacity estimate")} <b>{learning.observedFullCapacityKwh === null ? "—" : `${formatNumber(learning.observedFullCapacityKwh, 1)} kWh`}</b></span></div>
       <p className="fine-print">{tr("Forecast learning uses complete measured days and excludes suspected solar curtailment.")}</p>

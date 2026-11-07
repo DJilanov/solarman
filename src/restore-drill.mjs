@@ -1,5 +1,7 @@
 import { emptyEnergyProfile, energySiteHash } from "./energy-profile.mjs";
 import { quarantineEnergy } from "./energy-lifecycle.mjs";
+import { verifyStoredOutageReferences } from "./energy-outage-watch.mjs";
+import { sealSecret } from "./stored-secret.mjs";
 import { randomBytes, randomUUID, createHash, createECDH } from "node:crypto";
 import { isoCBOR } from "@simplewebauthn/server/helpers";
 import webpush from "web-push";
@@ -206,6 +208,10 @@ async function createAuthenticationFixture(
     energyPlan = randomUUID();
   await pool.query("INSERT INTO energy_experience_settings(tenant_id,briefings_enabled) VALUES($1,true)", [tenant]);
   await pool.query("INSERT INTO energy_load_tasks(id,tenant_id,account_id,device,binding,name,power_kw,duration_minutes,earliest_at,deadline_at,suggested_at,recommendation,reminder_enabled) VALUES($1,$2,$3,$4,$5,'Isolated appliance canary',1,60,clock_timestamp(),clock_timestamp()+interval '2 hours',clock_timestamp()+interval '1 hour','{}',true)", [randomUUID(), tenant, account, device, observationBinding(identity)]);
+  await pool.query("UPDATE energy_experience_settings SET insights_enabled=true,auto_replan=true WHERE tenant_id=$1", [tenant]);
+  await pool.query("INSERT INTO energy_away_periods(id,tenant_id,account_id,device,binding,starts_at,returns_at,baseline_w) VALUES($1,$2,$3,$4,$5,clock_timestamp()+interval '1 hour',clock_timestamp()+interval '1 day',100)", [randomUUID(), tenant, account, device, observationBinding(identity)]);
+  const watchId = randomUUID();
+  await pool.query("INSERT INTO energy_outage_watches(id,tenant_id,account_id,device,reference_kind,reference_hint,secret,enabled) VALUES($1,$2,$3,$4,'area','Isolated recovery fixture',$5,true)", [watchId, tenant, account, device, sealSecret({ kind: "area", municipality: "RESTORE", area: "FIXTURE" }, key, `solarman-outage:${tenant}:${watchId}:v1`)]);
   await pool.query(
     "INSERT INTO energy_settings(tenant_id,profile,automatic,approval_binding,approved_by) VALUES($1,$2,true,$3,$4)",
     [tenant, energyProfile, observationBinding(identity), user],
@@ -821,6 +827,7 @@ export async function restoreDrill(header, dump) {
         connection,
         encryptionKey(header.credentialKey),
       );
+      await verifyStoredOutageReferences(connection, encryptionKey(header.credentialKey));
       await connection.query("COMMIT");
     } finally {
       connection.release();
@@ -933,6 +940,11 @@ export async function restoreDrill(header, dump) {
     await quarantineEnergy(pool, null, "restore");
     assert.equal((await pool.query("SELECT count(*)::int AS n FROM energy_experience_settings WHERE briefings_enabled")).rows[0].n, 0);
     assert.equal((await pool.query("SELECT count(*)::int AS n FROM energy_load_tasks WHERE reminder_enabled")).rows[0].n, 0);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM energy_experience_settings WHERE insights_enabled OR auto_replan")).rows[0].n, 0);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM energy_away_periods WHERE state='planned' AND returns_at>clock_timestamp()")).rows[0].n, 0);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM energy_outage_watches WHERE enabled OR NOT quarantined")).rows[0].n, 0);
+    await verifyStoredOutageReferences(pool, encryptionKey(header.credentialKey));
+    report.energyAssistantQuarantined = true;
     report.energyExperienceQuarantined = true;
     assert.equal(
       (

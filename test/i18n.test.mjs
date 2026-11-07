@@ -36,6 +36,10 @@ test("every literal translation used by the interface exists in both catalogues"
     "night-savings.tsx",
     "energy-summary.tsx",
     "energy-tools.tsx",
+    "away-mode.tsx",
+    "energy-insights.tsx",
+    "outage-watch.tsx",
+    "demo.tsx",
     "outage-calculator.tsx",
     "power-explanation.tsx",
     "grid-charge.tsx",
@@ -93,6 +97,10 @@ test("account security errors and event labels have English and Bulgarian transl
     "commissioning.mjs",
     "notifications.mjs",
     "push-subscriptions.mjs",
+    "energy-away.mjs",
+    "energy-experience.mjs",
+    "energy-insights.mjs",
+    "energy-outage-watch.mjs",
   ]
     .map((file) =>
       readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"),

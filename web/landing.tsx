@@ -2,7 +2,6 @@ import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import {
-  ArrowDown,
   ArrowRight,
   BatteryCharging,
   Bell,
@@ -22,7 +21,7 @@ import {
 import { ChargeTarget } from "./charge-target";
 import { LanguageSwitch, tr, publicHomePath } from "./i18n";
 import { SITE_ORIGIN } from "./site-seo";
-import { publicRoute } from "./site-seo";
+import { publicRoute, publicPage } from "./site-seo";
 import { useLocation } from "react-router-dom";
 import { ProductBrand, PublicFooter, PublicAccountLink } from "./public-layout";
 import { business } from "./business";
@@ -209,7 +208,7 @@ export default function LandingPage({ signedIn }: LandingProps): ReactNode {
         <nav aria-label={tr("Product navigation")}>
           <a href="#possibilities">{tr("What you can do")}</a>
           <a href="#phone-app">{tr("On your phone")}</a>
-          <a href="#questions">{tr("Questions")}</a>
+          <Link to={publicPage(language, "demo").path}>{tr("Try the demo")}</Link>
         </nav>
         <div className="landing-header-actions">
           <LanguageSwitch />
@@ -237,13 +236,13 @@ export default function LandingPage({ signedIn }: LandingProps): ReactNode {
               )}
             </p>
             <div className="landing-hero-actions">
-              <a className="button primary" href={demoUrl}>
-                {tr("Request a demo")}
+              <Link className="button primary" to={publicPage(language, "demo").path}>
+                {tr("Try the interactive demo")}
                 <ArrowRight size={18} aria-hidden="true" />
-              </a>
-              <a className="landing-explore" href="#phone-app">
-                {tr("See the phone app")}
-                <ArrowDown size={16} aria-hidden="true" />
+              </Link>
+              <a className="landing-explore" href={demoUrl}>
+                {tr("Request a personal demo")}
+                <ArrowRight size={16} aria-hidden="true" />
               </a>
             </div>
             <p className="landing-hero-note">

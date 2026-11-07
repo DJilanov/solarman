@@ -343,6 +343,8 @@ export function chooseEnergyPlan({
       })
     : conservativeBaseline;
   const reasons = targetOverride !== null ? ["manual-target"] : [];
+  if (demand.some(slot => slot.source === "away-estimate")) reasons.push("away-mode");
+  if (demand.some(slot => slot.source === "previous-normal-estimate")) reasons.push("saved-normal-estimate");
   if (chosen) reasons.push("immediate-night-charge");
   if (profile.tariff.nightPrice >= profile.tariff.dayPrice)
     reasons.push("night-not-cheaper");
