@@ -15,7 +15,7 @@ import { energySiteHash } from "../../src/energy-profile.mjs";
 import { encryptCredentials } from "../../src/credentials.mjs";
 import { encryptNotificationSecret } from "../../src/notification-secrets.mjs";
 import { quarantineEnergyExperience } from "../../src/energy-experience-lifecycle.mjs";
-import { expireNightTrial, remindNightTrial, registerNightTrial } from "../../src/night-trial.mjs";
+import { expireNightTrial, expireDueNightTrial, remindNightTrial, registerNightTrial, makeNightTrialPermanent } from "../../src/night-trial.mjs";
 import { encryptPushSubscription } from "../../src/web-push.mjs";
 import { createECDH, randomBytes } from "node:crypto";
 import { providerPayload } from "../fixtures/provider.mjs";
@@ -441,6 +441,64 @@ export function registerEnergyIntegration({
     } finally {
       await f.dispose();
     }
+  });
+
+  test("a registered trial becomes permanent once without changing its approval, plans or inverter settings", async () => {
+    const f = await trialFixture();
+    try {
+      await registerNightTrial(f.pool, f.config);
+      const snapshot = async () => ({
+        settings: (await f.pool.query("SELECT * FROM energy_settings WHERE tenant_id=$1", [f.target.tenant])).rows,
+        plans: (await f.pool.query("SELECT * FROM energy_plans WHERE tenant_id=$1 ORDER BY id", [f.target.tenant])).rows,
+        writes: f.device.writes.length,
+      });
+      const before = await snapshot();
+      const results = await Promise.all([
+        makeNightTrialPermanent(f.pool, f.config),
+        makeNightTrialPermanent(f.pool, f.config),
+      ]);
+      assert.deepEqual(results, [{ state: "permanent" }, { state: "permanent" }]);
+      assert.deepEqual(await snapshot(), before);
+      assert.equal((await f.pool.query("SELECT count(*)::int AS n FROM energy_events WHERE tenant_id=$1 AND action='trial-permanent'", [f.target.tenant])).rows[0].n, 1);
+      assert.equal(await expireDueNightTrial(f.pool, f.target.tenant, Date.parse(f.config.expiresAt)), null);
+      assert.deepEqual(await expireNightTrial(f.pool, f.config, Date.parse(f.config.expiresAt)), { state: "permanent" });
+      assert.deepEqual(await remindNightTrial(f.pool, f.config, Date.parse(f.config.reviewAt)), { state: "permanent", channels: 0 });
+      assert.deepEqual(await snapshot(), before);
+      assert.equal((await f.pool.query("SELECT count(*)::int AS n FROM notification_outbox WHERE tenant_id=$1", [f.target.tenant])).rows[0].n, 0);
+      assert.equal((await f.call("pause", { revision: (await f.state()).revision })).status, 202);
+      assert.deepEqual(await makeNightTrialPermanent(f.pool, f.config), { state: "permanent" });
+      assert.equal((await f.state()).automatic, false);
+    } finally { await f.dispose(); }
+  });
+
+  test("permanent trial requests reject missing registrations, altered config and a different owner", async () => {
+    const f = await trialFixture();
+    try {
+      await assert.rejects(makeNightTrialPermanent(f.pool, f.config), /registration does not match/);
+      await registerNightTrial(f.pool, f.config);
+      const altered = { ...f.config, expiresAt: new Date(Date.parse(f.config.expiresAt) + 60000).toISOString() };
+      await assert.rejects(makeNightTrialPermanent(f.pool, altered), /registration does not match/);
+      assert.deepEqual(await makeNightTrialPermanent(f.pool, { ...f.config, userId: randomUUID() }), { state: "unavailable" });
+      assert.equal((await f.state()).automatic, true);
+      assert.equal((await f.pool.query("SELECT count(*)::int AS n FROM energy_events WHERE tenant_id=$1 AND action='trial-permanent'", [f.target.tenant])).rows[0].n, 0);
+    } finally { await f.dispose(); }
+  });
+
+  test("making a trial permanent cannot extend an expired approval or re-enable paused or superseded settings", async () => {
+    const f = await trialFixture();
+    try {
+      await registerNightTrial(f.pool, f.config);
+      assert.deepEqual(await makeNightTrialPermanent(f.pool, f.config, Date.parse(f.config.expiresAt)), { state: "expired" });
+      assert.equal((await f.state()).automatic, true);
+      assert.equal((await f.call("pause", { revision: (await f.state()).revision })).status, 202);
+      assert.deepEqual(await makeNightTrialPermanent(f.pool, f.config), { state: "superseded" });
+      assert.equal((await f.state()).automatic, false);
+      const newer = await f.refresh();
+      assert.equal((await f.call("apply", { revision: newer.revision, planId: newer.plan.id, choice: "automatic", currentPassword: password })).status, 202);
+      assert.deepEqual(await makeNightTrialPermanent(f.pool, f.config), { state: "superseded" });
+      assert.equal((await f.state()).automatic, true);
+      assert.equal((await f.pool.query("SELECT count(*)::int AS n FROM energy_events WHERE tenant_id=$1 AND action='trial-permanent'", [f.target.tenant])).rows[0].n, 0);
+    } finally { await f.dispose(); }
   });
 
   test("an old trial deadline preserves a newly approved Automatic policy", async () => {

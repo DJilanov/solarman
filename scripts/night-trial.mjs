@@ -6,12 +6,13 @@ import {
   expireNightTrial,
   remindNightTrial,
   registerNightTrial,
+  makeNightTrialPermanent,
 } from "../src/night-trial.mjs";
 
 try {
   const [action, file] = process.argv.slice(2);
   if (
-    !["check", "register", "expire", "review"].includes(action) ||
+    !["check", "register", "expire", "review", "permanent"].includes(action) ||
     !file?.startsWith("/")
   )
     throw new Error("Invalid night trial job");
@@ -28,17 +29,17 @@ try {
   else {
     const pool = createPool(dashboardConfig(process.env).database);
     try {
-      console.log(
-        JSON.stringify(
-          await (
-            action === "register"
-              ? registerNightTrial
-              : action === "expire"
-                ? expireNightTrial
-                : remindNightTrial
-          )(pool, config),
-        ),
-      );
+      const operation = action === "permanent"
+        ? makeNightTrialPermanent
+        : action === "register"
+          ? registerNightTrial
+          : action === "expire"
+            ? expireNightTrial
+            : remindNightTrial;
+      const result = await operation(pool, config);
+      console.log(JSON.stringify(result));
+      if (action === "permanent" && result.state !== "permanent")
+        process.exitCode = 1;
     } finally {
       await pool.end();
     }
